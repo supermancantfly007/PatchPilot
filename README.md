@@ -55,6 +55,7 @@ Compose provides Postgres, Redis, and MinIO with health checks. It does not cont
 - Local Codex runner in an isolated git worktree when `codex` and git are available
 - Simulated runner fallback for demos and CI tests
 - Test evidence, changed file list, risk summary, reviewer summary, and final acceptance
+- Bug reports that first go to the test agent for reproduction, then create a backend fix task for the developer agent
 - JSON-backed local state for fast iteration
 
 ## Runner Modes
@@ -113,5 +114,6 @@ When the API is running, the local end-to-end checks are:
 
 ```bash
 pnpm e2e:team
+pnpm e2e:bug
 pnpm e2e:smoke
 ```

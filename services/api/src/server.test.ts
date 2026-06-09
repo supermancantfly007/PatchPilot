@@ -300,6 +300,58 @@ describe("PatchPilot API", () => {
 
     await app.close();
   });
+
+  it("turns a confirmed bug reproduction into a developer fix task", async () => {
+    const app = await buildServer();
+    const bugResponse = await app.inject({
+      method: "POST",
+      url: "/api/bugs",
+      payload: {
+        title: "保存按钮没有反馈",
+        description: "点击保存后页面没有任何反馈。",
+        reproductionSteps: "打开设置页，修改标题，点击保存。",
+        expectedBehavior: "展示保存成功提示。",
+        actualBehavior: "页面没有变化。",
+        severity: "medium"
+      }
+    });
+    const { bug, workItem } = bugResponse.json();
+
+    const reproStart = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/start`,
+      payload: { runner: "simulated" }
+    });
+    expect(reproStart.statusCode).toBe(201);
+    const reproRun = await pollRun(app, reproStart.json().id);
+    expect(reproRun.status).toBe("succeeded");
+
+    const snapshotAfterRepro = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const confirmedBug = snapshotAfterRepro.json().bugs.find((item: { id: string }) => item.id === bug.id);
+    const fixWorkItem = snapshotAfterRepro
+      .json()
+      .workItems.find((item: { sourceBugId?: string; role: string }) => item.sourceBugId === bug.id && item.role === "backend");
+
+    expect(confirmedBug.status).toBe("confirmed");
+    expect(fixWorkItem.status).toBe("ready");
+    expect(fixWorkItem.title).toContain("修复 bug");
+
+    const fixStart = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${fixWorkItem.id}/start`,
+      payload: { runner: "simulated" }
+    });
+    expect(fixStart.statusCode).toBe(201);
+    const fixRun = await pollRun(app, fixStart.json().id);
+    expect(fixRun.status).toBe("succeeded");
+    expect(fixRun.result.summary).toContain("完成模拟修复");
+
+    const snapshotAfterFix = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const fixedBug = snapshotAfterFix.json().bugs.find((item: { id: string }) => item.id === bug.id);
+    expect(fixedBug.status).toBe("fixed");
+
+    await app.close();
+  });
 });
 
 async function pollRun(app: Awaited<ReturnType<typeof buildServer>>, runId: string) {

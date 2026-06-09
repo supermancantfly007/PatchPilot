@@ -3,6 +3,8 @@ import {
   advanceTimeline,
   completeTimeline,
   createPrd,
+  createBugFixWorkItem,
+  createBugWorkItem,
   createTimeline,
   createWorkItems,
   createInitialClarificationTurn,
@@ -56,5 +58,24 @@ describe("domain helpers", () => {
 
   it("can mark the full timeline complete", () => {
     expect(completeTimeline(createTimeline()).every((step) => step.status === "done")).toBe(true);
+  });
+
+  it("creates separate bug reproduction and fix work items", () => {
+    const base = {
+      bugId: "bug_1",
+      requirementId: "req_bug_1",
+      prdId: "prd_req_bug_1",
+      title: "按钮没有反应",
+      now: "2026-06-09T00:00:00.000Z"
+    };
+    const repro = createBugWorkItem(base);
+    const fix = createBugFixWorkItem(base);
+
+    expect(repro.role).toBe("test");
+    expect(repro.id).toContain("bugrepro");
+    expect(fix.role).toBe("backend");
+    expect(fix.id).toContain("devfix");
+    expect(repro.sourceBugId).toBe(base.bugId);
+    expect(fix.sourceBugId).toBe(base.bugId);
   });
 });

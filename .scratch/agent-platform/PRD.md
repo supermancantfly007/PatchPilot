@@ -130,7 +130,7 @@ MVP 应收敛为单仓库、单项目、一个主要交付闭环：
 - Reviewer agent 输出审查摘要。
 - 人类最终接受或要求返工。
 
-Bug 复现和自动返工闭环进入 MVP：bug 修复类工作项只用短 prompt 点名 `/diagnose`，平台用复现证据、回归测试和质量门确认它真的完成了 Reproduce -> Minimise -> Hypothesise -> Instrument -> Fix -> Regression-test。
+Bug 复现和自动返工闭环进入 MVP：bug 报告先生成测试 agent 复现任务，复现成功后自动生成开发 agent 修复任务。bug 修复相关工作项只用短 prompt 点名 `/diagnose`，平台用复现证据、回归测试和质量门确认它真的完成了 Reproduce -> Minimise -> Hypothesise -> Instrument -> Fix -> Regression-test。
 
 ## 用户故事
 

@@ -11,8 +11,10 @@ import {
   type PatchPilotSnapshot,
   type Requirement,
   type TestRun,
+  type WorkItem,
   advanceTimeline,
   completeTimeline,
+  createBugFixWorkItem,
   createBugPrd,
   createBugRequirement,
   createGrillMeQuestion,
@@ -367,7 +369,7 @@ export class PatchPilotStore {
     if (workItem.sourceBugId) {
       const bug = this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId);
       if (bug) {
-        bug.status = "fixing";
+        bug.status = workItem.role === "test" ? "confirmed" : "fixing";
         bug.updatedAt = now;
       }
     }
@@ -558,26 +560,18 @@ export class PatchPilotStore {
       await this.load();
       const run = this.findRun(runId);
       const workItem = this.findWorkItem(run.workItemId);
-      const tests: TestRun[] = [
-        {
-          id: `test_${randomUUID()}`,
-          status: "passed",
-          command: "npm test --workspaces --if-present",
-          summary: "领域规则和 UI smoke 检查通过",
-          durationMs: 1840
-        }
-      ];
+      const tests: TestRun[] = [this.makeSimulatedTestRun(workItem)];
       run.status = "succeeded";
       run.timeline = completeTimeline(run.timeline);
       run.currentStep = "confirming";
       run.events.push(this.makeEvent("acceptance.waiting", "执行完成，请查看证据摘要并确认"));
       run.result = {
-        summary: "已完成一次从需求确认到执行证据的模拟交付闭环。真实 CodexRunner 可以替换当前模拟 runner。",
+        summary: this.makeSimulatedSummary(workItem),
         previewUrl: "http://localhost:3000",
         riskLevel: "low",
         changedFiles: ["apps/web", "services/api", "packages/domain"],
         tests,
-        reviewerSummary: "变更符合 MVP 普通模式目标：白色底、模板入口、进度展示、完成证据和验收入口齐备。",
+        reviewerSummary: this.makeSimulatedReviewerSummary(workItem),
         runner: "simulated"
       };
       run.costActualUsd = 0.38;
@@ -760,12 +754,85 @@ export class PatchPilotStore {
     agent.lastSeenAt = now;
   }
 
-  private completeBugIfNeeded(workItem: { sourceBugId?: string }, now: string) {
+  private makeSimulatedTestRun(workItem: WorkItem): TestRun {
+    if (workItem.sourceBugId && workItem.role === "test") {
+      return {
+        id: `test_${randomUUID()}`,
+        status: "passed",
+        command: "pnpm test -- --bug-repro",
+        summary: "测试 agent 已根据复现步骤确认问题，并整理回归测试建议",
+        durationMs: 1320
+      };
+    }
+
+    if (workItem.sourceBugId) {
+      return {
+        id: `test_${randomUUID()}`,
+        status: "passed",
+        command: "pnpm test -- --bug-regression",
+        summary: "开发修复后的回归检查通过，bug 不再复现",
+        durationMs: 1760
+      };
+    }
+
+    return {
+      id: `test_${randomUUID()}`,
+      status: "passed",
+      command: "npm test --workspaces --if-present",
+      summary: "领域规则和 UI smoke 检查通过",
+      durationMs: 1840
+    };
+  }
+
+  private makeSimulatedSummary(workItem: WorkItem) {
+    if (workItem.sourceBugId && workItem.role === "test") {
+      return "测试 agent 已复现 bug，记录最小复现路径，并生成开发修复任务。";
+    }
+    if (workItem.sourceBugId) {
+      return "开发 agent 已根据复现证据完成模拟修复，回归检查通过，等待验收。";
+    }
+    return "已完成一次从需求确认到执行证据的模拟交付闭环。真实 CodexRunner 可以替换当前模拟 runner。";
+  }
+
+  private makeSimulatedReviewerSummary(workItem: WorkItem) {
+    if (workItem.sourceBugId && workItem.role === "test") {
+      return "复现证据完整，已把失败现象、期望行为和回归建议交给开发 agent。";
+    }
+    if (workItem.sourceBugId) {
+      return "修复结果覆盖复现路径，回归检查通过，未发现高风险变更。";
+    }
+    return "变更符合 MVP 普通模式目标：白色底、模板入口、进度展示、完成证据和验收入口齐备。";
+  }
+
+  private completeBugIfNeeded(workItem: WorkItem, now: string) {
     if (!workItem.sourceBugId) return;
     const bug = this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId);
     if (!bug) return;
+    if (workItem.role === "test") {
+      bug.status = "confirmed";
+      bug.updatedAt = now;
+      this.ensureBugFixWorkItem(bug, workItem, now);
+      return;
+    }
     bug.status = "fixed";
     bug.updatedAt = now;
+  }
+
+  private ensureBugFixWorkItem(bug: BugReport, sourceWorkItem: WorkItem, now: string) {
+    const existing = this.snapshot.workItems.find(
+      (item) => item.sourceBugId === bug.id && item.role !== "test" && item.status !== "cancelled"
+    );
+    if (existing) return;
+
+    this.snapshot.workItems.unshift(
+      createBugFixWorkItem({
+        bugId: bug.id,
+        requirementId: bug.requirementId,
+        prdId: sourceWorkItem.prdId,
+        title: bug.title,
+        now
+      })
+    );
   }
 }
 

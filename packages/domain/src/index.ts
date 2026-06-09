@@ -654,20 +654,47 @@ export function createBugWorkItem(input: {
   now: string;
 }): WorkItem {
   return {
-    id: `wi_${input.requirementId}_bugfix`,
+    id: `wi_${input.requirementId}_bugrepro`,
     prdId: input.prdId,
-    title: `复现并修复：${input.title}`,
+    title: `复现 bug：${input.title}`,
     status: "ready",
     role: "test",
     sourceBugId: input.bugId,
-    scope: "先由测试 agent 根据复现步骤确认问题，再交给开发 agent 修复并补充回归测试证据。",
+    scope: "测试 agent 根据复现步骤确认问题存在，记录最小复现和回归测试建议，然后交给开发 agent 修复。",
     nonGoals: ["不自动发布", "不修改无关模块", "不访问生产数据"],
     acceptanceCriteria: [
       "复现步骤被记录并给出确认结果",
-      "修复后相关测试通过",
-      "验收页展示风险、测试证据和变更范围"
+      "失败现象、期望行为和实际行为被整理成可执行修复上下文",
+      "生成后续开发修复任务"
     ],
-    testSuggestions: ["用 bug 复现步骤写回归检查", "运行目标测试命令", "在验收页确认测试证据"],
+    testSuggestions: ["用 bug 复现步骤写回归检查", "记录最小复现路径", "给开发 agent 留下回归测试建议"],
+    createdAt: input.now,
+    updatedAt: input.now
+  };
+}
+
+export function createBugFixWorkItem(input: {
+  bugId: string;
+  requirementId: string;
+  prdId: string;
+  title: string;
+  now: string;
+}): WorkItem {
+  return {
+    id: `wi_${input.requirementId}_devfix`,
+    prdId: input.prdId,
+    title: `修复 bug：${input.title}`,
+    status: "ready",
+    role: "backend",
+    sourceBugId: input.bugId,
+    scope: "开发 agent 基于测试 agent 的复现结论修复问题，补充或更新回归测试，并保留修复证据。",
+    nonGoals: ["不自动发布", "不修改无关模块", "不访问生产数据"],
+    acceptanceCriteria: [
+      "复现问题被修复并保留原有正常流程",
+      "相关回归测试通过",
+      "验收页展示修复摘要、测试证据和风险"
+    ],
+    testSuggestions: ["先运行复现/回归测试", "修复后运行目标测试命令", "确认 bug 不再复现"],
     createdAt: input.now,
     updatedAt: input.now
   };

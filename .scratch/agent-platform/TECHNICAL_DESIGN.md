@@ -188,6 +188,8 @@ CodexRunner prompt 应保持短，给 AI 充分发挥空间。平台只注入任
 - Bug 修复类 WorkItem：只提示“使用 `/diagnose`”。
 - 不把 skill 全文或长流程说明塞进 prompt。完整规则由任务文件、AGENTS.md、测试建议和质量门承载。
 
+Bug 工作流在 MVP 中分两段执行：`test` agent 先领取复现任务，成功后 Workflow/Store 生成 `backend` 修复任务；开发修复任务完成并通过回归检查后，Bug 状态才从 `confirmed/fixing` 进入 `fixed`。
+
 ```ts
 interface CodexRunner {
   start(input: CodexRunInput): Promise<CodexRunHandle>;

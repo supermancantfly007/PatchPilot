@@ -18,6 +18,7 @@
     "dev:reset": "node scripts/reset-dev-data.mjs",
     "e2e:smoke": "node scripts/e2e-smoke.mjs",
     "e2e:team": "node scripts/e2e-team-worker.mjs",
+    "e2e:bug": "node scripts/e2e-bug-worker.mjs",
     "build": "pnpm -r --if-present build",
     "test": "pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck",
