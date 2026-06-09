@@ -24,10 +24,18 @@ const completed = await poll(async () => {
   const snapshot = await requestJson("/api/snapshot");
   const workItems = snapshot.workItems.filter((item) => item.prdId === prd.id);
   const runs = snapshot.agentRuns.filter((run) => run.prdId === prd.id);
+  const workspaceRuns = snapshot.workspaceRuns.filter((workspace) => workspace.prdId === prd.id);
+  const testRuns = snapshot.testRuns.filter((test) => test.prdId === prd.id);
+  const auditEvents = snapshot.auditEvents.filter((event) => event.prdId === prd.id);
   if (runs.length < expectedRoles.length) return undefined;
   if (!runs.every((run) => run.status === "succeeded")) return undefined;
   if (!workItems.every((item) => item.status === "review")) return undefined;
-  return { runs, workItems };
+  if (workspaceRuns.length < expectedRoles.length) return undefined;
+  if (!workspaceRuns.every((workspace) => workspace.status === "archived")) return undefined;
+  if (testRuns.length < expectedRoles.length) return undefined;
+  if (!testRuns.every((test) => test.status === "passed")) return undefined;
+  if (!auditEvents.some((event) => event.action === "agent_run.succeeded")) return undefined;
+  return { runs, workItems, workspaceRuns, testRuns, auditEvents };
 }, 15000);
 
 assertEqual(completed.runs.length, expectedRoles.length, "worker should start one run per team work item");
@@ -36,6 +44,8 @@ assertEqual(
   JSON.stringify([...expectedRoles].sort()),
   "completed work item roles should match team roles"
 );
+assertEqual(completed.workspaceRuns.length, expectedRoles.length, "worker should archive workspace evidence per run");
+assertEqual(completed.testRuns.length, expectedRoles.length, "worker should record test evidence per run");
 
 console.log("PatchPilot team worker E2E passed");
 

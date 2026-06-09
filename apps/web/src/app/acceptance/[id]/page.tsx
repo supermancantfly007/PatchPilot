@@ -170,6 +170,17 @@ export default function AcceptancePage() {
   }
 
   const result = run.result;
+  const visibleTestRuns = isTeamAcceptance
+    ? (snapshot?.testRuns.filter((test) => test.prdId === run.prdId) ?? result?.tests ?? [])
+    : (snapshot?.testRuns.filter((test) => test.runId === run.id) ?? result?.tests ?? []);
+  const visibleWorkspaceRuns = isTeamAcceptance
+    ? (snapshot?.workspaceRuns.filter((workspace) => workspace.prdId === run.prdId) ?? [])
+    : (snapshot?.workspaceRuns.filter((workspace) => workspace.runId === run.id) ?? []);
+  const visibleAuditEvents = (
+    isTeamAcceptance
+      ? (snapshot?.auditEvents.filter((event) => event.prdId === run.prdId) ?? [])
+      : (snapshot?.auditEvents.filter((event) => event.runId === run.id) ?? [])
+  ).slice(0, 6);
 
   return (
     <AppShell>
@@ -251,7 +262,13 @@ export default function AcceptancePage() {
                 <div className="metric">
                   <TestTube2 size={18} />
                   <span className="muted">测试结果</span>
-                  <strong>{result?.tests.every((test) => test.status === "passed") ? "通过" : "需处理"}</strong>
+                  <strong>
+                    {visibleTestRuns.length > 0
+                      ? visibleTestRuns.every((test) => test.status === "passed")
+                        ? "通过"
+                        : "需处理"
+                      : "暂无"}
+                  </strong>
                 </div>
                 <div className="metric">
                   <ShieldCheck size={18} />
@@ -300,8 +317,8 @@ export default function AcceptancePage() {
               <h3>测试证据</h3>
             </div>
             <div className="card-body event-list">
-              {result?.tests.length ? (
-                result.tests.map((test) => (
+              {visibleTestRuns.length ? (
+                visibleTestRuns.map((test) => (
                   <div className="event" key={test.id}>
                     <strong>{test.command}</strong>
                     <p className="muted" style={{ marginBottom: 0 }}>
@@ -321,7 +338,12 @@ export default function AcceptancePage() {
               <h3>变更范围</h3>
             </div>
             <div className="card-body">
-              {result?.workspacePath ? (
+              {visibleWorkspaceRuns.length > 0 ? (
+                <div className="metric" style={{ marginBottom: 12 }}>
+                  <span className="muted">工作区</span>
+                  <strong>{visibleWorkspaceRuns.length} 个已归档</strong>
+                </div>
+              ) : result?.workspacePath ? (
                 <div className="metric" style={{ marginBottom: 12 }}>
                   <span className="muted">工作区</span>
                   <strong>{result.workspacePath}</strong>
@@ -337,6 +359,28 @@ export default function AcceptancePage() {
                 <p className="muted" style={{ margin: 0 }}>
                   当前结果没有列出变更文件。
                 </p>
+              )}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header">
+              <h3>交付审计</h3>
+              <span className="status-pill">{visibleAuditEvents.length} 条</span>
+            </div>
+            <div className="card-body event-list">
+              {visibleAuditEvents.length > 0 ? (
+                visibleAuditEvents.map((event) => (
+                  <div className="event" key={event.id}>
+                    <strong>{event.action}</strong>
+                    <p className="muted" style={{ marginBottom: 0 }}>
+                      {event.message}
+                    </p>
+                  </div>
+                ))
+              ) : (
+                <StatusNotice title="暂无审计事件" tone="warning">
+                  完成执行和验收后会写入平台审计链路。
+                </StatusNotice>
               )}
             </div>
           </div>

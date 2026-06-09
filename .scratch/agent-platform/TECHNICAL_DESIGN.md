@@ -267,6 +267,8 @@ MVP 支持：
 - 日志摘要。
 - TestRun 入库。
 
+当前 JSON-backed MVP 也会在 `/api/snapshot` 中暴露 `WorkspaceRun`、`TestRun` 和 `AuditEvent`，让 UI、worker E2E 和人工验收都能从同一份证据链路核验执行结果。
+
 ### PR Adapter
 
 MVP 先支持 GitHub：
@@ -571,7 +573,8 @@ acceptance.rejected
 6. Test Runner 执行目标测试。
 7. PR Adapter 创建 Pull Request。
 8. Reviewer agent 生成 review summary。
-9. 通过质量门后等待最终验收。
+9. 平台归档 WorkspaceRun，写入 TestRun 和 AuditEvent。
+10. 通过质量门后等待最终验收。
 
 ### 失败处理
 

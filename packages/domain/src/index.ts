@@ -27,6 +27,8 @@ export type AgentRunStatus =
 
 export type TestRunStatus = "queued" | "running" | "passed" | "failed" | "blocked" | "skipped";
 
+export type WorkspaceRunStatus = "preparing" | "ready" | "active" | "archived" | "failed" | "destroyed";
+
 export type AcceptanceStatus = "pending" | "accepted" | "rejected";
 
 export type TimelineStepKey = "understanding" | "planning" | "developing" | "testing" | "confirming";
@@ -211,10 +213,45 @@ export interface RuntimeConfig {
 
 export interface TestRun {
   id: string;
+  runId?: string;
+  prdId?: string;
+  workItemId?: string;
   status: TestRunStatus;
   command: string;
   summary: string;
   durationMs: number;
+  startedAt?: string;
+  endedAt?: string;
+}
+
+export interface WorkspaceRun {
+  id: string;
+  runId: string;
+  requirementId: string;
+  prdId: string;
+  workItemId: string;
+  runner: AgentRunnerKind;
+  status: WorkspaceRunStatus;
+  isolation: "simulated" | "git_worktree";
+  path: string;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt?: string;
+}
+
+export interface AuditEvent {
+  id: string;
+  traceId: string;
+  actor: string;
+  action: string;
+  targetType: "requirement" | "prd" | "work_item" | "agent_run" | "workspace_run" | "test_run" | "bug" | "acceptance";
+  targetId: string;
+  message: string;
+  requirementId?: string;
+  prdId?: string;
+  workItemId?: string;
+  runId?: string;
+  createdAt: string;
 }
 
 export interface AcceptanceDecision {
@@ -230,6 +267,9 @@ export interface PatchPilotSnapshot {
   workItems: WorkItem[];
   interfaceContracts: InterfaceContract[];
   agentRuns: AgentRun[];
+  workspaceRuns: WorkspaceRun[];
+  testRuns: TestRun[];
+  auditEvents: AuditEvent[];
   acceptances: AcceptanceDecision[];
   bugs: BugReport[];
   agents: AgentProfile[];
@@ -241,6 +281,9 @@ export const emptySnapshot = (): PatchPilotSnapshot => ({
   workItems: [],
   interfaceContracts: [],
   agentRuns: [],
+  workspaceRuns: [],
+  testRuns: [],
+  auditEvents: [],
   acceptances: [],
   bugs: [],
   agents: createDefaultAgents(new Date().toISOString())

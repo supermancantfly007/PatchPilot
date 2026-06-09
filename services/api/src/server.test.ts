@@ -191,6 +191,25 @@ describe("PatchPilot API", () => {
 
     const completedRuns = await pollPrdRuns(app, prd.id, 4);
     expect(completedRuns.every((run: { status: string }) => run.status === "succeeded")).toBe(true);
+    const evidenceSnapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const prdWorkspaceRuns = evidenceSnapshot
+      .json()
+      .workspaceRuns.filter((workspace: { prdId: string }) => workspace.prdId === prd.id);
+    const prdTestRuns = evidenceSnapshot
+      .json()
+      .testRuns.filter((test: { prdId: string }) => test.prdId === prd.id);
+    const prdAuditActions = evidenceSnapshot
+      .json()
+      .auditEvents.filter((event: { prdId?: string }) => event.prdId === prd.id)
+      .map((event: { action: string }) => event.action);
+    expect(prdWorkspaceRuns).toHaveLength(4);
+    expect(prdWorkspaceRuns.every((workspace: { status: string }) => workspace.status === "archived")).toBe(true);
+    expect(prdTestRuns).toHaveLength(4);
+    expect(prdTestRuns.every((test: { status: string }) => test.status === "passed")).toBe(true);
+    expect(prdAuditActions).toContain("prd.approved");
+    expect(prdAuditActions).toContain("work_item.started");
+    expect(prdAuditActions).toContain("test_run.passed");
+    expect(prdAuditActions).toContain("agent_run.succeeded");
 
     const restartTeam = await app.inject({
       method: "POST",
@@ -360,7 +379,18 @@ describe("PatchPilot API", () => {
 
     const snapshotAfterFix = await app.inject({ method: "GET", url: "/api/snapshot" });
     const fixedBug = snapshotAfterFix.json().bugs.find((item: { id: string }) => item.id === bug.id);
+    const bugTestRuns = snapshotAfterFix
+      .json()
+      .testRuns.filter((test: { prdId: string }) => test.prdId === bug.prdId);
+    const bugAuditActions = snapshotAfterFix
+      .json()
+      .auditEvents.filter((event: { prdId?: string }) => event.prdId === bug.prdId)
+      .map((event: { action: string }) => event.action);
     expect(fixedBug.status).toBe("fixed");
+    expect(bugTestRuns).toHaveLength(2);
+    expect(bugTestRuns.every((test: { status: string }) => test.status === "passed")).toBe(true);
+    expect(bugAuditActions).toContain("bug.reproduced");
+    expect(bugAuditActions).toContain("bug.fixed");
 
     await app.close();
   });

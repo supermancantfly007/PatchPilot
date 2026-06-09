@@ -6,11 +6,13 @@ import {
   type AgentProfile,
   type AgentRun,
   type AgentRunEvent,
+  type AuditEvent,
   type BugReport,
   type BugSeverity,
   type PatchPilotSnapshot,
   type Requirement,
   type TestRun,
+  type WorkspaceRun,
   type WorkItem,
   advanceTimeline,
   completeTimeline,
@@ -206,6 +208,15 @@ export class PatchPilotStore {
       ...interfaceContracts,
       ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prdId)
     ];
+    this.addAuditEvent({
+      actor: "product_agent",
+      action: "prd.approved",
+      targetType: "prd",
+      targetId: prd.id,
+      message: "PRD 已批准，工作项和接口契约已生成。",
+      requirementId: prd.requirementId,
+      prdId: prd.id
+    });
     await this.save();
     return { prd, workItems, interfaceContracts };
   }
@@ -287,6 +298,16 @@ export class PatchPilotStore {
     this.snapshot.workItems.unshift(workItem);
     this.snapshot.interfaceContracts.unshift(...createInterfaceContracts(prd));
     this.snapshot.bugs.unshift(bug);
+    this.addAuditEvent({
+      actor: bug.reporter,
+      action: "bug.reported",
+      targetType: "bug",
+      targetId: bug.id,
+      message: "用户提交 bug，平台已创建测试 agent 复现任务。",
+      requirementId,
+      prdId: prd.id,
+      workItemId: workItem.id
+    });
     await this.save();
     return { bug, requirement, prd, workItem };
   }
@@ -414,6 +435,30 @@ export class PatchPilotStore {
     };
     run.events.push(this.makeEvent("requirement.understood", "已读取需求说明，正在生成执行计划"));
     this.snapshot.agentRuns.unshift(run);
+    const workspaceRun = this.createWorkspaceRun(run, workItem, now);
+    this.snapshot.workspaceRuns.unshift(workspaceRun);
+    this.addAuditEvent({
+      actor: workItem.assignedAgentId || "scheduler",
+      action: "work_item.started",
+      targetType: "work_item",
+      targetId: workItem.id,
+      message: `${workItem.title} 已启动 agent run。`,
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id
+    });
+    this.addAuditEvent({
+      actor: "workspace_manager",
+      action: "workspace_run.created",
+      targetType: "workspace_run",
+      targetId: workspaceRun.id,
+      message: `已创建 ${workspaceRun.isolation === "git_worktree" ? "git worktree" : "模拟"}工作区。`,
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id
+    });
     await this.save();
 
     void this.executeRun(run.id);
@@ -439,6 +484,17 @@ export class PatchPilotStore {
     else this.snapshot.acceptances.unshift(decision);
     workItem.status = status === "accepted" ? "done" : "blocked";
     workItem.updatedAt = now;
+    this.addAuditEvent({
+      actor: "human",
+      action: status === "accepted" ? "acceptance.accepted" : "acceptance.rejected",
+      targetType: "acceptance",
+      targetId: runId,
+      message: status === "accepted" ? "用户接受了 agent run 结果。" : "用户要求修改 agent run 结果。",
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: run.workItemId,
+      runId
+    });
     await this.save();
     return decision;
   }
@@ -481,6 +537,17 @@ export class PatchPilotStore {
       else this.snapshot.acceptances.unshift(decision);
       workItem.status = status === "accepted" ? "done" : "blocked";
       workItem.updatedAt = now;
+      this.addAuditEvent({
+        actor: "human",
+        action: status === "accepted" ? "acceptance.accepted" : "acceptance.rejected",
+        targetType: "acceptance",
+        targetId: run.id,
+        message: status === "accepted" ? "用户接受了团队交付结果。" : "用户要求团队交付返工。",
+        requirementId: run.requirementId,
+        prdId: run.prdId,
+        workItemId,
+        runId: run.id
+      });
       decisions.push(decision);
     }
 
@@ -553,6 +620,7 @@ export class PatchPilotStore {
     completedRun.endedAt = new Date().toISOString();
     completedWorkItem.status = "review";
     completedWorkItem.updatedAt = completedRun.endedAt;
+    this.recordCompletedRunEvidence(completedRun, completedWorkItem, result.tests, completedRun.endedAt);
     this.completeAgentAssignment(completedWorkItem.id, completedRun.endedAt);
     this.completeBugIfNeeded(completedWorkItem, completedRun.endedAt);
     await this.save();
@@ -606,6 +674,7 @@ export class PatchPilotStore {
       run.endedAt = new Date().toISOString();
       workItem.status = "review";
       workItem.updatedAt = run.endedAt;
+      this.recordCompletedRunEvidence(run, workItem, tests, run.endedAt);
       this.completeAgentAssignment(workItem.id, run.endedAt);
       this.completeBugIfNeeded(workItem, run.endedAt);
       await this.save();
@@ -629,6 +698,18 @@ export class PatchPilotStore {
     if (workItem) workItem.status = "blocked";
     if (workItem) {
       workItem.updatedAt = run.endedAt;
+      this.markWorkspaceRun(run.id, "failed", run.endedAt);
+      this.addAuditEvent({
+        actor: "runner",
+        action: "agent_run.failed",
+        targetType: "agent_run",
+        targetId: run.id,
+        message: run.failureSummary || "Agent run 执行失败。",
+        requirementId: run.requirementId,
+        prdId: run.prdId,
+        workItemId: run.workItemId,
+        runId: run.id
+      });
       this.completeAgentAssignment(workItem.id, run.endedAt);
     }
     await this.save();
@@ -714,6 +795,9 @@ export class PatchPilotStore {
     this.snapshot.workItems ||= [];
     this.snapshot.interfaceContracts ||= [];
     this.snapshot.agentRuns ||= [];
+    this.snapshot.workspaceRuns ||= [];
+    this.snapshot.testRuns ||= [];
+    this.snapshot.auditEvents ||= [];
     this.snapshot.acceptances ||= [];
     this.snapshot.bugs ||= [];
     this.snapshot.agents = this.mergeDefaultAgents(this.snapshot.agents || [], now);
@@ -783,6 +867,114 @@ export class PatchPilotStore {
     agent.lastSeenAt = now;
   }
 
+  private createWorkspaceRun(run: AgentRun, workItem: WorkItem, now: string): WorkspaceRun {
+    const workspaceRoot = process.env.PATCHPILOT_WORKSPACE_ROOT || join(process.cwd(), ".patchpilot", "worktrees");
+    return {
+      id: `ws_${run.id}`,
+      runId: run.id,
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runner: run.runner,
+      status: "active",
+      isolation: run.runner === "codex" ? "git_worktree" : "simulated",
+      path: run.runner === "codex" ? join(workspaceRoot, run.id) : `simulated://${run.id}`,
+      createdAt: now,
+      updatedAt: now
+    };
+  }
+
+  private recordCompletedRunEvidence(run: AgentRun, workItem: WorkItem, tests: TestRun[], endedAt: string) {
+    const normalizedTests = tests.map((test) => ({
+      ...test,
+      runId: run.id,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      startedAt: test.startedAt || new Date(new Date(endedAt).getTime() - test.durationMs).toISOString(),
+      endedAt: test.endedAt || endedAt
+    }));
+
+    if (run.result) {
+      run.result.tests = normalizedTests;
+    }
+
+    const testIds = new Set(normalizedTests.map((test) => test.id));
+    this.snapshot.testRuns = [
+      ...normalizedTests,
+      ...this.snapshot.testRuns.filter((test) => !testIds.has(test.id))
+    ];
+    this.markWorkspaceRun(run.id, "archived", endedAt, run.result?.workspacePath);
+
+    for (const test of normalizedTests) {
+      this.addAuditEvent({
+        actor: "test_runner",
+        action: `test_run.${test.status}`,
+        targetType: "test_run",
+        targetId: test.id,
+        message: `${test.command}：${test.summary}`,
+        requirementId: run.requirementId,
+        prdId: run.prdId,
+        workItemId: workItem.id,
+        runId: run.id,
+        createdAt: test.endedAt || endedAt
+      });
+    }
+
+    this.addAuditEvent({
+      actor: "reviewer_agent",
+      action: "agent_run.succeeded",
+      targetType: "agent_run",
+      targetId: run.id,
+      message: "Agent run 已完成测试和审查，等待验收。",
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id,
+      createdAt: endedAt
+    });
+  }
+
+  private markWorkspaceRun(
+    runId: string,
+    status: WorkspaceRun["status"],
+    now: string,
+    path?: string
+  ) {
+    let workspaceRun = this.snapshot.workspaceRuns.find((item) => item.runId === runId);
+    if (!workspaceRun) {
+      const run = this.snapshot.agentRuns.find((item) => item.id === runId);
+      const workItem = run ? this.snapshot.workItems.find((item) => item.id === run.workItemId) : undefined;
+      if (!run || !workItem) return;
+      workspaceRun = this.createWorkspaceRun(run, workItem, now);
+      this.snapshot.workspaceRuns.unshift(workspaceRun);
+    }
+    workspaceRun.status = status;
+    workspaceRun.path = path || workspaceRun.path;
+    workspaceRun.updatedAt = now;
+    if (status === "archived") workspaceRun.archivedAt = now;
+  }
+
+  private addAuditEvent(
+    input: Omit<AuditEvent, "id" | "traceId" | "createdAt"> & {
+      traceId?: string;
+      createdAt?: string;
+    }
+  ) {
+    const { traceId, createdAt, ...event } = input;
+    this.snapshot.auditEvents.unshift({
+      id: `audit_${randomUUID()}`,
+      ...event,
+      traceId: traceId || input.runId || input.prdId || input.requirementId || input.targetId,
+      createdAt: createdAt || new Date().toISOString()
+    });
+  }
+
+  private latestRunForWorkItem(workItemId: string) {
+    return this.snapshot.agentRuns
+      .filter((item) => item.workItemId === workItemId)
+      .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0];
+  }
+
   private makeSimulatedTestRun(workItem: WorkItem): TestRun {
     if (workItem.sourceBugId && workItem.role === "test") {
       return {
@@ -837,14 +1029,39 @@ export class PatchPilotStore {
     if (!workItem.sourceBugId) return;
     const bug = this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId);
     if (!bug) return;
+    const run = this.latestRunForWorkItem(workItem.id);
     if (workItem.role === "test") {
       bug.status = "confirmed";
       bug.updatedAt = now;
       this.ensureBugFixWorkItem(bug, workItem, now);
+      this.addAuditEvent({
+        actor: "test_agent",
+        action: "bug.reproduced",
+        targetType: "bug",
+        targetId: bug.id,
+        message: "测试 agent 已复现 bug，并创建开发修复任务。",
+        requirementId: bug.requirementId,
+        prdId: bug.prdId,
+        workItemId: workItem.id,
+        runId: run?.id,
+        createdAt: now
+      });
       return;
     }
     bug.status = "fixed";
     bug.updatedAt = now;
+    this.addAuditEvent({
+      actor: "backend_agent",
+      action: "bug.fixed",
+      targetType: "bug",
+      targetId: bug.id,
+      message: "开发 agent 已完成 bug 修复并通过回归检查。",
+      requirementId: bug.requirementId,
+      prdId: bug.prdId,
+      workItemId: workItem.id,
+      runId: run?.id,
+      createdAt: now
+    });
   }
 
   private ensureBugFixWorkItem(bug: BugReport, sourceWorkItem: WorkItem, now: string) {

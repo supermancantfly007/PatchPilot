@@ -127,7 +127,7 @@ MVP 应收敛为单仓库、单项目、一个主要交付闭环：
 - 系统生成 HTTP、事件流和共享状态三类接口契约，供前端、后端、测试和运维 agent 并行开发前对齐。
 - Codex worker 执行一个工作项，创建独立 worktree、分支和 Pull Request。功能开发类工作项只用短 prompt 点名 `/tdd`，具体约束由任务文件、AGENTS.md 和质量门承载。
 - 执行项目配置的测试命令。
-- 记录 `AgentRun`、`WorkspaceRun`、`TestRun`、`AuditEvent`、成本和失败原因。
+- 记录 `AgentRun`、`WorkspaceRun`、`TestRun`、`AuditEvent`、成本和失败原因；MVP 的 JSON 快照会把这些证据作为一等记录暴露给 UI 和 E2E。
 - Reviewer agent 输出审查摘要。
 - 人类最终接受或要求返工。
 

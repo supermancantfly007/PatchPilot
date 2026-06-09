@@ -195,6 +195,9 @@ export default function RunPage() {
       : run.status === "succeeded";
   const teamTests = teamRuns.flatMap((item) => item.result?.tests ?? []);
   const passedTeamTests = teamTests.filter((test) => test.status === "passed").length;
+  const runTestRuns = snapshot?.testRuns.filter((test) => test.runId === run.id) ?? run.result?.tests ?? [];
+  const runWorkspace = snapshot?.workspaceRuns.find((workspace) => workspace.runId === run.id);
+  const runAuditEvents = (snapshot?.auditEvents.filter((event) => event.runId === run.id) ?? []).slice(0, 5);
 
   return (
     <AppShell>
@@ -364,7 +367,13 @@ export default function RunPage() {
                   </div>
                   <div className="metric">
                     <span className="muted">测试</span>
-                    <strong>{run.result.tests.every((test) => test.status === "passed") ? "通过" : "需处理"}</strong>
+                    <strong>
+                      {runTestRuns.length > 0
+                        ? runTestRuns.every((test) => test.status === "passed")
+                          ? "通过"
+                          : "需处理"
+                        : "暂无"}
+                    </strong>
                   </div>
                   <div className="metric">
                     <span className="muted">成本</span>
@@ -395,6 +404,51 @@ export default function RunPage() {
                   完成测试和审查后，这里会展示改动摘要、测试结果和风险等级。
                 </p>
               )}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <h3>交付证据</h3>
+              <span className="status-pill">{runAuditEvents.length} 条审计</span>
+            </div>
+            <div className="card-body event-list">
+              {runWorkspace ? (
+                <div className="event">
+                  <strong>WorkspaceRun · {runWorkspace.status}</strong>
+                  <p className="muted" style={{ marginBottom: 0 }}>
+                    {runWorkspace.isolation} · {runWorkspace.path}
+                  </p>
+                </div>
+              ) : (
+                <StatusNotice title="暂无工作区记录" tone="warning">
+                  这个 run 还没有写入 workspace 证据。
+                </StatusNotice>
+              )}
+              {runTestRuns.length > 0 ? (
+                runTestRuns.map((test) => (
+                  <div className="event" key={test.id}>
+                    <strong>TestRun · {test.status}</strong>
+                    <p className="muted" style={{ marginBottom: 0 }}>
+                      {test.command} · {test.durationMs}ms
+                    </p>
+                  </div>
+                ))
+              ) : (
+                <StatusNotice title="暂无测试记录" tone="warning">
+                  测试完成后会在这里显示平台级 TestRun。
+                </StatusNotice>
+              )}
+              {runAuditEvents.length > 0 ? (
+                runAuditEvents.map((event) => (
+                  <div className="event" key={event.id}>
+                    <strong>{event.action}</strong>
+                    <p className="muted" style={{ marginBottom: 0 }}>
+                      {event.message}
+                    </p>
+                  </div>
+                ))
+              ) : null}
             </div>
           </div>
 

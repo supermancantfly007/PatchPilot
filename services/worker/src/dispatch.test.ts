@@ -84,6 +84,9 @@ function snapshot(input: {
     workItems: input.workItems,
     agentRuns: [],
     interfaceContracts: [],
+    workspaceRuns: [],
+    testRuns: [],
+    auditEvents: [],
     acceptances: [],
     bugs: [],
     agents: input.agents
