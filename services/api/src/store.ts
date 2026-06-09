@@ -1,0 +1,299 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import {
+  type AcceptanceDecision,
+  type AgentRun,
+  type AgentRunEvent,
+  type PatchPilotSnapshot,
+  type Prd,
+  type Requirement,
+  type TestRun,
+  type WorkItem,
+  advanceTimeline,
+  completeTimeline,
+  createPrd,
+  createTimeline,
+  createWorkItems,
+  emptySnapshot,
+  generateClarificationQuestions,
+  makeSimpleSummary
+} from "@patchpilot/domain";
+
+const dataFile = join(process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"), "patchpilot-store.json");
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export class PatchPilotStore {
+  private snapshot: PatchPilotSnapshot = emptySnapshot();
+  private loaded = false;
+
+  async load() {
+    if (this.loaded) return;
+    try {
+      const raw = await readFile(dataFile, "utf8");
+      this.snapshot = JSON.parse(raw) as PatchPilotSnapshot;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new DomainError("STORE_CORRUPT", "Store file could not be read or parsed");
+      }
+      this.snapshot = emptySnapshot();
+      await this.save();
+    }
+    this.loaded = true;
+  }
+
+  async getSnapshot() {
+    await this.load();
+    return structuredClone(this.snapshot);
+  }
+
+  async createRequirement(input: {
+    rawInput: string;
+    template: Requirement["template"];
+  }) {
+    await this.load();
+    const now = new Date().toISOString();
+    const id = `req_${randomUUID()}`;
+    const requirement: Requirement = {
+      id,
+      title: makeSimpleSummary(input.rawInput, input.template),
+      rawInput: input.rawInput,
+      template: input.template,
+      status: "clarifying",
+      simpleSummary: makeSimpleSummary(input.rawInput, input.template),
+      clarificationQuestions: generateClarificationQuestions(input.rawInput, input.template),
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.snapshot.requirements.unshift(requirement);
+    await this.save();
+    return requirement;
+  }
+
+  async answerClarification(requirementId: string, answers: Record<string, string>) {
+    await this.load();
+    const requirement = this.findRequirement(requirementId);
+    if (!["clarifying", "prd_draft"].includes(requirement.status)) {
+      throw new DomainError("INVALID_STATE", "Requirement is not waiting for clarification");
+    }
+    requirement.clarificationQuestions = requirement.clarificationQuestions.map((question) => ({
+      ...question,
+      answer: answers[question.id] || question.recommendedAnswer
+    }));
+    requirement.status = "prd_draft";
+    requirement.updatedAt = new Date().toISOString();
+
+    const prd = createPrd(requirement);
+    this.snapshot.prds = this.snapshot.prds.filter((item) => item.requirementId !== requirementId);
+    this.snapshot.prds.unshift(prd);
+    await this.save();
+    return { requirement, prd };
+  }
+
+  async approvePrd(prdId: string) {
+    await this.load();
+    const prd = this.findPrd(prdId);
+    if (prd.status === "approved") {
+      const existingWorkItems = this.snapshot.workItems.filter((item) => item.prdId === prdId);
+      return { prd, workItems: existingWorkItems };
+    }
+    prd.status = "approved";
+    prd.approvedAt = new Date().toISOString();
+
+    const requirement = this.findRequirement(prd.requirementId);
+    requirement.status = "approved";
+    requirement.updatedAt = new Date().toISOString();
+
+    const workItems = createWorkItems(prd);
+    this.snapshot.workItems = [
+      ...workItems,
+      ...this.snapshot.workItems.filter((item) => item.prdId !== prdId)
+    ];
+    await this.save();
+    return { prd, workItems };
+  }
+
+  async startRun(workItemId: string) {
+    await this.load();
+    const workItem = this.findWorkItem(workItemId);
+    if (workItem.status !== "ready") {
+      throw new DomainError("INVALID_STATE", "Work item is not ready to start");
+    }
+    const prd = this.findPrd(workItem.prdId);
+    const now = new Date().toISOString();
+    workItem.status = "running";
+
+    const run: AgentRun = {
+      id: `run_${randomUUID()}`,
+      requirementId: prd.requirementId,
+      prdId: prd.id,
+      workItemId,
+      status: "running",
+      currentStep: "understanding",
+      timeline: createTimeline(),
+      events: [],
+      costEstimateUsd: 0.42,
+      startedAt: now
+    };
+    run.events.push(this.makeEvent("requirement.understood", "已读取需求说明，正在生成执行计划"));
+    this.snapshot.agentRuns.unshift(run);
+    await this.save();
+
+    void this.simulateRun(run.id);
+    return run;
+  }
+
+  async acceptRun(runId: string, status: AcceptanceDecision["status"], reason?: string) {
+    await this.load();
+    const run = this.findRun(runId);
+    if (run.status !== "succeeded") {
+      throw new DomainError("INVALID_STATE", "Run is not ready for acceptance");
+    }
+    const existing = this.snapshot.acceptances.find((item) => item.runId === runId);
+    const decision: AcceptanceDecision = {
+      runId,
+      status,
+      reason,
+      decidedAt: new Date().toISOString()
+    };
+    if (existing) Object.assign(existing, decision);
+    else this.snapshot.acceptances.unshift(decision);
+    await this.save();
+    return decision;
+  }
+
+  async getRun(runId: string) {
+    await this.load();
+    return this.findRun(runId);
+  }
+
+  async getRequirementBundle(requirementId: string) {
+    await this.load();
+    const requirement = this.findRequirement(requirementId);
+    const prd = this.snapshot.prds.find((item) => item.requirementId === requirementId);
+    const workItems = prd ? this.snapshot.workItems.filter((item) => item.prdId === prd.id) : [];
+    return { requirement, prd, workItems };
+  }
+
+  private async simulateRun(runId: string) {
+    const steps: Array<{
+      step: AgentRun["currentStep"];
+      type: AgentRunEvent["type"];
+      message: string;
+      wait: number;
+    }> = [
+      { step: "planning", type: "plan.created", message: "已生成垂直任务计划和验收清单", wait: 900 },
+      { step: "developing", type: "workspace.created", message: "已创建隔离 worktree，并开始模拟代码变更", wait: 1100 },
+      { step: "developing", type: "agent.progress", message: "Agent 已完成主要实现并整理变更摘要", wait: 1100 },
+      { step: "testing", type: "test.started", message: "正在运行目标测试和质量门检查", wait: 1000 },
+      { step: "testing", type: "test.passed", message: "目标测试通过，未发现高风险问题", wait: 900 },
+      { step: "confirming", type: "review.completed", message: "Reviewer agent 已完成审查摘要，等待你确认", wait: 800 }
+    ];
+
+    try {
+      for (const item of steps) {
+        await delay(item.wait);
+        await this.load();
+        const run = this.snapshot.agentRuns.find((candidate) => candidate.id === runId);
+        if (!run || run.status !== "running") return;
+        run.currentStep = item.step;
+        run.timeline = advanceTimeline(run.timeline, item.step);
+        run.events.push(this.makeEvent(item.type, item.message));
+        await this.save();
+      }
+
+      await this.load();
+      const run = this.findRun(runId);
+      const workItem = this.findWorkItem(run.workItemId);
+      const tests: TestRun[] = [
+        {
+          id: `test_${randomUUID()}`,
+          status: "passed",
+          command: "npm test --workspaces --if-present",
+          summary: "领域规则和 UI smoke 检查通过",
+          durationMs: 1840
+        }
+      ];
+      run.status = "succeeded";
+      run.timeline = completeTimeline(run.timeline);
+      run.currentStep = "confirming";
+      run.events.push(this.makeEvent("acceptance.waiting", "执行完成，请查看证据摘要并确认"));
+      run.result = {
+        summary: "已完成一次从需求确认到执行证据的模拟交付闭环。真实 CodexRunner 可以替换当前模拟 runner。",
+        previewUrl: "http://localhost:3000",
+        riskLevel: "low",
+        changedFiles: ["apps/web", "services/api", "packages/domain"],
+        tests,
+        reviewerSummary: "变更符合 MVP 普通模式目标：白色底、模板入口、进度展示、完成证据和验收入口齐备。"
+      };
+      run.costActualUsd = 0.38;
+      run.endedAt = new Date().toISOString();
+      workItem.status = "review";
+      await this.save();
+    } catch (error) {
+      await this.markRunFailed(runId, error);
+    }
+  }
+
+  private async markRunFailed(runId: string, error: unknown) {
+    await this.load();
+    const run = this.snapshot.agentRuns.find((item) => item.id === runId);
+    if (!run) return;
+    run.status = "failed";
+    run.failureSummary = error instanceof Error ? error.message : String(error);
+    run.events.push(this.makeEvent("run.failed", "执行失败，已生成失败摘要"));
+    run.endedAt = new Date().toISOString();
+    await this.save();
+  }
+
+  private findRequirement(id: string) {
+    const requirement = this.snapshot.requirements.find((item) => item.id === id);
+    if (!requirement) throw new DomainError("NOT_FOUND", `Requirement not found: ${id}`);
+    return requirement;
+  }
+
+  private findPrd(id: string) {
+    const prd = this.snapshot.prds.find((item) => item.id === id);
+    if (!prd) throw new DomainError("NOT_FOUND", `PRD not found: ${id}`);
+    return prd;
+  }
+
+  private findWorkItem(id: string) {
+    const workItem = this.snapshot.workItems.find((item) => item.id === id);
+    if (!workItem) throw new DomainError("NOT_FOUND", `WorkItem not found: ${id}`);
+    return workItem;
+  }
+
+  private findRun(id: string) {
+    const run = this.snapshot.agentRuns.find((item) => item.id === id);
+    if (!run) throw new DomainError("NOT_FOUND", `AgentRun not found: ${id}`);
+    return run;
+  }
+
+  private makeEvent(type: AgentRunEvent["type"], message: string): AgentRunEvent {
+    return {
+      id: `evt_${randomUUID()}`,
+      at: new Date().toISOString(),
+      type,
+      message
+    };
+  }
+
+  private async save() {
+    await mkdir(dirname(dataFile), { recursive: true });
+    const tempFile = `${dataFile}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(tempFile, JSON.stringify(this.snapshot, null, 2));
+    await rename(tempFile, dataFile);
+  }
+}
+
+export class DomainError extends Error {
+  constructor(
+    public readonly code: "NOT_FOUND" | "INVALID_STATE" | "STORE_CORRUPT",
+    message: string
+  ) {
+    super(message);
+  }
+}

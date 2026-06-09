@@ -1,0 +1,51 @@
+import { describe, expect, it } from "vitest";
+import {
+  advanceTimeline,
+  completeTimeline,
+  createPrd,
+  createTimeline,
+  createWorkItems,
+  generateClarificationQuestions,
+  makeSimpleSummary,
+  type Requirement
+} from "./index";
+
+describe("domain helpers", () => {
+  it("creates no more than three clarification questions", () => {
+    const questions = generateClarificationQuestions("做一个 agent 平台", "feature");
+    expect(questions).toHaveLength(3);
+    expect(questions[0]?.recommendedAnswer).toContain("agent 平台");
+  });
+
+  it("advances the simple timeline in order", () => {
+    const timeline = advanceTimeline(createTimeline(), "testing");
+    expect(timeline.find((step) => step.key === "developing")?.status).toBe("done");
+    expect(timeline.find((step) => step.key === "testing")?.status).toBe("active");
+    expect(timeline.find((step) => step.key === "confirming")?.status).toBe("waiting");
+  });
+
+  it("creates a PRD and one vertical work item", () => {
+    const requirement: Requirement = {
+      id: "req_1",
+      title: "Agent 平台",
+      rawInput: "构建一个可用 agent 平台",
+      template: "feature",
+      status: "prd_draft",
+      simpleSummary: makeSimpleSummary("构建一个可用 agent 平台", "feature"),
+      clarificationQuestions: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const prd = createPrd(requirement);
+    const workItems = createWorkItems(prd);
+
+    expect(prd.bodyMarkdown).toContain("## 如何验收");
+    expect(workItems).toHaveLength(1);
+    expect(workItems[0]?.acceptanceCriteria).toEqual(prd.acceptanceCriteria);
+  });
+
+  it("can mark the full timeline complete", () => {
+    expect(completeTimeline(createTimeline()).every((step) => step.status === "done")).toBe(true);
+  });
+});
