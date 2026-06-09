@@ -12,6 +12,7 @@ import {
   type PatchPilotSnapshot,
   type PullRequestRecord,
   type Requirement,
+  type ReviewRecord,
   type TestRun,
   type WorkspaceRun,
   type WorkItem,
@@ -799,6 +800,7 @@ export class PatchPilotStore {
     this.snapshot.workspaceRuns ||= [];
     this.snapshot.testRuns ||= [];
     this.snapshot.pullRequests ||= [];
+    this.snapshot.reviewRecords ||= [];
     this.snapshot.auditEvents ||= [];
     this.snapshot.acceptances ||= [];
     this.snapshot.bugs ||= [];
@@ -936,6 +938,20 @@ export class PatchPilotStore {
       createdAt: endedAt
     });
 
+    const reviewRecord = this.recordReview(run, workItem, pullRequest, endedAt);
+    this.addAuditEvent({
+      actor: "reviewer_agent",
+      action: "review.approved",
+      targetType: "review_record",
+      targetId: reviewRecord.id,
+      message: "Reviewer agent 已审查 PR、测试证据和风险摘要。",
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id,
+      createdAt: endedAt
+    });
+
     this.addAuditEvent({
       actor: "reviewer_agent",
       action: "agent_run.succeeded",
@@ -981,6 +997,44 @@ export class PatchPilotStore {
     if (existing) Object.assign(existing, pullRequest);
     else this.snapshot.pullRequests.unshift(pullRequest);
     return pullRequest;
+  }
+
+  private recordReview(
+    run: AgentRun,
+    workItem: WorkItem,
+    pullRequest: PullRequestRecord,
+    now: string
+  ): ReviewRecord {
+    const existing = this.snapshot.reviewRecords.find((item) => item.runId === run.id);
+    const tests = run.result?.tests ?? [];
+    const allTestsPassed = tests.length > 0 && tests.every((test) => test.status === "passed");
+    const reviewerSummary = run.result?.reviewerSummary || "Reviewer agent 尚未返回摘要。";
+    const testSummary =
+      tests.length > 0
+        ? tests.map((test) => `${test.status}: ${test.command} (${test.summary})`).join("\n")
+        : "No test evidence recorded.";
+    const reviewRecord: ReviewRecord = {
+      id: existing?.id || `review_${run.id}`,
+      status: allTestsPassed ? "approved" : "changes_requested",
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id,
+      linkedPullRequestId: pullRequest.id,
+      reviewerAgentId: "agent_reviewer",
+      summary: `Reviewer agent 摘要：${reviewerSummary}`,
+      testSummary,
+      riskLevel: run.result?.riskLevel || "medium",
+      findings: allTestsPassed
+        ? ["测试证据通过", "PR 交付记录已生成", "未发现阻断验收的高风险问题"]
+        : ["测试证据不足或存在失败，需要返工"],
+      createdAt: existing?.createdAt || now,
+      updatedAt: now
+    };
+
+    if (existing) Object.assign(existing, reviewRecord);
+    else this.snapshot.reviewRecords.unshift(reviewRecord);
+    return reviewRecord;
   }
 
   private buildPullRequestBody(

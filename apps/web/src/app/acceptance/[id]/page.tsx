@@ -1,6 +1,6 @@
 "use client";
 
-import type { AgentProfile, AgentRun, PatchPilotSnapshot, PullRequestRecord, WorkItem } from "@patchpilot/domain";
+import type { AgentProfile, AgentRun, PatchPilotSnapshot, PullRequestRecord, ReviewRecord, WorkItem } from "@patchpilot/domain";
 import { CheckCircle2, FileCode2, GitPullRequest, ShieldCheck, TestTube2, XCircle } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -71,6 +71,21 @@ function pullRequestTone(status: PullRequestRecord["status"]) {
   if (["ready_for_review", "approved", "merged"].includes(status)) return "green";
   if (status === "changes_requested" || status === "closed") return "red";
   return "amber";
+}
+
+function reviewStatusLabel(status: ReviewRecord["status"]) {
+  const labels: Record<ReviewRecord["status"], string> = {
+    approved: "已批准",
+    changes_requested: "需修改",
+    blocked: "已阻塞"
+  };
+  return labels[status];
+}
+
+function reviewTone(status: ReviewRecord["status"]) {
+  if (status === "approved") return "green";
+  if (status === "changes_requested") return "amber";
+  return "red";
 }
 
 function latestRunByWorkItem(runs: AgentRun[]) {
@@ -197,6 +212,9 @@ export default function AcceptancePage() {
   const visiblePullRequests = isTeamAcceptance
     ? (snapshot?.pullRequests.filter((pullRequest) => pullRequest.prdId === run.prdId) ?? [])
     : (snapshot?.pullRequests.filter((pullRequest) => pullRequest.runId === run.id) ?? []);
+  const visibleReviewRecords = isTeamAcceptance
+    ? (snapshot?.reviewRecords.filter((review) => review.prdId === run.prdId) ?? [])
+    : (snapshot?.reviewRecords.filter((review) => review.runId === run.id) ?? []);
   const visibleAuditEvents = (
     isTeamAcceptance
       ? (snapshot?.auditEvents.filter((event) => event.prdId === run.prdId) ?? [])
@@ -301,6 +319,11 @@ export default function AcceptancePage() {
                   <span className="muted">PR 交付</span>
                   <strong>{visiblePullRequests.length} 个</strong>
                 </div>
+                <div className="metric">
+                  <ShieldCheck size={18} />
+                  <span className="muted">审查记录</span>
+                  <strong>{visibleReviewRecords.length} 条</strong>
+                </div>
               </div>
               <div className="question-card" style={{ background: "white" }}>
                 <strong>Reviewer agent 摘要</strong>
@@ -355,6 +378,34 @@ export default function AcceptancePage() {
               ) : (
                 <StatusNotice title="暂无测试证据" tone="warning">
                   当前结果没有返回测试记录，接受前应由主线程确认 runner 输出。
+                </StatusNotice>
+              )}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header">
+              <h3>审查证据</h3>
+              <span className="status-pill">{visibleReviewRecords.length} 条</span>
+            </div>
+            <div className="card-body event-list">
+              {visibleReviewRecords.length > 0 ? (
+                visibleReviewRecords.map((review) => (
+                  <div className="event" key={review.id}>
+                    <strong>
+                      <ShieldCheck size={16} />
+                      ReviewRecord · {reviewStatusLabel(review.status)}
+                    </strong>
+                    <p className="muted" style={{ marginBottom: 0 }}>
+                      {review.summary}
+                    </p>
+                    <span className={`status-pill ${reviewTone(review.status)}`} style={{ marginTop: 10 }}>
+                      {review.findings.length} 条发现
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <StatusNotice title="暂无审查记录" tone="warning">
+                  验收前应看到每个完成 agent run 的 ReviewRecord。
                 </StatusNotice>
               )}
             </div>

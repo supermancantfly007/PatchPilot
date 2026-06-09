@@ -31,6 +31,8 @@ export type WorkspaceRunStatus = "preparing" | "ready" | "active" | "archived" |
 
 export type PullRequestStatus = "draft" | "ready_for_review" | "changes_requested" | "approved" | "merged" | "closed";
 
+export type ReviewStatus = "approved" | "changes_requested" | "blocked";
+
 export type AcceptanceStatus = "pending" | "accepted" | "rejected";
 
 export type TimelineStepKey = "understanding" | "planning" | "developing" | "testing" | "confirming";
@@ -254,6 +256,7 @@ export interface AuditEvent {
     | "workspace_run"
     | "test_run"
     | "pull_request"
+    | "review_record"
     | "bug"
     | "acceptance";
   targetId: string;
@@ -284,6 +287,23 @@ export interface PullRequestRecord {
   updatedAt: string;
 }
 
+export interface ReviewRecord {
+  id: string;
+  status: ReviewStatus;
+  requirementId: string;
+  prdId: string;
+  workItemId: string;
+  runId: string;
+  linkedPullRequestId: string;
+  reviewerAgentId: string;
+  summary: string;
+  testSummary: string;
+  riskLevel: AgentRunResult["riskLevel"];
+  findings: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AcceptanceDecision {
   runId: string;
   status: AcceptanceStatus;
@@ -300,6 +320,7 @@ export interface PatchPilotSnapshot {
   workspaceRuns: WorkspaceRun[];
   testRuns: TestRun[];
   pullRequests: PullRequestRecord[];
+  reviewRecords: ReviewRecord[];
   auditEvents: AuditEvent[];
   acceptances: AcceptanceDecision[];
   bugs: BugReport[];
@@ -315,6 +336,7 @@ export const emptySnapshot = (): PatchPilotSnapshot => ({
   workspaceRuns: [],
   testRuns: [],
   pullRequests: [],
+  reviewRecords: [],
   auditEvents: [],
   acceptances: [],
   bugs: [],

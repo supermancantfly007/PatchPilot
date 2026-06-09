@@ -27,6 +27,7 @@ const completed = await poll(async () => {
   const workspaceRuns = snapshot.workspaceRuns.filter((workspace) => workspace.prdId === prd.id);
   const testRuns = snapshot.testRuns.filter((test) => test.prdId === prd.id);
   const pullRequests = snapshot.pullRequests.filter((pullRequest) => pullRequest.prdId === prd.id);
+  const reviewRecords = snapshot.reviewRecords.filter((review) => review.prdId === prd.id);
   const auditEvents = snapshot.auditEvents.filter((event) => event.prdId === prd.id);
   if (runs.length < expectedRoles.length) return undefined;
   if (!runs.every((run) => run.status === "succeeded")) return undefined;
@@ -37,9 +38,12 @@ const completed = await poll(async () => {
   if (!testRuns.every((test) => test.status === "passed")) return undefined;
   if (pullRequests.length < expectedRoles.length) return undefined;
   if (!pullRequests.every((pullRequest) => pullRequest.status === "ready_for_review")) return undefined;
+  if (reviewRecords.length < expectedRoles.length) return undefined;
+  if (!reviewRecords.every((review) => review.status === "approved")) return undefined;
   if (!auditEvents.some((event) => event.action === "agent_run.succeeded")) return undefined;
   if (!auditEvents.some((event) => event.action === "pull_request.ready_for_review")) return undefined;
-  return { runs, workItems, workspaceRuns, testRuns, pullRequests, auditEvents };
+  if (!auditEvents.some((event) => event.action === "review.approved")) return undefined;
+  return { runs, workItems, workspaceRuns, testRuns, pullRequests, reviewRecords, auditEvents };
 }, 15000);
 
 assertEqual(completed.runs.length, expectedRoles.length, "worker should start one run per team work item");
@@ -51,6 +55,7 @@ assertEqual(
 assertEqual(completed.workspaceRuns.length, expectedRoles.length, "worker should archive workspace evidence per run");
 assertEqual(completed.testRuns.length, expectedRoles.length, "worker should record test evidence per run");
 assertEqual(completed.pullRequests.length, expectedRoles.length, "worker should create one PR record per run");
+assertEqual(completed.reviewRecords.length, expectedRoles.length, "worker should create one review record per run");
 
 console.log("PatchPilot team worker E2E passed");
 

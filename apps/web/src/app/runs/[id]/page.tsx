@@ -1,7 +1,7 @@
 "use client";
 
-import type { AgentProfile, AgentRun, PatchPilotSnapshot, PullRequestRecord, WorkItem } from "@patchpilot/domain";
-import { AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, GitPullRequest, Loader2 } from "lucide-react";
+import type { AgentProfile, AgentRun, PatchPilotSnapshot, PullRequestRecord, ReviewRecord, WorkItem } from "@patchpilot/domain";
+import { AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, GitPullRequest, Loader2, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -88,6 +88,21 @@ function pullRequestTone(status: PullRequestRecord["status"]) {
   if (["ready_for_review", "approved", "merged"].includes(status)) return "green";
   if (status === "changes_requested" || status === "closed") return "red";
   return "amber";
+}
+
+function reviewStatusLabel(status: ReviewRecord["status"]) {
+  const labels: Record<ReviewRecord["status"], string> = {
+    approved: "已批准",
+    changes_requested: "需修改",
+    blocked: "已阻塞"
+  };
+  return labels[status];
+}
+
+function reviewTone(status: ReviewRecord["status"]) {
+  if (status === "approved") return "green";
+  if (status === "changes_requested") return "amber";
+  return "red";
 }
 
 function orderWorkItems(items: WorkItem[]) {
@@ -216,6 +231,7 @@ export default function RunPage() {
   const runTestRuns = snapshot?.testRuns.filter((test) => test.runId === run.id) ?? run.result?.tests ?? [];
   const runWorkspace = snapshot?.workspaceRuns.find((workspace) => workspace.runId === run.id);
   const runPullRequest = snapshot?.pullRequests.find((pullRequest) => pullRequest.runId === run.id);
+  const runReview = snapshot?.reviewRecords.find((review) => review.runId === run.id);
   const runAuditEvents = (snapshot?.auditEvents.filter((event) => event.runId === run.id) ?? []).slice(0, 5);
 
   return (
@@ -399,6 +415,10 @@ export default function RunPage() {
                     <strong>{runPullRequest ? pullRequestStatusLabel(runPullRequest.status) : "生成中"}</strong>
                   </div>
                   <div className="metric">
+                    <span className="muted">ReviewRecord</span>
+                    <strong>{runReview ? reviewStatusLabel(runReview.status) : "生成中"}</strong>
+                  </div>
+                  <div className="metric">
                     <span className="muted">成本</span>
                     <strong>${run.costActualUsd?.toFixed(2) ?? run.costEstimateUsd.toFixed(2)}</strong>
                   </div>
@@ -464,6 +484,24 @@ export default function RunPage() {
               ) : run.result ? (
                 <StatusNotice title="暂无 PR 记录" tone="warning">
                   完成的 run 应写入 PullRequest 交付记录；请刷新快照或检查后端证据链。
+                </StatusNotice>
+              ) : null}
+              {runReview ? (
+                <div className="event">
+                  <strong>
+                    <ShieldCheck size={16} />
+                    ReviewRecord · {reviewStatusLabel(runReview.status)}
+                  </strong>
+                  <p className="muted" style={{ marginBottom: 0 }}>
+                    {runReview.summary}
+                  </p>
+                  <span className={`status-pill ${reviewTone(runReview.status)}`} style={{ marginTop: 10 }}>
+                    {runReview.findings.length} 条发现
+                  </span>
+                </div>
+              ) : run.result ? (
+                <StatusNotice title="暂无审查记录" tone="warning">
+                  完成的 run 应写入 ReviewRecord，关联 PR、测试和风险摘要。
                 </StatusNotice>
               ) : null}
               {runTestRuns.length > 0 ? (

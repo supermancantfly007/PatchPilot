@@ -201,6 +201,9 @@ describe("PatchPilot API", () => {
     const prdPullRequests = evidenceSnapshot
       .json()
       .pullRequests.filter((pullRequest: { prdId: string }) => pullRequest.prdId === prd.id);
+    const prdReviewRecords = evidenceSnapshot
+      .json()
+      .reviewRecords.filter((review: { prdId: string }) => review.prdId === prd.id);
     const prdAuditActions = evidenceSnapshot
       .json()
       .auditEvents.filter((event: { prdId?: string }) => event.prdId === prd.id)
@@ -217,9 +220,15 @@ describe("PatchPilot API", () => {
     expect(prdPullRequests[0].bodyMarkdown).toContain("## 工作项");
     expect(prdPullRequests[0].bodyMarkdown).toContain("## 测试结果");
     expect(prdPullRequests[0].bodyMarkdown).toContain("## Reviewer Agent 摘要");
+    expect(prdReviewRecords).toHaveLength(4);
+    expect(prdReviewRecords.every((review: { status: string }) => review.status === "approved")).toBe(true);
+    expect(prdReviewRecords[0].summary).toContain("Reviewer agent");
+    expect(prdReviewRecords[0].linkedPullRequestId).toEqual(expect.any(String));
+    expect(prdReviewRecords[0].testSummary).toContain("passed");
     expect(prdAuditActions).toContain("prd.approved");
     expect(prdAuditActions).toContain("work_item.started");
     expect(prdAuditActions).toContain("test_run.passed");
+    expect(prdAuditActions).toContain("review.approved");
     expect(prdAuditActions).toContain("agent_run.succeeded");
     expect(prdAuditActions).toContain("pull_request.ready_for_review");
 

@@ -267,7 +267,18 @@ MVP 支持：
 - 日志摘要。
 - TestRun 入库。
 
-当前 JSON-backed MVP 也会在 `/api/snapshot` 中暴露 `WorkspaceRun`、`TestRun`、`PullRequestRecord` 和 `AuditEvent`，让 UI、worker E2E 和人工验收都能从同一份证据链路核验执行结果。
+当前 JSON-backed MVP 也会在 `/api/snapshot` 中暴露 `WorkspaceRun`、`TestRun`、`PullRequestRecord`、`ReviewRecord` 和 `AuditEvent`，让 UI、worker E2E 和人工验收都能从同一份证据链路核验执行结果。
+
+### Review Evidence
+
+当前可运行 MVP 会为每个成功的 `AgentRun` 生成一个 `ReviewRecord`：
+
+- `status=approved` 表示 reviewer agent 已检查 PR、测试证据和风险摘要。
+- `linkedPullRequestId` 关联本地 PullRequest 交付记录。
+- `testSummary` 保存测试命令和结果摘要。
+- `findings` 保存 reviewer agent 的发现项。
+- 运行页展示当前 run 的 ReviewRecord，验收页按单 run 或 PRD 汇总审查证据。
+- 审计事件写入 `review.approved`。
 
 ### PR Adapter
 
@@ -546,6 +557,7 @@ test_run.started
 test_run.failed
 test_run.passed
 pull_request.created
+review.approved
 approval.requested
 approval.approved
 acceptance.accepted

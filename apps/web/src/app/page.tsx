@@ -171,6 +171,7 @@ export default function HomePage() {
   const requirements = snapshot?.requirements ?? [];
   const workItems = snapshot?.workItems ?? [];
   const agentRuns = snapshot?.agentRuns ?? [];
+  const reviewRecords = snapshot?.reviewRecords ?? [];
   const acceptances = snapshot?.acceptances ?? [];
   const bugs = snapshot?.bugs ?? [];
   const agents = snapshot?.agents ?? [];
@@ -480,10 +481,11 @@ export default function HomePage() {
           <strong>隔离工作区</strong>
         </div>
         <div className="metric">
-          <span className="muted">信任证据</span>
+          <span className="muted">审查证据</span>
           <strong>
-            <ShieldCheck size={20} /> 测试 + 审查
+            <ShieldCheck size={20} /> {reviewRecords.length} 条
           </strong>
+          <small>每次成功交付都会写入 ReviewRecord。</small>
         </div>
       </section>
     </AppShell>
