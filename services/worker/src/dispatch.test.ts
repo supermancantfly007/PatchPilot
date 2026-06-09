@@ -85,6 +85,7 @@ function snapshot(input: {
     agentRuns: [],
     interfaceContracts: [],
     workspaceRuns: [],
+    testCases: [],
     testRuns: [],
     pullRequests: [],
     reviewRecords: [],

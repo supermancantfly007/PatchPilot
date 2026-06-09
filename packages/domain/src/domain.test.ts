@@ -7,6 +7,7 @@ import {
   createBugWorkItem,
   createInterfaceContracts,
   createTimeline,
+  createTestCasesForWorkItems,
   createWorkItems,
   createInitialClarificationTurn,
   generateClarificationQuestions,
@@ -55,6 +56,12 @@ describe("domain helpers", () => {
     expect(workItems).toHaveLength(4);
     expect(workItems.map((item) => item.role)).toEqual(["backend", "frontend", "test", "ops"]);
     expect(workItems.every((item) => item.acceptanceCriteria === prd.acceptanceCriteria)).toBe(true);
+
+    const testCases = createTestCasesForWorkItems(prd, workItems, "2026-06-09T00:00:00.000Z");
+    expect(testCases).toHaveLength(4);
+    expect(testCases[0]?.workItemId).toBe(workItems[0]?.id);
+    expect(testCases.every((testCase) => testCase.status === "ready")).toBe(true);
+    expect(testCases.every((testCase) => testCase.linkedAcceptanceCriteria === prd.acceptanceCriteria)).toBe(true);
   });
 
   it("creates interface contracts for agent collaboration", () => {

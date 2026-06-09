@@ -127,7 +127,7 @@ MVP 应收敛为单仓库、单项目、一个主要交付闭环：
 - 系统生成 HTTP、事件流和共享状态三类接口契约，供前端、后端、测试和运维 agent 并行开发前对齐。
 - Codex worker 执行一个工作项，创建独立 worktree、分支和 Pull Request 交付边界。功能开发类工作项只用短 prompt 点名 `/tdd`，具体约束由任务文件、AGENTS.md 和质量门承载。
 - 执行项目配置的测试命令。
-- 记录 `AgentRun`、`WorkspaceRun`、`TestRun`、`PullRequest`、`ReviewRecord`、`AuditEvent`、成本和失败原因；MVP 的 JSON 快照会把这些证据作为一等记录暴露给 UI 和 E2E。当前可运行 MVP 先生成 `local://pull-requests/...` 本地 PR 记录和 PR body，后续 GitHub Adapter 再负责 push 分支和创建真实 GitHub PR。
+- 记录 `AgentRun`、`WorkspaceRun`、`TestCase`、`TestRun`、`PullRequest`、`ReviewRecord`、`AuditEvent`、成本和失败原因；MVP 的 JSON 快照会把这些证据作为一等记录暴露给 UI 和 E2E。当前可运行 MVP 先生成 `local://pull-requests/...` 本地 PR 记录和 PR body，后续 GitHub Adapter 再负责 push 分支和创建真实 GitHub PR。
 - Reviewer agent 输出审查摘要，并写入关联 PR、测试摘要、风险和发现项的 `ReviewRecord`。
 - 人类最终接受或要求返工。
 
@@ -165,6 +165,7 @@ Bug 复现和自动返工闭环进入 MVP：bug 报告先生成测试 agent 复�
 - 测试失败必须生成可追踪的失败记录，并关联 commit、工作项和 agent run。
 - PR 描述必须包含需求链接、工作项链接、测试结果和 reviewer agent 摘要；当前 MVP 至少以本地 PullRequest 记录形式展示在运行页和验收页。
 - 每个成功的 agent run 必须生成 ReviewRecord，关联 PullRequest、测试摘要、风险等级和 reviewer 发现项。
+- PRD 批准后必须生成可复用 TestCase，并且 TestRun 必须能通过 `testCaseId` 追溯到测试用例和工作项。
 - 预算耗尽、连续失败、危险操作、破坏性契约变更必须进入审批状态。
 - 最终验收必须能明确标记 accepted / rejected，并保留原因。
 - 普通用户无需理解 PRD、worktree、AgentRun 或 Pull Request，也能完成提交、确认、查看进度和验收。

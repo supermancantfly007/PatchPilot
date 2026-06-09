@@ -198,6 +198,9 @@ describe("PatchPilot API", () => {
     const prdTestRuns = evidenceSnapshot
       .json()
       .testRuns.filter((test: { prdId: string }) => test.prdId === prd.id);
+    const prdTestCases = evidenceSnapshot
+      .json()
+      .testCases.filter((testCase: { prdId: string }) => testCase.prdId === prd.id);
     const prdPullRequests = evidenceSnapshot
       .json()
       .pullRequests.filter((pullRequest: { prdId: string }) => pullRequest.prdId === prd.id);
@@ -210,8 +213,14 @@ describe("PatchPilot API", () => {
       .map((event: { action: string }) => event.action);
     expect(prdWorkspaceRuns).toHaveLength(4);
     expect(prdWorkspaceRuns.every((workspace: { status: string }) => workspace.status === "archived")).toBe(true);
+    expect(prdTestCases).toHaveLength(4);
+    expect(prdTestCases.every((testCase: { status: string }) => testCase.status === "ready")).toBe(true);
+    expect(prdTestCases.map((testCase: { workItemId: string }) => testCase.workItemId).sort()).toEqual(
+      startTeam.json().workItems.map((item: { id: string }) => item.id).sort()
+    );
     expect(prdTestRuns).toHaveLength(4);
     expect(prdTestRuns.every((test: { status: string }) => test.status === "passed")).toBe(true);
+    expect(prdTestRuns.every((test: { testCaseId?: string }) => test.testCaseId)).toBe(true);
     expect(prdPullRequests).toHaveLength(4);
     expect(
       prdPullRequests.every((pullRequest: { status: string }) => pullRequest.status === "ready_for_review")

@@ -1,6 +1,14 @@
 "use client";
 
-import type { AgentProfile, AgentRun, PatchPilotSnapshot, PullRequestRecord, ReviewRecord, WorkItem } from "@patchpilot/domain";
+import type {
+  AgentProfile,
+  AgentRun,
+  PatchPilotSnapshot,
+  PullRequestRecord,
+  ReviewRecord,
+  TestCase,
+  WorkItem
+} from "@patchpilot/domain";
 import { CheckCircle2, FileCode2, GitPullRequest, ShieldCheck, TestTube2, XCircle } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -86,6 +94,17 @@ function reviewTone(status: ReviewRecord["status"]) {
   if (status === "approved") return "green";
   if (status === "changes_requested") return "amber";
   return "red";
+}
+
+function testCaseStatusLabel(status: TestCase["status"]) {
+  const labels: Record<TestCase["status"], string> = {
+    draft: "草稿",
+    ready: "待执行",
+    passed: "已通过",
+    failed: "未通过",
+    blocked: "阻塞"
+  };
+  return labels[status];
 }
 
 function latestRunByWorkItem(runs: AgentRun[]) {
@@ -206,6 +225,9 @@ export default function AcceptancePage() {
   const visibleTestRuns = isTeamAcceptance
     ? (snapshot?.testRuns.filter((test) => test.prdId === run.prdId) ?? result?.tests ?? [])
     : (snapshot?.testRuns.filter((test) => test.runId === run.id) ?? result?.tests ?? []);
+  const visibleTestCases = isTeamAcceptance
+    ? (snapshot?.testCases.filter((testCase) => testCase.prdId === run.prdId) ?? [])
+    : (snapshot?.testCases.filter((testCase) => testCase.workItemId === run.workItemId) ?? []);
   const visibleWorkspaceRuns = isTeamAcceptance
     ? (snapshot?.workspaceRuns.filter((workspace) => workspace.prdId === run.prdId) ?? [])
     : (snapshot?.workspaceRuns.filter((workspace) => workspace.runId === run.id) ?? []);
@@ -306,8 +328,13 @@ export default function AcceptancePage() {
                       ? visibleTestRuns.every((test) => test.status === "passed")
                         ? "通过"
                         : "需处理"
-                      : "暂无"}
+                    : "暂无"}
                   </strong>
+                </div>
+                <div className="metric">
+                  <TestTube2 size={18} />
+                  <span className="muted">测试用例</span>
+                  <strong>{visibleTestCases.length} 条</strong>
                 </div>
                 <div className="metric">
                   <ShieldCheck size={18} />
@@ -361,6 +388,28 @@ export default function AcceptancePage() {
         </section>
 
         <aside className="grid">
+          <div className="card">
+            <div className="card-header">
+              <h3>测试用例</h3>
+              <span className="status-pill">{visibleTestCases.length} 条</span>
+            </div>
+            <div className="card-body event-list">
+              {visibleTestCases.length ? (
+                visibleTestCases.map((testCase) => (
+                  <div className="event" key={testCase.id}>
+                    <strong>{testCase.title}</strong>
+                    <p className="muted" style={{ marginBottom: 0 }}>
+                      {testCaseStatusLabel(testCase.status)} · {testCase.steps[0] ?? "按验收标准执行"}
+                    </p>
+                  </div>
+                ))
+              ) : (
+                <StatusNotice title="暂无测试用例" tone="warning">
+                  PRD 批准后应生成可追溯到工作项的测试用例。
+                </StatusNotice>
+              )}
+            </div>
+          </div>
           <div className="card">
             <div className="card-header">
               <h3>测试证据</h3>

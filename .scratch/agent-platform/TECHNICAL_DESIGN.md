@@ -267,7 +267,17 @@ MVP 支持：
 - 日志摘要。
 - TestRun 入库。
 
-当前 JSON-backed MVP 也会在 `/api/snapshot` 中暴露 `WorkspaceRun`、`TestRun`、`PullRequestRecord`、`ReviewRecord` 和 `AuditEvent`，让 UI、worker E2E 和人工验收都能从同一份证据链路核验执行结果。
+当前 JSON-backed MVP 也会在 `/api/snapshot` 中暴露 `WorkspaceRun`、`TestCase`、`TestRun`、`PullRequestRecord`、`ReviewRecord` 和 `AuditEvent`，让 UI、worker E2E 和人工验收都能从同一份证据链路核验执行结果。
+
+### Test Case Management
+
+当前可运行 MVP 会为每个已批准 PRD 的 WorkItem 生成一个 `TestCase`：
+
+- `TestCase.workItemId` 关联后端、前端、测试或运维工作项。
+- `steps` 来自工作项的测试建议，`linkedAcceptanceCriteria` 保留 PRD 验收标准。
+- Bug 复现任务生成复现用例，开发修复任务生成回归用例。
+- `TestRun.testCaseId` 指向实际执行的 TestCase，验收页展示测试用例和测试证据。
+- 运行页和 worker E2E 会同时检查 TestCase、TestRun、ReviewRecord 和 PullRequest 证据链。
 
 ### Review Evidence
 

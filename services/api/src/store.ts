@@ -27,6 +27,7 @@ import {
   createDefaultAgents,
   createInterfaceContracts,
   createPrd,
+  createTestCasesForWorkItems,
   createTimeline,
   createWorkItems,
   emptySnapshot,
@@ -191,7 +192,9 @@ export class PatchPilotStore {
         ];
         await this.save();
       }
-      return { prd, workItems: existingWorkItems, interfaceContracts: existingInterfaceContracts };
+      const existingTestCases = this.ensureTestCasesForWorkItems(prd, existingWorkItems);
+      await this.save();
+      return { prd, workItems: existingWorkItems, interfaceContracts: existingInterfaceContracts, testCases: existingTestCases };
     }
     prd.status = "approved";
     prd.approvedAt = new Date().toISOString();
@@ -202,6 +205,7 @@ export class PatchPilotStore {
 
     const workItems = createWorkItems(prd);
     const interfaceContracts = createInterfaceContracts(prd);
+    const testCases = createTestCasesForWorkItems(prd, workItems);
     this.snapshot.workItems = [
       ...workItems,
       ...this.snapshot.workItems.filter((item) => item.prdId !== prdId)
@@ -210,17 +214,21 @@ export class PatchPilotStore {
       ...interfaceContracts,
       ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prdId)
     ];
+    this.snapshot.testCases = [
+      ...testCases,
+      ...this.snapshot.testCases.filter((item) => item.prdId !== prdId)
+    ];
     this.addAuditEvent({
       actor: "product_agent",
       action: "prd.approved",
       targetType: "prd",
       targetId: prd.id,
-      message: "PRD 已批准，工作项和接口契约已生成。",
+      message: "PRD 已批准，工作项、接口契约和测试用例已生成。",
       requirementId: prd.requirementId,
       prdId: prd.id
     });
     await this.save();
-    return { prd, workItems, interfaceContracts };
+    return { prd, workItems, interfaceContracts, testCases };
   }
 
   async startTeam(prdId: string, runnerOverride?: AgentRun["runner"]) {
@@ -299,6 +307,7 @@ export class PatchPilotStore {
     this.snapshot.prds.unshift(prd);
     this.snapshot.workItems.unshift(workItem);
     this.snapshot.interfaceContracts.unshift(...createInterfaceContracts(prd));
+    this.snapshot.testCases.unshift(...createTestCasesForWorkItems(prd, [workItem], now));
     this.snapshot.bugs.unshift(bug);
     this.addAuditEvent({
       actor: bug.reporter,
@@ -798,6 +807,7 @@ export class PatchPilotStore {
     this.snapshot.interfaceContracts ||= [];
     this.snapshot.agentRuns ||= [];
     this.snapshot.workspaceRuns ||= [];
+    this.snapshot.testCases ||= [];
     this.snapshot.testRuns ||= [];
     this.snapshot.pullRequests ||= [];
     this.snapshot.reviewRecords ||= [];
@@ -889,8 +899,11 @@ export class PatchPilotStore {
   }
 
   private recordCompletedRunEvidence(run: AgentRun, workItem: WorkItem, tests: TestRun[], endedAt: string) {
+    const prd = this.findPrd(run.prdId);
+    const testCase = this.ensureTestCasesForWorkItems(prd, [workItem], endedAt)[0];
     const normalizedTests = tests.map((test) => ({
       ...test,
+      testCaseId: test.testCaseId || testCase?.id,
       runId: run.id,
       prdId: run.prdId,
       workItemId: workItem.id,
@@ -900,6 +913,10 @@ export class PatchPilotStore {
 
     if (run.result) {
       run.result.tests = normalizedTests;
+    }
+    if (testCase) {
+      testCase.lastRunId = run.id;
+      testCase.updatedAt = endedAt;
     }
 
     const testIds = new Set(normalizedTests.map((test) => test.id));
@@ -1204,14 +1221,29 @@ export class PatchPilotStore {
     );
     if (existing) return;
 
-    this.snapshot.workItems.unshift(
-      createBugFixWorkItem({
-        bugId: bug.id,
-        requirementId: bug.requirementId,
-        prdId: sourceWorkItem.prdId,
-        title: bug.title,
-        now
-      })
+    const fixWorkItem = createBugFixWorkItem({
+      bugId: bug.id,
+      requirementId: bug.requirementId,
+      prdId: sourceWorkItem.prdId,
+      title: bug.title,
+      now
+    });
+    this.snapshot.workItems.unshift(fixWorkItem);
+    this.ensureTestCasesForWorkItems(this.findPrd(sourceWorkItem.prdId), [fixWorkItem], now);
+  }
+
+  private ensureTestCasesForWorkItems(prd: PatchPilotSnapshot["prds"][number], workItems: WorkItem[], now = new Date().toISOString()) {
+    const missingWorkItems = workItems.filter(
+      (workItem) => !this.snapshot.testCases.some((testCase) => testCase.workItemId === workItem.id)
+    );
+    if (missingWorkItems.length > 0) {
+      this.snapshot.testCases = [
+        ...createTestCasesForWorkItems(prd, missingWorkItems, now),
+        ...this.snapshot.testCases
+      ];
+    }
+    return this.snapshot.testCases.filter((testCase) =>
+      workItems.some((workItem) => workItem.id === testCase.workItemId)
     );
   }
 }

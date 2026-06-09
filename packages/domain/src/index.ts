@@ -27,6 +27,10 @@ export type AgentRunStatus =
 
 export type TestRunStatus = "queued" | "running" | "passed" | "failed" | "blocked" | "skipped";
 
+export type TestCaseStatus = "draft" | "ready" | "passed" | "failed" | "blocked";
+
+export type TestCaseKind = "acceptance" | "regression" | "contract" | "smoke";
+
 export type WorkspaceRunStatus = "preparing" | "ready" | "active" | "archived" | "failed" | "destroyed";
 
 export type PullRequestStatus = "draft" | "ready_for_review" | "changes_requested" | "approved" | "merged" | "closed";
@@ -217,6 +221,7 @@ export interface RuntimeConfig {
 
 export interface TestRun {
   id: string;
+  testCaseId?: string;
   runId?: string;
   prdId?: string;
   workItemId?: string;
@@ -226,6 +231,24 @@ export interface TestRun {
   durationMs: number;
   startedAt?: string;
   endedAt?: string;
+}
+
+export interface TestCase {
+  id: string;
+  requirementId: string;
+  prdId: string;
+  workItemId: string;
+  sourceBugId?: string;
+  title: string;
+  kind: TestCaseKind;
+  status: TestCaseStatus;
+  priority: "low" | "medium" | "high";
+  steps: string[];
+  expectedResult: string;
+  linkedAcceptanceCriteria: string[];
+  lastRunId?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface WorkspaceRun {
@@ -254,6 +277,7 @@ export interface AuditEvent {
     | "work_item"
     | "agent_run"
     | "workspace_run"
+    | "test_case"
     | "test_run"
     | "pull_request"
     | "review_record"
@@ -318,6 +342,7 @@ export interface PatchPilotSnapshot {
   interfaceContracts: InterfaceContract[];
   agentRuns: AgentRun[];
   workspaceRuns: WorkspaceRun[];
+  testCases: TestCase[];
   testRuns: TestRun[];
   pullRequests: PullRequestRecord[];
   reviewRecords: ReviewRecord[];
@@ -334,6 +359,7 @@ export const emptySnapshot = (): PatchPilotSnapshot => ({
   interfaceContracts: [],
   agentRuns: [],
   workspaceRuns: [],
+  testCases: [],
   testRuns: [],
   pullRequests: [],
   reviewRecords: [],
@@ -684,6 +710,45 @@ export function createWorkItems(prd: Prd): WorkItem[] {
       updatedAt: now
     }
   ];
+}
+
+export function createTestCasesForWorkItems(
+  prd: Prd,
+  workItems: WorkItem[],
+  now = new Date().toISOString()
+): TestCase[] {
+  return workItems.map((workItem) => ({
+    id: `tc_${workItem.id}`,
+    requirementId: prd.requirementId,
+    prdId: prd.id,
+    workItemId: workItem.id,
+    sourceBugId: workItem.sourceBugId,
+    title: testCaseTitle(workItem),
+    kind: testCaseKind(workItem),
+    status: "ready",
+    priority: workItem.sourceBugId ? "high" : "medium",
+    steps:
+      workItem.testSuggestions.length > 0
+        ? workItem.testSuggestions
+        : ["根据工作项范围执行目标验证", "记录测试命令、结果和风险"],
+    expectedResult: workItem.acceptanceCriteria[0] || "工作项验收标准通过，并留下可审查测试证据。",
+    linkedAcceptanceCriteria: workItem.acceptanceCriteria,
+    createdAt: now,
+    updatedAt: now
+  }));
+}
+
+function testCaseTitle(workItem: WorkItem) {
+  if (workItem.sourceBugId && workItem.role === "test") return `复现用例：${workItem.title}`;
+  if (workItem.sourceBugId) return `回归用例：${workItem.title}`;
+  return `验收用例：${workItem.title}`;
+}
+
+function testCaseKind(workItem: WorkItem): TestCaseKind {
+  if (workItem.sourceBugId) return "regression";
+  if (workItem.role === "frontend" || workItem.role === "ops") return "smoke";
+  if (workItem.role === "backend") return "contract";
+  return "acceptance";
 }
 
 export function createInterfaceContracts(

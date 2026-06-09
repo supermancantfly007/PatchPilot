@@ -171,6 +171,7 @@ export default function HomePage() {
   const requirements = snapshot?.requirements ?? [];
   const workItems = snapshot?.workItems ?? [];
   const agentRuns = snapshot?.agentRuns ?? [];
+  const testCases = snapshot?.testCases ?? [];
   const reviewRecords = snapshot?.reviewRecords ?? [];
   const acceptances = snapshot?.acceptances ?? [];
   const bugs = snapshot?.bugs ?? [];
@@ -479,6 +480,11 @@ export default function HomePage() {
         <div className="metric">
           <span className="muted">执行边界</span>
           <strong>隔离工作区</strong>
+        </div>
+        <div className="metric">
+          <span className="muted">测试用例</span>
+          <strong>{testCases.length} 条</strong>
+          <small>PRD 批准后会生成可追溯到工作项的 TestCase。</small>
         </div>
         <div className="metric">
           <span className="muted">审查证据</span>

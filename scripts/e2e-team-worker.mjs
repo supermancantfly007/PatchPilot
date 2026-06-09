@@ -25,6 +25,7 @@ const completed = await poll(async () => {
   const workItems = snapshot.workItems.filter((item) => item.prdId === prd.id);
   const runs = snapshot.agentRuns.filter((run) => run.prdId === prd.id);
   const workspaceRuns = snapshot.workspaceRuns.filter((workspace) => workspace.prdId === prd.id);
+  const testCases = snapshot.testCases.filter((testCase) => testCase.prdId === prd.id);
   const testRuns = snapshot.testRuns.filter((test) => test.prdId === prd.id);
   const pullRequests = snapshot.pullRequests.filter((pullRequest) => pullRequest.prdId === prd.id);
   const reviewRecords = snapshot.reviewRecords.filter((review) => review.prdId === prd.id);
@@ -34,8 +35,11 @@ const completed = await poll(async () => {
   if (!workItems.every((item) => item.status === "review")) return undefined;
   if (workspaceRuns.length < expectedRoles.length) return undefined;
   if (!workspaceRuns.every((workspace) => workspace.status === "archived")) return undefined;
+  if (testCases.length < expectedRoles.length) return undefined;
+  if (!testCases.every((testCase) => testCase.status === "ready")) return undefined;
   if (testRuns.length < expectedRoles.length) return undefined;
   if (!testRuns.every((test) => test.status === "passed")) return undefined;
+  if (!testRuns.every((test) => test.testCaseId)) return undefined;
   if (pullRequests.length < expectedRoles.length) return undefined;
   if (!pullRequests.every((pullRequest) => pullRequest.status === "ready_for_review")) return undefined;
   if (reviewRecords.length < expectedRoles.length) return undefined;
@@ -43,7 +47,7 @@ const completed = await poll(async () => {
   if (!auditEvents.some((event) => event.action === "agent_run.succeeded")) return undefined;
   if (!auditEvents.some((event) => event.action === "pull_request.ready_for_review")) return undefined;
   if (!auditEvents.some((event) => event.action === "review.approved")) return undefined;
-  return { runs, workItems, workspaceRuns, testRuns, pullRequests, reviewRecords, auditEvents };
+  return { runs, workItems, workspaceRuns, testCases, testRuns, pullRequests, reviewRecords, auditEvents };
 }, 15000);
 
 assertEqual(completed.runs.length, expectedRoles.length, "worker should start one run per team work item");
@@ -53,6 +57,7 @@ assertEqual(
   "completed work item roles should match team roles"
 );
 assertEqual(completed.workspaceRuns.length, expectedRoles.length, "worker should archive workspace evidence per run");
+assertEqual(completed.testCases.length, expectedRoles.length, "worker should create one test case per work item");
 assertEqual(completed.testRuns.length, expectedRoles.length, "worker should record test evidence per run");
 assertEqual(completed.pullRequests.length, expectedRoles.length, "worker should create one PR record per run");
 assertEqual(completed.reviewRecords.length, expectedRoles.length, "worker should create one review record per run");

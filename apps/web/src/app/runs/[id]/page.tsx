@@ -1,6 +1,14 @@
 "use client";
 
-import type { AgentProfile, AgentRun, PatchPilotSnapshot, PullRequestRecord, ReviewRecord, WorkItem } from "@patchpilot/domain";
+import type {
+  AgentProfile,
+  AgentRun,
+  PatchPilotSnapshot,
+  PullRequestRecord,
+  ReviewRecord,
+  TestCase,
+  WorkItem
+} from "@patchpilot/domain";
 import { AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, GitPullRequest, Loader2, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -103,6 +111,17 @@ function reviewTone(status: ReviewRecord["status"]) {
   if (status === "approved") return "green";
   if (status === "changes_requested") return "amber";
   return "red";
+}
+
+function testCaseStatusLabel(status: TestCase["status"]) {
+  const labels: Record<TestCase["status"], string> = {
+    draft: "草稿",
+    ready: "待执行",
+    passed: "已通过",
+    failed: "未通过",
+    blocked: "阻塞"
+  };
+  return labels[status];
 }
 
 function orderWorkItems(items: WorkItem[]) {
@@ -228,7 +247,9 @@ export default function RunPage() {
       : run.status === "succeeded";
   const teamTests = teamRuns.flatMap((item) => item.result?.tests ?? []);
   const passedTeamTests = teamTests.filter((test) => test.status === "passed").length;
+  const teamTestCases = snapshot?.testCases.filter((testCase) => testCase.prdId === run.prdId) ?? [];
   const runTestRuns = snapshot?.testRuns.filter((test) => test.runId === run.id) ?? run.result?.tests ?? [];
+  const runTestCases = snapshot?.testCases.filter((testCase) => testCase.workItemId === run.workItemId) ?? [];
   const runWorkspace = snapshot?.workspaceRuns.find((workspace) => workspace.runId === run.id);
   const runPullRequest = snapshot?.pullRequests.find((pullRequest) => pullRequest.runId === run.id);
   const runReview = snapshot?.reviewRecords.find((review) => review.runId === run.id);
@@ -310,6 +331,10 @@ export default function RunPage() {
                   <strong>
                     {passedTeamTests}/{Math.max(teamTests.length, passedTeamTests)}
                   </strong>
+                </div>
+                <div className="metric">
+                  <span className="muted">测试用例</span>
+                  <strong>{teamTestCases.length}</strong>
                 </div>
                 <div className="metric">
                   <span className="muted">需要处理</span>
@@ -502,6 +527,20 @@ export default function RunPage() {
               ) : run.result ? (
                 <StatusNotice title="暂无审查记录" tone="warning">
                   完成的 run 应写入 ReviewRecord，关联 PR、测试和风险摘要。
+                </StatusNotice>
+              ) : null}
+              {runTestCases.length > 0 ? (
+                runTestCases.map((testCase) => (
+                  <div className="event" key={testCase.id}>
+                    <strong>TestCase · {testCaseStatusLabel(testCase.status)}</strong>
+                    <p className="muted" style={{ marginBottom: 0 }}>
+                      {testCase.title} · {testCase.steps[0] ?? "按验收标准执行"}
+                    </p>
+                  </div>
+                ))
+              ) : run.result ? (
+                <StatusNotice title="暂无测试用例" tone="warning">
+                  完成的 run 应关联可复用 TestCase，方便从 PRD 追溯到测试证据。
                 </StatusNotice>
               ) : null}
               {runTestRuns.length > 0 ? (
