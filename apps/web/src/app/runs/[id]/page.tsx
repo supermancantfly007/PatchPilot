@@ -1,7 +1,7 @@
 "use client";
 
-import type { AgentProfile, AgentRun, PatchPilotSnapshot, WorkItem } from "@patchpilot/domain";
-import { AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, Loader2 } from "lucide-react";
+import type { AgentProfile, AgentRun, PatchPilotSnapshot, PullRequestRecord, WorkItem } from "@patchpilot/domain";
+import { AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, GitPullRequest, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -69,6 +69,24 @@ function workItemTone(status: WorkItem["status"]) {
   if (status === "done" || status === "review") return "green";
   if (status === "blocked" || status === "cancelled") return "red";
   if (status === "claimed" || status === "running") return "blue";
+  return "amber";
+}
+
+function pullRequestStatusLabel(status: PullRequestRecord["status"]) {
+  const labels: Record<PullRequestRecord["status"], string> = {
+    draft: "草稿",
+    ready_for_review: "待审查",
+    changes_requested: "需修改",
+    approved: "已批准",
+    merged: "已合并",
+    closed: "已关闭"
+  };
+  return labels[status];
+}
+
+function pullRequestTone(status: PullRequestRecord["status"]) {
+  if (["ready_for_review", "approved", "merged"].includes(status)) return "green";
+  if (status === "changes_requested" || status === "closed") return "red";
   return "amber";
 }
 
@@ -197,6 +215,7 @@ export default function RunPage() {
   const passedTeamTests = teamTests.filter((test) => test.status === "passed").length;
   const runTestRuns = snapshot?.testRuns.filter((test) => test.runId === run.id) ?? run.result?.tests ?? [];
   const runWorkspace = snapshot?.workspaceRuns.find((workspace) => workspace.runId === run.id);
+  const runPullRequest = snapshot?.pullRequests.find((pullRequest) => pullRequest.runId === run.id);
   const runAuditEvents = (snapshot?.auditEvents.filter((event) => event.runId === run.id) ?? []).slice(0, 5);
 
   return (
@@ -376,6 +395,10 @@ export default function RunPage() {
                     </strong>
                   </div>
                   <div className="metric">
+                    <span className="muted">PullRequest</span>
+                    <strong>{runPullRequest ? pullRequestStatusLabel(runPullRequest.status) : "生成中"}</strong>
+                  </div>
+                  <div className="metric">
                     <span className="muted">成本</span>
                     <strong>${run.costActualUsd?.toFixed(2) ?? run.costEstimateUsd.toFixed(2)}</strong>
                   </div>
@@ -425,6 +448,24 @@ export default function RunPage() {
                   这个 run 还没有写入 workspace 证据。
                 </StatusNotice>
               )}
+              {runPullRequest ? (
+                <div className="event">
+                  <strong>
+                    <GitPullRequest size={16} />
+                    PullRequest · {pullRequestStatusLabel(runPullRequest.status)}
+                  </strong>
+                  <p className="muted" style={{ marginBottom: 0 }}>
+                    {`${runPullRequest.branchName} -> ${runPullRequest.baseBranch}`} · {runPullRequest.url}
+                  </p>
+                  <span className={`status-pill ${pullRequestTone(runPullRequest.status)}`} style={{ marginTop: 10 }}>
+                    {runPullRequest.provider}
+                  </span>
+                </div>
+              ) : run.result ? (
+                <StatusNotice title="暂无 PR 记录" tone="warning">
+                  完成的 run 应写入 PullRequest 交付记录；请刷新快照或检查后端证据链。
+                </StatusNotice>
+              ) : null}
               {runTestRuns.length > 0 ? (
                 runTestRuns.map((test) => (
                   <div className="event" key={test.id}>

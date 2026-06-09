@@ -29,6 +29,8 @@ export type TestRunStatus = "queued" | "running" | "passed" | "failed" | "blocke
 
 export type WorkspaceRunStatus = "preparing" | "ready" | "active" | "archived" | "failed" | "destroyed";
 
+export type PullRequestStatus = "draft" | "ready_for_review" | "changes_requested" | "approved" | "merged" | "closed";
+
 export type AcceptanceStatus = "pending" | "accepted" | "rejected";
 
 export type TimelineStepKey = "understanding" | "planning" | "developing" | "testing" | "confirming";
@@ -244,7 +246,16 @@ export interface AuditEvent {
   traceId: string;
   actor: string;
   action: string;
-  targetType: "requirement" | "prd" | "work_item" | "agent_run" | "workspace_run" | "test_run" | "bug" | "acceptance";
+  targetType:
+    | "requirement"
+    | "prd"
+    | "work_item"
+    | "agent_run"
+    | "workspace_run"
+    | "test_run"
+    | "pull_request"
+    | "bug"
+    | "acceptance";
   targetId: string;
   message: string;
   requirementId?: string;
@@ -252,6 +263,25 @@ export interface AuditEvent {
   workItemId?: string;
   runId?: string;
   createdAt: string;
+}
+
+export interface PullRequestRecord {
+  id: string;
+  provider: "local" | "github";
+  status: PullRequestStatus;
+  title: string;
+  requirementId: string;
+  prdId: string;
+  workItemId: string;
+  runId: string;
+  branchName: string;
+  baseBranch: string;
+  url: string;
+  bodyMarkdown: string;
+  reviewerSummary: string;
+  testSummary: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AcceptanceDecision {
@@ -269,6 +299,7 @@ export interface PatchPilotSnapshot {
   agentRuns: AgentRun[];
   workspaceRuns: WorkspaceRun[];
   testRuns: TestRun[];
+  pullRequests: PullRequestRecord[];
   auditEvents: AuditEvent[];
   acceptances: AcceptanceDecision[];
   bugs: BugReport[];
@@ -283,6 +314,7 @@ export const emptySnapshot = (): PatchPilotSnapshot => ({
   agentRuns: [],
   workspaceRuns: [],
   testRuns: [],
+  pullRequests: [],
   auditEvents: [],
   acceptances: [],
   bugs: [],

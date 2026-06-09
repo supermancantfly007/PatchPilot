@@ -267,11 +267,19 @@ MVP 支持：
 - 日志摘要。
 - TestRun 入库。
 
-当前 JSON-backed MVP 也会在 `/api/snapshot` 中暴露 `WorkspaceRun`、`TestRun` 和 `AuditEvent`，让 UI、worker E2E 和人工验收都能从同一份证据链路核验执行结果。
+当前 JSON-backed MVP 也会在 `/api/snapshot` 中暴露 `WorkspaceRun`、`TestRun`、`PullRequestRecord` 和 `AuditEvent`，让 UI、worker E2E 和人工验收都能从同一份证据链路核验执行结果。
 
 ### PR Adapter
 
-MVP 先支持 GitHub：
+当前可运行 MVP 先支持本地 PullRequest 记录：
+
+- 每个成功的 `AgentRun` 生成一个 `PullRequestRecord`。
+- `provider=local`，`url=local://pull-requests/:runId`。
+- 保存 branch/base/status/bodyMarkdown/testSummary/reviewerSummary。
+- 运行页展示当前 run 的 PR 交付边界。
+- 验收页按单 run 或整个 PRD 汇总 PR 交付记录。
+
+GitHub Adapter 作为下一阶段接入：
 
 - local git branch/commit。
 - push branch。
@@ -727,7 +735,7 @@ PR 可验收条件：
 - Temporal。
 - CodexRunner。
 - Workspace Manager。
-- GitHub PR Adapter。
+- 本地 PullRequest 记录；GitHub PR Adapter 进入下一阶段。
 - TestRun / AgentRun / AuditEvent。
 - SSE 进度流。
 

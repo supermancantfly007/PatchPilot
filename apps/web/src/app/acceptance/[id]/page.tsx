@@ -1,7 +1,7 @@
 "use client";
 
-import type { AgentProfile, AgentRun, PatchPilotSnapshot, WorkItem } from "@patchpilot/domain";
-import { CheckCircle2, FileCode2, ShieldCheck, TestTube2, XCircle } from "lucide-react";
+import type { AgentProfile, AgentRun, PatchPilotSnapshot, PullRequestRecord, WorkItem } from "@patchpilot/domain";
+import { CheckCircle2, FileCode2, GitPullRequest, ShieldCheck, TestTube2, XCircle } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
@@ -52,6 +52,24 @@ function workItemStatusLabel(status: WorkItem["status"]) {
 function workItemStatusTone(status: WorkItem["status"]) {
   if (status === "done") return "green";
   if (status === "blocked" || status === "cancelled") return "red";
+  return "amber";
+}
+
+function pullRequestStatusLabel(status: PullRequestRecord["status"]) {
+  const labels: Record<PullRequestRecord["status"], string> = {
+    draft: "草稿",
+    ready_for_review: "待审查",
+    changes_requested: "需修改",
+    approved: "已批准",
+    merged: "已合并",
+    closed: "已关闭"
+  };
+  return labels[status];
+}
+
+function pullRequestTone(status: PullRequestRecord["status"]) {
+  if (["ready_for_review", "approved", "merged"].includes(status)) return "green";
+  if (status === "changes_requested" || status === "closed") return "red";
   return "amber";
 }
 
@@ -176,6 +194,9 @@ export default function AcceptancePage() {
   const visibleWorkspaceRuns = isTeamAcceptance
     ? (snapshot?.workspaceRuns.filter((workspace) => workspace.prdId === run.prdId) ?? [])
     : (snapshot?.workspaceRuns.filter((workspace) => workspace.runId === run.id) ?? []);
+  const visiblePullRequests = isTeamAcceptance
+    ? (snapshot?.pullRequests.filter((pullRequest) => pullRequest.prdId === run.prdId) ?? [])
+    : (snapshot?.pullRequests.filter((pullRequest) => pullRequest.runId === run.id) ?? []);
   const visibleAuditEvents = (
     isTeamAcceptance
       ? (snapshot?.auditEvents.filter((event) => event.prdId === run.prdId) ?? [])
@@ -275,6 +296,11 @@ export default function AcceptancePage() {
                   <span className="muted">风险等级</span>
                   <strong>{result?.riskLevel === "low" ? "低" : result?.riskLevel ?? "未知"}</strong>
                 </div>
+                <div className="metric">
+                  <GitPullRequest size={18} />
+                  <span className="muted">PR 交付</span>
+                  <strong>{visiblePullRequests.length} 个</strong>
+                </div>
               </div>
               <div className="question-card" style={{ background: "white" }}>
                 <strong>Reviewer agent 摘要</strong>
@@ -329,6 +355,34 @@ export default function AcceptancePage() {
               ) : (
                 <StatusNotice title="暂无测试证据" tone="warning">
                   当前结果没有返回测试记录，接受前应由主线程确认 runner 输出。
+                </StatusNotice>
+              )}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header">
+              <h3>PR 交付</h3>
+              <span className="status-pill">{visiblePullRequests.length} 个</span>
+            </div>
+            <div className="card-body event-list">
+              {visiblePullRequests.length > 0 ? (
+                visiblePullRequests.map((pullRequest) => (
+                  <div className="event" key={pullRequest.id}>
+                    <strong>
+                      <GitPullRequest size={16} />
+                      {pullRequest.title}
+                    </strong>
+                    <p className="muted" style={{ marginBottom: 0 }}>
+                      {`${pullRequest.branchName} -> ${pullRequest.baseBranch}`} · {pullRequest.url}
+                    </p>
+                    <span className={`status-pill ${pullRequestTone(pullRequest.status)}`} style={{ marginTop: 10 }}>
+                      {pullRequestStatusLabel(pullRequest.status)}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <StatusNotice title="暂无 PR 交付记录" tone="warning">
+                  验收前应看到每个完成 agent run 的 PullRequest 记录。
                 </StatusNotice>
               )}
             </div>

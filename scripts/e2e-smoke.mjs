@@ -31,6 +31,7 @@ try {
   await page.getByText(/4\/4 完成/).waitFor({ timeout: 15000 });
   await page.getByRole("heading", { name: "交付证据" }).waitFor();
   await page.getByText("WorkspaceRun").waitFor();
+  await page.getByText(/PullRequest · 待审查/).waitFor();
   await page.getByText("TestRun").waitFor();
   await page.getByRole("button", { name: /查看结果并确认/ }).waitFor({ state: "visible", timeout: 15000 });
   await page.getByRole("button", { name: /查看结果并确认/ }).click();
@@ -39,6 +40,7 @@ try {
   await page.getByText("这次 agent 交付完成了").waitFor();
   await page.getByText(/4\/4 可验收/).waitFor();
   await page.getByRole("heading", { name: "测试证据" }).waitFor();
+  await page.getByRole("heading", { name: "PR 交付" }).waitFor();
   await page.getByRole("heading", { name: "交付审计" }).waitFor();
   await page.getByRole("button", { name: /接受结果/ }).click();
 

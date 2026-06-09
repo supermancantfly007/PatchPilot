@@ -125,9 +125,9 @@ MVP 应收敛为单仓库、单项目、一个主要交付闭环：
 - 系统通过逐轮澄清对话生成简版需求确认和完整 PRD。
 - 系统生成 1-4 个垂直工作项，优先覆盖后端、前端、测试和运维角色。
 - 系统生成 HTTP、事件流和共享状态三类接口契约，供前端、后端、测试和运维 agent 并行开发前对齐。
-- Codex worker 执行一个工作项，创建独立 worktree、分支和 Pull Request。功能开发类工作项只用短 prompt 点名 `/tdd`，具体约束由任务文件、AGENTS.md 和质量门承载。
+- Codex worker 执行一个工作项，创建独立 worktree、分支和 Pull Request 交付边界。功能开发类工作项只用短 prompt 点名 `/tdd`，具体约束由任务文件、AGENTS.md 和质量门承载。
 - 执行项目配置的测试命令。
-- 记录 `AgentRun`、`WorkspaceRun`、`TestRun`、`AuditEvent`、成本和失败原因；MVP 的 JSON 快照会把这些证据作为一等记录暴露给 UI 和 E2E。
+- 记录 `AgentRun`、`WorkspaceRun`、`TestRun`、`PullRequest`、`AuditEvent`、成本和失败原因；MVP 的 JSON 快照会把这些证据作为一等记录暴露给 UI 和 E2E。当前可运行 MVP 先生成 `local://pull-requests/...` 本地 PR 记录和 PR body，后续 GitHub Adapter 再负责 push 分支和创建真实 GitHub PR。
 - Reviewer agent 输出审查摘要。
 - 人类最终接受或要求返工。
 
@@ -163,7 +163,7 @@ Bug 复现和自动返工闭环进入 MVP：bug 报告先生成测试 agent 复�
 - Codex worker 只能在独立 worktree 中修改代码，不能直接改主分支。
 - 每个 agent run 必须记录 prompt、模型、工具调用、diff、测试、日志、成本、状态和失败原因。
 - 测试失败必须生成可追踪的失败记录，并关联 commit、工作项和 agent run。
-- PR 描述必须包含需求链接、工作项链接、测试结果和 reviewer agent 摘要。
+- PR 描述必须包含需求链接、工作项链接、测试结果和 reviewer agent 摘要；当前 MVP 至少以本地 PullRequest 记录形式展示在运行页和验收页。
 - 预算耗尽、连续失败、危险操作、破坏性契约变更必须进入审批状态。
 - 最终验收必须能明确标记 accepted / rejected，并保留原因。
 - 普通用户无需理解 PRD、worktree、AgentRun 或 Pull Request，也能完成提交、确认、查看进度和验收。

@@ -10,6 +10,7 @@ import {
   type BugReport,
   type BugSeverity,
   type PatchPilotSnapshot,
+  type PullRequestRecord,
   type Requirement,
   type TestRun,
   type WorkspaceRun,
@@ -797,6 +798,7 @@ export class PatchPilotStore {
     this.snapshot.agentRuns ||= [];
     this.snapshot.workspaceRuns ||= [];
     this.snapshot.testRuns ||= [];
+    this.snapshot.pullRequests ||= [];
     this.snapshot.auditEvents ||= [];
     this.snapshot.acceptances ||= [];
     this.snapshot.bugs ||= [];
@@ -920,6 +922,20 @@ export class PatchPilotStore {
       });
     }
 
+    const pullRequest = this.recordPullRequest(run, workItem, endedAt);
+    this.addAuditEvent({
+      actor: "pr_adapter",
+      action: "pull_request.ready_for_review",
+      targetType: "pull_request",
+      targetId: pullRequest.id,
+      message: "PR 交付记录已生成，包含需求、工作项、测试和 reviewer 摘要。",
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id,
+      createdAt: endedAt
+    });
+
     this.addAuditEvent({
       actor: "reviewer_agent",
       action: "agent_run.succeeded",
@@ -932,6 +948,70 @@ export class PatchPilotStore {
       runId: run.id,
       createdAt: endedAt
     });
+  }
+
+  private recordPullRequest(run: AgentRun, workItem: WorkItem, now: string): PullRequestRecord {
+    const existing = this.snapshot.pullRequests.find((item) => item.runId === run.id);
+    const result = run.result;
+    const tests = result?.tests ?? [];
+    const testSummary =
+      tests.length > 0
+        ? tests.map((test) => `${test.status}: ${test.command} (${test.durationMs}ms)`).join("\n")
+        : "No test evidence recorded.";
+    const reviewerSummary = result?.reviewerSummary || "Reviewer agent 尚未返回摘要。";
+    const pullRequest: PullRequestRecord = {
+      id: existing?.id || `pr_${run.id}`,
+      provider: "local",
+      status: "ready_for_review",
+      title: `[PatchPilot] ${workItem.title}`,
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id,
+      branchName: existing?.branchName || `patchpilot/${workItem.role}/${run.id.replace(/^run_/, "").slice(0, 8)}`,
+      baseBranch: existing?.baseBranch || "main",
+      url: existing?.url || `local://pull-requests/${run.id}`,
+      bodyMarkdown: this.buildPullRequestBody(run, workItem, testSummary, reviewerSummary),
+      reviewerSummary,
+      testSummary,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now
+    };
+
+    if (existing) Object.assign(existing, pullRequest);
+    else this.snapshot.pullRequests.unshift(pullRequest);
+    return pullRequest;
+  }
+
+  private buildPullRequestBody(
+    run: AgentRun,
+    workItem: WorkItem,
+    testSummary: string,
+    reviewerSummary: string
+  ) {
+    const result = run.result;
+    return [
+      "## 需求",
+      `Requirement: ${run.requirementId}`,
+      `PRD: ${run.prdId}`,
+      "",
+      "## 工作项",
+      `WorkItem: ${workItem.id}`,
+      `Role: ${workItem.role}`,
+      `Scope: ${workItem.scope}`,
+      "",
+      "## 改动摘要",
+      result?.summary || "Agent run completed without a summary.",
+      "",
+      "## 测试结果",
+      testSummary,
+      "",
+      "## 风险",
+      result?.riskLevel || "unknown",
+      "",
+      "## Reviewer Agent 摘要",
+      reviewerSummary
+    ].join("\n");
   }
 
   private markWorkspaceRun(

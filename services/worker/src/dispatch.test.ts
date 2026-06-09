@@ -86,6 +86,7 @@ function snapshot(input: {
     interfaceContracts: [],
     workspaceRuns: [],
     testRuns: [],
+    pullRequests: [],
     auditEvents: [],
     acceptances: [],
     bugs: [],
