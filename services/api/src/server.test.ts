@@ -190,6 +190,15 @@ describe("PatchPilot API", () => {
       completedRuns.map((run: { id: string }) => run.id).sort()
     );
 
+    const teamAcceptance = await app.inject({
+      method: "POST",
+      url: `/api/prds/${prd.id}/acceptance`,
+      payload: { status: "accepted" }
+    });
+    expect(teamAcceptance.statusCode).toBe(200);
+    expect(teamAcceptance.json().decisions).toHaveLength(4);
+    expect(teamAcceptance.json().workItems.every((item: { status: string }) => item.status === "done")).toBe(true);
+
     await app.close();
   });
 

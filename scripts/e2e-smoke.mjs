@@ -25,12 +25,15 @@ try {
 
   await page.waitForURL(/\/runs\/.+/);
   await page.getByText(/PatchPilot 正在推进这次任务/).waitFor();
+  await page.getByText("Agent team 进度").waitFor();
+  await page.getByText(/4\/4 完成/).waitFor({ timeout: 15000 });
   await page.getByRole("button", { name: /查看结果并确认/ }).waitFor({ state: "visible", timeout: 15000 });
   await page.getByRole("button", { name: /查看结果并确认/ }).click();
 
   await page.waitForURL(/\/acceptance\/.+/);
   await page.getByText("这次 agent 交付完成了").waitFor();
-  await page.getByText("测试证据").waitFor();
+  await page.getByText(/4\/4 可验收/).waitFor();
+  await page.getByRole("heading", { name: "测试证据" }).waitFor();
   await page.getByRole("button", { name: /接受结果/ }).click();
 
   await page.waitForURL(baseUrl);

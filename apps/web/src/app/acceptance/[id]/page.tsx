@@ -1,6 +1,6 @@
 "use client";
 
-import type { AgentRun } from "@patchpilot/domain";
+import type { AgentProfile, AgentRun, PatchPilotSnapshot, WorkItem } from "@patchpilot/domain";
 import { CheckCircle2, FileCode2, ShieldCheck, TestTube2, XCircle } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -12,10 +12,63 @@ function runnerLabel(runner: AgentRun["runner"]) {
   return runner === "codex" ? "本地 Codex runner" : "本地 MVP 模拟执行";
 }
 
+const roleOrder: WorkItem["role"][] = ["backend", "frontend", "test", "ops", "reviewer", "product"];
+
+const roleLabels: Record<WorkItem["role"], string> = {
+  product: "产品",
+  frontend: "前端",
+  backend: "后端",
+  test: "测试",
+  ops: "运维",
+  reviewer: "审查"
+};
+
+function runStatusLabel(status: AgentRun["status"]) {
+  const labels: Record<AgentRun["status"], string> = {
+    queued: "排队中",
+    running: "执行中",
+    needs_approval: "等待批准",
+    succeeded: "可验收",
+    failed: "失败",
+    cancelled: "取消"
+  };
+  return labels[status];
+}
+
+function runStatusTone(status: AgentRun["status"]) {
+  if (status === "succeeded") return "green";
+  if (status === "failed" || status === "cancelled") return "red";
+  if (status === "needs_approval") return "amber";
+  return "blue";
+}
+
+function workItemStatusLabel(status: WorkItem["status"]) {
+  if (status === "done") return "已完成";
+  if (status === "blocked") return "需处理";
+  if (status === "cancelled") return "已取消";
+  return "未启动";
+}
+
+function workItemStatusTone(status: WorkItem["status"]) {
+  if (status === "done") return "green";
+  if (status === "blocked" || status === "cancelled") return "red";
+  return "amber";
+}
+
+function latestRunByWorkItem(runs: AgentRun[]) {
+  const byWorkItem = new Map<string, AgentRun>();
+  for (const candidate of runs) {
+    const current = byWorkItem.get(candidate.workItemId);
+    if (!current || candidate.startedAt > current.startedAt) byWorkItem.set(candidate.workItemId, candidate);
+  }
+  return byWorkItem;
+}
+
 export default function AcceptancePage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const [run, setRun] = useState<AgentRun | null>(null);
+  const [snapshot, setSnapshot] = useState<PatchPilotSnapshot | null>(null);
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,6 +80,55 @@ export default function AcceptancePage() {
     });
   }, [id]);
 
+  useEffect(() => {
+    if (!run?.prdId) return;
+
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const nextSnapshot = await api.getSnapshot();
+        if (cancelled) return;
+        setSnapshot(nextSnapshot);
+        const nextRun = nextSnapshot.agentRuns.find((item) => item.id === id);
+        if (nextRun) setRun(nextRun);
+      } catch (nextError) {
+        if (!cancelled) {
+          setError(nextError instanceof Error ? nextError.message : "团队验收状态加载失败。");
+        }
+      }
+    };
+
+    void refresh();
+    const interval = setInterval(() => void refresh(), 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [id, run?.prdId]);
+
+  const teamRuns = run ? (snapshot?.agentRuns.filter((item) => item.prdId === run.prdId) ?? [run]) : [];
+  const teamWorkItems = run
+    ? [...(snapshot?.workItems.filter((item) => item.prdId === run.prdId) ?? [])].sort(
+        (a, b) => roleOrder.indexOf(a.role) - roleOrder.indexOf(b.role)
+      )
+    : [];
+  const runsByWorkItem = latestRunByWorkItem(teamRuns);
+  const agentsById = new Map<string, AgentProfile>((snapshot?.agents ?? []).map((agent) => [agent.id, agent]));
+  const acceptedRunIds = new Set(
+    (snapshot?.acceptances ?? []).filter((item) => item.status === "accepted").map((item) => item.runId)
+  );
+  const isTeamAcceptance = teamWorkItems.length > 1;
+  const allTeamSucceeded =
+    isTeamAcceptance && teamWorkItems.length > 0
+      ? teamWorkItems.every((item) => runsByWorkItem.get(item.id)?.status === "succeeded" || item.status === "done")
+      : run?.status === "succeeded";
+  const targetRunCount = isTeamAcceptance ? teamWorkItems.length : 1;
+  const succeededRunCount = isTeamAcceptance
+    ? teamWorkItems.filter((item) => runsByWorkItem.get(item.id)?.status === "succeeded" || item.status === "done").length
+    : run?.status === "succeeded"
+      ? 1
+      : 0;
+
   async function decide(status: "accepted" | "rejected") {
     if (status === "rejected" && !reason.trim()) {
       setError("要求修改前，请写清楚哪里不对以及期望结果。");
@@ -35,7 +137,11 @@ export default function AcceptancePage() {
     setSaving(true);
     setError(null);
     try {
-      await api.acceptRun(id, status, reason);
+      if (run && isTeamAcceptance) {
+        await api.acceptTeam(run.prdId, status, reason);
+      } else {
+        await api.acceptRun(id, status, reason);
+      }
       router.push("/");
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "验收提交失败。");
@@ -74,15 +180,17 @@ export default function AcceptancePage() {
               <div>
                 <span className="status-pill green">
                   <CheckCircle2 size={14} />
-                  可验收
+                  {isTeamAcceptance ? `${succeededRunCount}/${targetRunCount} 可验收` : "可验收"}
                 </span>
                 <h1 style={{ margin: "12px 0 0", fontSize: 34 }}>这次 agent 交付完成了</h1>
               </div>
             </div>
             <div className="card-body grid">
-              {run.status !== "succeeded" ? (
-                <StatusNotice title="这次执行还不能验收" tone="warning">
-                  当前状态是 {run.status}。只有执行成功后才能接受结果或要求修改。
+              {!allTeamSucceeded ? (
+                <StatusNotice title={isTeamAcceptance ? "团队任务还没全部完成" : "这次执行还不能验收"} tone="warning">
+                  {isTeamAcceptance
+                    ? "请等所有 agent run 都成功后，再一次性接受整组结果。"
+                    : `当前状态是 ${run.status}。只有执行成功后才能接受结果或要求修改。`}
                 </StatusNotice>
               ) : null}
               <StatusNotice
@@ -102,6 +210,38 @@ export default function AcceptancePage() {
                 <strong>改了什么</strong>
                 <p style={{ margin: 0 }}>{result?.summary ?? "已完成执行，暂无摘要。"}</p>
               </div>
+              {isTeamAcceptance ? (
+                <div className="team-run-list">
+                  {teamWorkItems.map((item) => {
+                    const itemRun = runsByWorkItem.get(item.id);
+                    const agent = item.assignedAgentId ? agentsById.get(item.assignedAgentId) : undefined;
+                    const itemAccepted = itemRun ? acceptedRunIds.has(itemRun.id) : false;
+                    const showWorkItemStatus = ["blocked", "cancelled", "done"].includes(item.status) || itemAccepted;
+                    return (
+                      <div className="team-run-row" key={item.id}>
+                        <div>
+                          <span className="agent-role">{roleLabels[item.role]} agent</span>
+                          <strong>{item.title}</strong>
+                          <small>{agent?.name ?? "已由平台调度"} · {itemRun?.result?.tests.length ?? 0} 条测试证据</small>
+                        </div>
+                        <span
+                          className={`status-pill ${
+                            showWorkItemStatus ? workItemStatusTone(item.status) : itemRun ? runStatusTone(itemRun.status) : "amber"
+                          }`}
+                        >
+                          {itemAccepted || item.status === "done"
+                            ? "已完成"
+                            : showWorkItemStatus
+                              ? workItemStatusLabel(item.status)
+                              : itemRun
+                                ? runStatusLabel(itemRun.status)
+                                : "未启动"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
               <div className="evidence-grid">
                 <div className="metric">
                   <FileCode2 size={18} />
@@ -133,7 +273,7 @@ export default function AcceptancePage() {
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                 <button
                   className="button"
-                  disabled={saving || run.status !== "succeeded"}
+                  disabled={saving || !allTeamSucceeded}
                   onClick={() => void decide("accepted")}
                   type="button"
                 >
@@ -142,7 +282,7 @@ export default function AcceptancePage() {
                 </button>
                 <button
                   className="button secondary"
-                  disabled={saving || run.status !== "succeeded"}
+                  disabled={saving || !allTeamSucceeded}
                   onClick={() => void decide("rejected")}
                   type="button"
                 >

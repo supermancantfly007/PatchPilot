@@ -1,6 +1,6 @@
 "use client";
 
-import type { AgentRun } from "@patchpilot/domain";
+import type { AgentProfile, AgentRun, PatchPilotSnapshot, WorkItem } from "@patchpilot/domain";
 import { AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -28,6 +28,10 @@ function runStatusLabel(status: AgentRun["status"]) {
   return labels[status];
 }
 
+function visibleRunStatusLabel(run: AgentRun, accepted: boolean) {
+  return accepted ? "已验收" : runStatusLabel(run.status);
+}
+
 function runStatusTone(status: AgentRun["status"]) {
   if (status === "succeeded") return "green";
   if (status === "failed" || status === "cancelled") return "red";
@@ -39,10 +43,53 @@ function runnerLabel(runner: AgentRun["runner"]) {
   return runner === "codex" ? "本地 Codex runner" : "模拟 runner";
 }
 
+const roleOrder: WorkItem["role"][] = ["backend", "frontend", "test", "ops", "reviewer", "product"];
+
+const roleLabels: Record<WorkItem["role"], string> = {
+  product: "产品",
+  frontend: "前端",
+  backend: "后端",
+  test: "测试",
+  ops: "运维",
+  reviewer: "审查"
+};
+
+const workItemStatusLabels: Record<WorkItem["status"], string> = {
+  proposed: "待拆解",
+  ready: "待领取",
+  claimed: "已领取",
+  running: "执行中",
+  review: "待验收",
+  blocked: "需处理",
+  done: "已完成",
+  cancelled: "已取消"
+};
+
+function workItemTone(status: WorkItem["status"]) {
+  if (status === "done" || status === "review") return "green";
+  if (status === "blocked" || status === "cancelled") return "red";
+  if (status === "claimed" || status === "running") return "blue";
+  return "amber";
+}
+
+function orderWorkItems(items: WorkItem[]) {
+  return [...items].sort((a, b) => roleOrder.indexOf(a.role) - roleOrder.indexOf(b.role));
+}
+
+function latestRunByWorkItem(runs: AgentRun[]) {
+  const byWorkItem = new Map<string, AgentRun>();
+  for (const candidate of runs) {
+    const current = byWorkItem.get(candidate.workItemId);
+    if (!current || candidate.startedAt > current.startedAt) byWorkItem.set(candidate.workItemId, candidate);
+  }
+  return byWorkItem;
+}
+
 export default function RunPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const [run, setRun] = useState<AgentRun | null>(null);
+  const [snapshot, setSnapshot] = useState<PatchPilotSnapshot | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [connection, setConnection] = useState<"connecting" | "live" | "polling" | "closed">("connecting");
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +124,35 @@ export default function RunPage() {
     return () => source.close();
   }, [id]);
 
+  useEffect(() => {
+    if (!run?.prdId) return;
+
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const nextSnapshot = await api.getSnapshot();
+        if (cancelled) return;
+        setSnapshot(nextSnapshot);
+        const nextRun = nextSnapshot.agentRuns.find((item) => item.id === id);
+        if (nextRun) {
+          setRun(nextRun);
+          setLastUpdated(new Date());
+        }
+      } catch (nextError) {
+        if (!cancelled) {
+          setError(nextError instanceof Error ? nextError.message : "无法读取团队状态。");
+        }
+      }
+    };
+
+    void refresh();
+    const interval = setInterval(() => void refresh(), 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [id, run?.prdId]);
+
   if (!run) {
     return (
       <AppShell>
@@ -96,6 +172,30 @@ export default function RunPage() {
     );
   }
 
+  const teamWorkItems = orderWorkItems(snapshot?.workItems.filter((item) => item.prdId === run.prdId) ?? []);
+  const teamRuns = snapshot?.agentRuns.filter((item) => item.prdId === run.prdId) ?? [run];
+  const runsByWorkItem = latestRunByWorkItem(teamRuns);
+  const agentsById = new Map<string, AgentProfile>((snapshot?.agents ?? []).map((agent) => [agent.id, agent]));
+  const acceptedRunIds = new Set(
+    (snapshot?.acceptances ?? []).filter((item) => item.status === "accepted").map((item) => item.runId)
+  );
+  const currentRunAccepted = acceptedRunIds.has(run.id);
+  const totalTeamItems = Math.max(teamWorkItems.length, 1);
+  const finishedTeamItems = teamWorkItems.filter((item) => {
+    const itemRun = runsByWorkItem.get(item.id);
+    return itemRun?.status === "succeeded" || item.status === "done";
+  }).length;
+  const failedTeamItems = teamWorkItems.filter((item) => {
+    const itemRun = runsByWorkItem.get(item.id);
+    return itemRun?.status === "failed" || ["blocked", "cancelled"].includes(item.status);
+  }).length;
+  const allTeamSucceeded =
+    teamWorkItems.length > 1
+      ? teamWorkItems.every((item) => runsByWorkItem.get(item.id)?.status === "succeeded" || item.status === "done")
+      : run.status === "succeeded";
+  const teamTests = teamRuns.flatMap((item) => item.result?.tests ?? []);
+  const passedTeamTests = teamTests.filter((test) => test.status === "passed").length;
+
   return (
     <AppShell>
       <div className="two-col">
@@ -105,7 +205,7 @@ export default function RunPage() {
               <div>
                 <span className={`status-pill ${runStatusTone(run.status)}`}>
                   <Clock size={14} />
-                  {runStatusLabel(run.status)}
+                  {visibleRunStatusLabel(run, currentRunAccepted)}
                 </span>
                 <h1 style={{ margin: "12px 0 0", fontSize: 34 }}>PatchPilot 正在推进这次任务</h1>
                 <p className="muted">
@@ -145,6 +245,81 @@ export default function RunPage() {
                     </span>
                   </div>
                 ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h2>Agent team 进度</h2>
+                <p className="muted" style={{ margin: "4px 0 0" }}>
+                  同一个 PRD 下的后端、前端、测试和运维任务会在这里汇总。
+                </p>
+              </div>
+              <span className={`status-pill ${failedTeamItems > 0 ? "red" : allTeamSucceeded ? "green" : "blue"}`}>
+                {finishedTeamItems}/{totalTeamItems} 完成
+              </span>
+            </div>
+            <div className="card-body grid">
+              <div className="team-summary-grid">
+                <div className="metric">
+                  <span className="muted">团队任务</span>
+                  <strong>{totalTeamItems}</strong>
+                </div>
+                <div className="metric">
+                  <span className="muted">测试通过</span>
+                  <strong>
+                    {passedTeamTests}/{Math.max(teamTests.length, passedTeamTests)}
+                  </strong>
+                </div>
+                <div className="metric">
+                  <span className="muted">需要处理</span>
+                  <strong>{failedTeamItems}</strong>
+                </div>
+              </div>
+              <div className="team-run-list">
+                {teamWorkItems.length > 0 ? (
+                  teamWorkItems.map((item) => {
+                    const itemRun = runsByWorkItem.get(item.id);
+                    const agent = item.assignedAgentId ? agentsById.get(item.assignedAgentId) : undefined;
+                    const itemAccepted = itemRun ? acceptedRunIds.has(itemRun.id) : false;
+                    const showWorkItemStatus = ["blocked", "cancelled", "done"].includes(item.status) || itemAccepted;
+                    return (
+                      <div className="team-run-row" key={item.id}>
+                        <div>
+                          <span className="agent-role">{roleLabels[item.role]} agent</span>
+                          <strong>{item.title}</strong>
+                          <small>{agent?.name ?? "等待调度"} · {itemRun ? runnerLabel(itemRun.runner) : "尚未启动"}</small>
+                        </div>
+                        <div className="team-run-actions">
+                          <span
+                            className={`status-pill ${
+                              showWorkItemStatus ? workItemTone(item.status) : itemRun ? runStatusTone(itemRun.status) : workItemTone(item.status)
+                            }`}
+                          >
+                            {itemAccepted || item.status === "done"
+                              ? "已完成"
+                              : showWorkItemStatus
+                                ? workItemStatusLabels[item.status]
+                              : itemRun
+                                ? runStatusLabel(itemRun.status)
+                                : workItemStatusLabels[item.status]}
+                          </span>
+                          {itemRun ? (
+                            <Link className="text-link" href={`/runs/${itemRun.id}`}>
+                              查看
+                            </Link>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <StatusNotice title="正在读取团队任务" tone="info">
+                    团队快照加载后，会展示每个 agent 的任务和状态。
+                  </StatusNotice>
+                )}
               </div>
             </div>
           </div>
@@ -199,11 +374,11 @@ export default function RunPage() {
                     {run.result.summary}
                   </p>
                   <StatusNotice title="下一步：验收结果" tone="success">
-                    请查看摘要、测试和风险等级。如果不满意，可以在验收页要求修改。
+                    请查看团队摘要、测试和风险等级。如果不满意，可以在验收页要求修改。
                   </StatusNotice>
                   <button
                     className="button"
-                    disabled={run.status !== "succeeded"}
+                    disabled={!allTeamSucceeded}
                     onClick={() => router.push(`/acceptance/${run.id}`)}
                     type="button"
                   >

@@ -187,7 +187,7 @@ PatchPilot 应由以下模块组成：
 
 ## Matt Pocock Skills 嵌入规则
 
-平台应把 Matt Pocock skills 作为流程约束来源，而不是把大量模板塞进 prompt。实际给 Codex 的提示词要尽量短，只点名需要使用的 skill、任务文件和边界。
+平台应把 Matt Pocock skills 作为流程约束来源，而不是把大量模板塞进 prompt。实际给 Codex 的提示词要尽量短，只给任务名、任务文件、必要 skill 和安全边界，让 AI 基于仓库上下文、任务文件、测试和 AGENTS.md 自主完成。
 
 | 流程节点 | 必用 / 推荐 Skill | 平台行为 |
 | --- | --- | --- |

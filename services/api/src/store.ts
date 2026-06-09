@@ -416,6 +416,55 @@ export class PatchPilotStore {
     return decision;
   }
 
+  async acceptPrdRuns(prdId: string, status: AcceptanceDecision["status"], reason?: string) {
+    await this.load();
+    this.findPrd(prdId);
+    const workItems = this.snapshot.workItems.filter((item) => item.prdId === prdId);
+    const runsByWorkItem = new Map<string, AgentRun>();
+    for (const run of this.snapshot.agentRuns.filter((item) => item.prdId === prdId)) {
+      const current = runsByWorkItem.get(run.workItemId);
+      if (!current || run.startedAt > current.startedAt) runsByWorkItem.set(run.workItemId, run);
+    }
+
+    if (workItems.length === 0 || runsByWorkItem.size === 0) {
+      throw new DomainError("INVALID_STATE", "PRD has no runs to accept");
+    }
+
+    const notReady = workItems.filter((item) => {
+      const run = runsByWorkItem.get(item.id);
+      return item.status !== "done" && run?.status !== "succeeded";
+    });
+    if (notReady.length > 0) {
+      throw new DomainError("INVALID_STATE", "Not all team runs are ready for acceptance");
+    }
+
+    const now = new Date().toISOString();
+    const decisions: AcceptanceDecision[] = [];
+    for (const [workItemId, run] of runsByWorkItem) {
+      if (run.status !== "succeeded") continue;
+      const workItem = this.findWorkItem(workItemId);
+      const decision: AcceptanceDecision = {
+        runId: run.id,
+        status,
+        reason,
+        decidedAt: now
+      };
+      const existing = this.snapshot.acceptances.find((item) => item.runId === run.id);
+      if (existing) Object.assign(existing, decision);
+      else this.snapshot.acceptances.unshift(decision);
+      workItem.status = status === "accepted" ? "done" : "blocked";
+      workItem.updatedAt = now;
+      decisions.push(decision);
+    }
+
+    await this.save();
+    return {
+      decisions,
+      workItems: this.snapshot.workItems.filter((item) => item.prdId === prdId),
+      runs: this.snapshot.agentRuns.filter((item) => item.prdId === prdId)
+    };
+  }
+
   async getRun(runId: string) {
     await this.load();
     return this.findRun(runId);
@@ -473,6 +522,9 @@ export class PatchPilotStore {
     completedRun.costActualUsd = 0;
     completedRun.endedAt = new Date().toISOString();
     completedWorkItem.status = "review";
+    completedWorkItem.updatedAt = completedRun.endedAt;
+    this.completeAgentAssignment(completedWorkItem.id, completedRun.endedAt);
+    this.completeBugIfNeeded(completedWorkItem, completedRun.endedAt);
     await this.save();
   }
 

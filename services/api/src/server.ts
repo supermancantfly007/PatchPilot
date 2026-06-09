@@ -97,6 +97,12 @@ export async function buildServer() {
     return reply.code(201).send(result);
   });
 
+  app.post("/api/prds/:id/acceptance", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = acceptanceSchema.parse(request.body);
+    return store.acceptPrdRuns(id, input.status, input.reason);
+  });
+
   app.post("/api/work-items/:id/start", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = z.object({ runner: z.enum(["simulated", "codex"]).optional() }).default({}).parse(request.body);

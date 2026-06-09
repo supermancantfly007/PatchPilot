@@ -267,14 +267,11 @@ function buildCodexPrompt(context: CodexRunContext, taskFilePath: string) {
   const method = context.workItem.sourceBugId ? "使用 /diagnose。" : "使用 /tdd。";
 
   return [
-    "你是 PatchPilot 启动的本地 Codex agent。",
-    `完成：${context.workItem.title}`,
-    `任务说明文件：${taskFilePath}`,
-    "",
+    `完成任务：${context.workItem.title}`,
+    `读任务文件：${taskFilePath}`,
     method,
-    "",
-    "边界：只改当前工作区；不碰生产密钥或生产数据。",
-    "完成后简述：变更、测试、风险。"
+    "只改当前工作区。不要碰生产密钥或生产数据。",
+    "完成后说明：变更、测试、风险。"
   ].join("\n");
 }
 
@@ -282,14 +279,13 @@ function buildRepairPrompt(context: CodexRunContext, testSummary: string) {
   const method = context.workItem.sourceBugId ? "继续使用 /diagnose。" : "继续使用 /tdd。";
 
   return [
-    "测试失败。请修复当前任务。",
-    `任务：${context.workItem.title}`,
+    `测试失败，修复任务：${context.workItem.title}`,
     method,
     "",
     "失败摘要：",
     testSummary,
     "",
-    "完成后简述：修复、测试、风险。"
+    "完成后说明：修复、测试、风险。"
   ].join("\n");
 }
 

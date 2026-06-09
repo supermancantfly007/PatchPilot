@@ -98,6 +98,8 @@ The Codex runner requires a working `codex` CLI, an authenticated local Codex se
 
 The Codex runner does not auto-merge or publish. It creates an isolated worktree, writes `PATCHPILOT_TASK.md`, runs `codex exec`, runs the configured test command, optionally asks Codex for one repair pass, then returns evidence to the UI.
 
+Codex prompts are intentionally short. PatchPilot sends the task title, task file path, required skill (`/tdd` or `/diagnose`), and safety boundary; detailed context lives in `PATCHPILOT_TASK.md`, `AGENTS.md`, and the repo tests.
+
 ## Quality Gates
 
 ```bash

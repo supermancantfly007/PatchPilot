@@ -182,7 +182,7 @@ MVP 本地 Markdown 模式使用文件锁实现 claim；数据库模式使用 Po
 
 `CodexRunner` 是平台与 Codex 的唯一集成面。
 
-CodexRunner prompt 应保持短，给 AI 充分发挥空间。平台只注入任务文件、工作区边界和 skill 名称：
+CodexRunner prompt 应保持短，给 AI 充分发挥空间。平台只注入任务名、任务文件、工作区边界和 skill 名称：
 
 - 功能开发类 WorkItem：只提示“使用 `/tdd`”。
 - Bug 修复类 WorkItem：只提示“使用 `/diagnose`”。

@@ -444,6 +444,60 @@ a {
   background: var(--muted);
 }
 
+.team-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.team-run-list {
+  display: grid;
+  gap: 10px;
+}
+
+.team-run-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+}
+
+.team-run-row strong,
+.team-run-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-run-row small {
+  margin-top: 4px;
+  color: var(--subtle);
+}
+
+.team-run-actions {
+  display: flex;
+  align-items: center;
+  justify-content: end;
+  gap: 10px;
+}
+
+.text-link {
+  color: var(--blue);
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.text-link:hover {
+  text-decoration: underline;
+}
+
 .evidence-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -851,15 +905,21 @@ a.dashboard-row:hover {
   .template-grid,
   .two-col,
   .summary-strip,
+  .team-summary-grid,
   .agent-team-list,
   .dashboard-grid,
   .evidence-grid {
     grid-template-columns: 1fr;
   }
 
+  .team-run-row,
   .agent-row {
     align-items: start;
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .team-run-actions {
+    justify-content: start;
   }
 
   .section-heading {

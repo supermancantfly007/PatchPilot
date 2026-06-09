@@ -109,6 +109,15 @@ export const api = {
       body: JSON.stringify({ status, reason })
     });
   },
+  acceptTeam(prdId: string, status: AcceptanceDecision["status"], reason?: string) {
+    return request<{ decisions: AcceptanceDecision[]; workItems: WorkItem[]; runs: AgentRun[] }>(
+      `/api/prds/${prdId}/acceptance`,
+      {
+        method: "POST",
+        body: JSON.stringify({ status, reason })
+      }
+    );
+  },
   getSnapshot() {
     return request<PatchPilotSnapshot>("/api/snapshot");
   },
