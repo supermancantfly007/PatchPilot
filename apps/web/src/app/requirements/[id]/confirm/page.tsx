@@ -270,7 +270,7 @@ export default function RequirementConfirmPage() {
                 ))
               ) : (
                 <p className="muted" style={{ margin: 0 }}>
-                  需求确认后将生成 1-3 个垂直任务。
+                  需求确认后将生成面向前端、后端、测试或运维的垂直任务。
                 </p>
               )}
             </div>

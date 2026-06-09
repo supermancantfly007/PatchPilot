@@ -62,7 +62,7 @@ describe("PatchPilot API", () => {
     await app.close();
   });
 
-  it("prevents starting the same work item twice", async () => {
+  it("makes starting the same work item idempotent", async () => {
     const app = await buildServer();
     const create = await app.inject({
       method: "POST",
@@ -86,7 +86,12 @@ describe("PatchPilot API", () => {
     const secondStart = await app.inject({ method: "POST", url: `/api/work-items/${workItem.id}/start` });
 
     expect(firstStart.statusCode).toBe(201);
-    expect(secondStart.statusCode).toBe(409);
+    expect(secondStart.statusCode).toBe(201);
+    expect(secondStart.json().id).toBe(firstStart.json().id);
+    const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const runsForWorkItem = snapshot.json().agentRuns.filter((run: { workItemId: string }) => run.workItemId === workItem.id);
+    expect(runsForWorkItem).toHaveLength(1);
+    await pollRun(app, firstStart.json().id);
     await app.close();
   });
 
@@ -124,6 +129,9 @@ describe("PatchPilot API", () => {
     expect(start.statusCode).toBe(201);
     const run = start.json();
     expect(run.runner).toBe("simulated");
+    const snapshotWhileRunning = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const runningWorkItem = snapshotWhileRunning.json().workItems.find((item: { id: string }) => item.id === workItem.id);
+    expect(runningWorkItem.assignedAgentId).toBe("agent_backend");
 
     const completedRun = await pollRun(app, run.id);
     expect(completedRun.status).toBe("succeeded");
@@ -137,6 +145,9 @@ describe("PatchPilot API", () => {
     });
     expect(acceptance.statusCode).toBe(200);
     expect(acceptance.json().status).toBe("accepted");
+    const snapshotAfterAcceptance = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const doneWorkItem = snapshotAfterAcceptance.json().workItems.find((item: { id: string }) => item.id === workItem.id);
+    expect(doneWorkItem.status).toBe("done");
 
     await app.close();
   });

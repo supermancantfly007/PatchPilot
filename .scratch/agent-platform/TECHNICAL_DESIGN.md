@@ -152,7 +152,7 @@ POST   /api/acceptance/:id/reject
 | Workflow | 责任 |
 | --- | --- |
 | `RequirementIntakeWorkflow` | 需求进入、`grill-me` 逐轮澄清、PRD 草案、确认等待 |
-| `WorkItemPlanningWorkflow` | PRD 到 1-3 个垂直工作项和测试建议 |
+| `WorkItemPlanningWorkflow` | PRD 到 1-4 个面向角色的垂直工作项和测试建议 |
 | `WorkItemExecutionWorkflow` | claim、workspace、CodexRun、test、PR、review |
 | `ApprovalWorkflow` | 等待人工或策略审批 |
 | `DefectReproductionWorkflow` | `/diagnose` 驱动的 bug 复现、诊断和修复前证据 |
@@ -553,7 +553,7 @@ acceptance.rejected
 
 ### PRD 到工作项
 
-1. Planner activity 生成 1-3 个垂直工作项。
+1. Planner activity 生成 1-4 个垂直工作项，优先覆盖后端、前端、测试和运维角色。
 2. 每个工作项包含范围、非目标、验收条件和测试建议。
 3. 依赖关系被解析为 `depends_on_json`。
 4. 工作项进入 `ready`。

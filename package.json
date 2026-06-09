@@ -10,11 +10,14 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -n api,web -c blue,green \"pnpm --filter @patchpilot/api dev\" \"pnpm --filter @patchpilot/web dev\"",
+    "dev": "pnpm dev:team",
+    "dev:team": "concurrently -n api,web,worker -c blue,green,magenta \"pnpm dev:api\" \"pnpm dev:web\" \"pnpm dev:worker\"",
     "dev:api": "pnpm --filter @patchpilot/api dev",
     "dev:web": "pnpm --filter @patchpilot/web dev",
+    "dev:worker": "pnpm --filter @patchpilot/worker dev",
     "dev:reset": "node scripts/reset-dev-data.mjs",
     "e2e:smoke": "node scripts/e2e-smoke.mjs",
+    "e2e:team": "node scripts/e2e-team-worker.mjs",
     "build": "pnpm -r --if-present build",
     "test": "pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck",

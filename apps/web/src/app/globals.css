@@ -543,6 +543,64 @@ a {
   box-shadow: 0 8px 28px rgba(15, 23, 42, 0.04);
 }
 
+.agent-team-panel {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.04);
+}
+
+.agent-team-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.agent-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  min-height: 70px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--muted);
+}
+
+.agent-row > span:first-child {
+  min-width: 0;
+}
+
+.agent-row strong,
+.agent-row small,
+.agent-role {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-role {
+  color: var(--subtle);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.agent-row strong {
+  margin-top: 3px;
+  color: var(--text);
+}
+
+.agent-row small {
+  margin-top: 4px;
+  color: var(--subtle);
+}
+
 .panel-title {
   display: flex;
   align-items: center;
@@ -793,9 +851,15 @@ a.dashboard-row:hover {
   .template-grid,
   .two-col,
   .summary-strip,
+  .agent-team-list,
   .dashboard-grid,
   .evidence-grid {
     grid-template-columns: 1fr;
+  }
+
+  .agent-row {
+    align-items: start;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .section-heading {

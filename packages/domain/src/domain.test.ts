@@ -29,7 +29,7 @@ describe("domain helpers", () => {
     expect(timeline.find((step) => step.key === "confirming")?.status).toBe("waiting");
   });
 
-  it("creates a PRD and one vertical work item", () => {
+  it("creates a PRD and team work items", () => {
     const requirement: Requirement = {
       id: "req_1",
       title: "Agent 平台",
@@ -49,8 +49,9 @@ describe("domain helpers", () => {
     const workItems = createWorkItems(prd);
 
     expect(prd.bodyMarkdown).toContain("## 如何验收");
-    expect(workItems).toHaveLength(1);
-    expect(workItems[0]?.acceptanceCriteria).toEqual(prd.acceptanceCriteria);
+    expect(workItems).toHaveLength(4);
+    expect(workItems.map((item) => item.role)).toEqual(["backend", "frontend", "test", "ops"]);
+    expect(workItems.every((item) => item.acceptanceCriteria === prd.acceptanceCriteria)).toBe(true);
   });
 
   it("can mark the full timeline complete", () => {

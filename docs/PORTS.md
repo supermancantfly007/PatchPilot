@@ -2,10 +2,12 @@
 
 | Service | Port | Notes |
 | --- | --- | --- |
-| Web | 3000 | Next.js app |
-| API | 4000 | Fastify control plane |
-| Postgres | 5432 | Docker compose placeholder for Phase 1 |
-| Temporal | 7233 | Docker compose placeholder for Phase 1 |
-| Temporal UI | 8080 | Docker compose placeholder for Phase 1 |
-| MinIO API | 9000 | Docker compose placeholder for artifact storage |
-| MinIO Console | 9001 | Docker compose placeholder for artifact storage |
+| Web | 3000 | Next.js app from `pnpm dev:web` |
+| API | 4000 | Fastify control plane and embedded local runner from `pnpm dev:api` |
+| Worker | none | Polls the API from `pnpm dev:worker`; no listener |
+| Postgres | 5432 | Optional Docker middleware from `infra/docker-compose.yml` |
+| Redis | 6379 | Optional Docker middleware from `infra/docker-compose.yml` |
+| MinIO API | 9000 | Optional Docker artifact storage API |
+| MinIO Console | 9001 | Optional Docker artifact storage console |
+
+The API, web app, and worker are started with pnpm scripts. Docker compose only provides optional middleware and does not run application containers.

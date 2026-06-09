@@ -316,12 +316,28 @@ export class PatchPilotStore {
   async startRun(workItemId: string, runnerOverride?: AgentRun["runner"]) {
     await this.load();
     const workItem = this.findWorkItem(workItemId);
+    const existingRun = this.snapshot.agentRuns.find(
+      (item) => item.workItemId === workItemId && !["failed", "cancelled"].includes(item.status)
+    );
+    if (existingRun && ["running", "review", "done"].includes(workItem.status)) {
+      return existingRun;
+    }
     if (!["ready", "claimed"].includes(workItem.status)) {
       throw new DomainError("INVALID_STATE", "Work item is not ready to start");
     }
     const prd = this.findPrd(workItem.prdId);
     const runner = await this.resolveRunner(runnerOverride);
     const now = new Date().toISOString();
+    if (!workItem.assignedAgentId) {
+      const agent = this.findAvailableAgentForRole(workItem.role);
+      if (agent) {
+        workItem.assignedAgentId = agent.id;
+        workItem.claimedAt = now;
+        agent.status = "busy";
+        agent.currentWorkItemId = workItem.id;
+        agent.lastSeenAt = now;
+      }
+    }
     workItem.status = "running";
     workItem.updatedAt = now;
     if (workItem.sourceBugId) {
@@ -359,15 +375,19 @@ export class PatchPilotStore {
     if (run.status !== "succeeded") {
       throw new DomainError("INVALID_STATE", "Run is not ready for acceptance");
     }
+    const workItem = this.findWorkItem(run.workItemId);
+    const now = new Date().toISOString();
     const existing = this.snapshot.acceptances.find((item) => item.runId === runId);
     const decision: AcceptanceDecision = {
       runId,
       status,
       reason,
-      decidedAt: new Date().toISOString()
+      decidedAt: now
     };
     if (existing) Object.assign(existing, decision);
     else this.snapshot.acceptances.unshift(decision);
+    workItem.status = status === "accepted" ? "done" : "blocked";
+    workItem.updatedAt = now;
     await this.save();
     return decision;
   }
@@ -639,6 +659,13 @@ export class PatchPilotStore {
 
   private agentCanClaim(agent: AgentProfile, role: WorkItemRole) {
     return agent.status !== "offline" && (agent.role === role || agent.role === "reviewer");
+  }
+
+  private findAvailableAgentForRole(role: WorkItemRole) {
+    return (
+      this.snapshot.agents.find((agent) => agent.status === "idle" && agent.role === role) ||
+      this.snapshot.agents.find((agent) => agent.status === "idle" && agent.role === "reviewer")
+    );
   }
 
   private completeAgentAssignment(workItemId: string, now: string) {

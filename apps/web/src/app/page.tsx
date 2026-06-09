@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  AgentProfile,
   AgentRun,
   PatchPilotSnapshot,
   Requirement,
@@ -56,11 +57,38 @@ const runStatusLabels: Record<AgentRun["status"], string> = {
   cancelled: "取消"
 };
 
+type AgentViewStatus = AgentProfile["status"] | "syncing";
+
+const agentRoles: AgentProfile["role"][] = ["product", "frontend", "backend", "test", "ops", "reviewer"];
+
+const agentRoleLabels: Record<AgentProfile["role"], string> = {
+  product: "product agent",
+  frontend: "frontend agent",
+  backend: "backend agent",
+  test: "test agent",
+  ops: "ops agent",
+  reviewer: "reviewer agent"
+};
+
+const agentStatusLabels: Record<AgentViewStatus, string> = {
+  idle: "待命",
+  busy: "执行中",
+  offline: "离线",
+  syncing: "同步中"
+};
+
 function statusTone(status: Requirement["status"] | WorkItem["status"] | AgentRun["status"]) {
   if (["approved", "done", "succeeded"].includes(status)) return "green";
   if (["rejected", "blocked", "failed", "cancelled"].includes(status)) return "red";
   if (["prd_draft", "review", "needs_approval"].includes(status)) return "amber";
   return "blue";
+}
+
+function agentStatusTone(status: AgentViewStatus) {
+  if (status === "busy") return "blue";
+  if (status === "offline") return "red";
+  if (status === "syncing") return "amber";
+  return "green";
 }
 
 function formatShortDate(value: string) {
@@ -162,6 +190,41 @@ export default function HomePage() {
   const openBugs = bugs.filter((bug) => !["fixed", "rejected"].includes(bug.status));
   const busyAgents = agents.filter((agent) => agent.status === "busy");
   const needsAttention = failedRuns.length + rejectedAcceptances.length + blockedWorkItems.length + openBugs.length;
+  const openRequirement = requirements.find((requirement) => !["approved", "rejected"].includes(requirement.status));
+  const reviewWorkItem = workItems.find((item) => item.status === "review");
+  const agentTeam = agentRoles.map((role) => {
+    const agent = agents.find((item) => item.role === role);
+    const currentWorkItem = agent?.currentWorkItemId
+      ? workItems.find((item) => item.id === agent.currentWorkItemId)
+      : undefined;
+    const roleWorkItem = workItems.find((item) => item.role === role && !["done", "cancelled"].includes(item.status));
+    const workItem = currentWorkItem ?? (role === "reviewer" ? reviewWorkItem : roleWorkItem);
+    const run = workItem
+      ? agentRuns
+          .filter((item) => item.workItemId === workItem.id)
+          .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0]
+      : undefined;
+    const status: AgentViewStatus = snapshot
+      ? agent?.status ?? (workItem && ["claimed", "running"].includes(workItem.status) ? "busy" : "idle")
+      : "syncing";
+    const taskTitle = snapshot
+      ? workItem?.title ?? (role === "product" && openRequirement ? openRequirement.simpleSummary : "暂无任务")
+      : "等待工作台快照";
+    const taskMeta = workItem
+      ? `${workItemStatusLabels[workItem.status]}${run ? ` · ${runStatusLabels[run.status]}` : ""}`
+      : role === "product" && openRequirement
+        ? requirementStatusLabels[openRequirement.status]
+        : snapshot
+          ? "待命"
+          : "读取中";
+
+    return {
+      role,
+      status,
+      taskMeta,
+      taskTitle
+    };
+  });
 
   return (
     <AppShell>
@@ -253,6 +316,27 @@ export default function HomePage() {
             <strong>{needsAttention}</strong>
           </div>
         </div>
+
+        <section className="agent-team-panel" aria-label="Agent team 自动工作状态">
+          <div className="panel-title">
+            <h3>Agent team</h3>
+            <span className={`status-pill ${busyAgents.length > 0 ? "blue" : "green"}`}>
+              {busyAgents.length > 0 ? `${busyAgents.length} 个执行中` : "全部待命"}
+            </span>
+          </div>
+          <div className="agent-team-list">
+            {agentTeam.map((agent) => (
+              <div className="agent-row" key={agent.role}>
+                <span>
+                  <span className="agent-role">{agentRoleLabels[agent.role]}</span>
+                  <strong>{agent.taskTitle}</strong>
+                  <small>{agent.taskMeta}</small>
+                </span>
+                <span className={`status-pill ${agentStatusTone(agent.status)}`}>{agentStatusLabels[agent.status]}</span>
+              </div>
+            ))}
+          </div>
+        </section>
 
         <div className="dashboard-grid">
           <section className="dashboard-panel">

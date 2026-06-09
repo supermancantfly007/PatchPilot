@@ -513,15 +513,54 @@ export function createWorkItems(prd: Prd): WorkItem[] {
   const now = new Date().toISOString();
   return [
     {
-      id: `wi_${prd.requirementId}_001`,
+      id: `wi_${prd.requirementId}_backend`,
       prdId: prd.id,
-      title: "完成最小可验收交付闭环",
+      title: "后端交付控制面",
       status: "ready",
       role: "backend",
-      scope: "围绕已确认需求完成一次端到端变更，包括实现、测试、审查摘要和验收入口。",
+      scope: "实现需求、PRD、工作项、agent run、测试证据和验收决策所需的 API 与状态流转。",
       nonGoals: ["不自动合并", "不执行生产发布", "不访问生产密钥"],
       acceptanceCriteria: prd.acceptanceCriteria,
-      testSuggestions: ["运行目标测试命令", "检查完成页证据摘要", "确认风险提示和验收按钮可用"],
+      testSuggestions: ["运行 API 生命周期测试", "验证重复启动和非法状态会被拒绝", "确认事件流能到达终态"],
+      createdAt: now,
+      updatedAt: now
+    },
+    {
+      id: `wi_${prd.requirementId}_frontend`,
+      prdId: prd.id,
+      title: "前端普通用户闭环",
+      status: "ready",
+      role: "frontend",
+      scope: "实现白底极简工作台、逐轮澄清、订单式进度、证据摘要和验收入口。",
+      nonGoals: ["不做营销落地页", "不暴露不必要工程术语", "不阻塞移动端关键动作"],
+      acceptanceCriteria: prd.acceptanceCriteria,
+      testSuggestions: ["运行 Web 组件测试", "跑浏览器 smoke", "检查桌面和移动端无明显溢出"],
+      createdAt: now,
+      updatedAt: now
+    },
+    {
+      id: `wi_${prd.requirementId}_test`,
+      prdId: prd.id,
+      title: "测试与回归证据",
+      status: "ready",
+      role: "test",
+      scope: "把验收标准转为单元、API 或浏览器 smoke 测试，并整理失败返工证据。",
+      nonGoals: ["不追求无关全量覆盖", "不把不稳定测试当作通过证据", "不跳过关键路径测试"],
+      acceptanceCriteria: prd.acceptanceCriteria,
+      testSuggestions: ["新增或更新关键路径测试", "确认失败能转为可处理缺陷", "记录测试命令和结果"],
+      createdAt: now,
+      updatedAt: now
+    },
+    {
+      id: `wi_${prd.requirementId}_ops`,
+      prdId: prd.id,
+      title: "本地运行与交付运维",
+      status: "ready",
+      role: "ops",
+      scope: "补齐本地启动、环境变量、端口、中间件和 runner 模式说明，让团队能一键跑通。",
+      nonGoals: ["不做生产 Kubernetes 部署", "不引入强制云服务", "不自动发布"],
+      acceptanceCriteria: prd.acceptanceCriteria,
+      testSuggestions: ["验证 dev 脚本", "检查端口和 env 文档", "确认可选 Docker 中间件不影响本地模拟闭环"],
       createdAt: now,
       updatedAt: now
     }
