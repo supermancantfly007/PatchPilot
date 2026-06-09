@@ -263,6 +263,86 @@ describe("PatchPilot API", () => {
     await app.close();
   });
 
+  it("turns rejected team acceptance into ready rework and starts new runs", async () => {
+    const app = await buildServer();
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/requirements",
+      payload: { rawInput: "验证验收拒绝后 agent team 会自动返工", template: "feature" }
+    });
+    const requirement = create.json();
+    const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
+    const prd = prdResponse.json().prd;
+
+    const firstStart = await app.inject({
+      method: "POST",
+      url: `/api/prds/${prd.id}/start-team`,
+      payload: { runner: "simulated" }
+    });
+    expect(firstStart.statusCode).toBe(201);
+    const firstRuns = await pollPrdRuns(app, prd.id, 4);
+    const firstRunIds = firstRuns.map((run: { id: string }) => run.id).sort();
+
+    const rejection = await app.inject({
+      method: "POST",
+      url: `/api/prds/${prd.id}/acceptance`,
+      payload: { status: "rejected", reason: "前端状态摘要还不够清楚，需要返工。" }
+    });
+    expect(rejection.statusCode).toBe(200);
+    expect(rejection.json().decisions).toHaveLength(4);
+
+    const rejectedSnapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const reworkItems = rejectedSnapshot.json().workItems.filter((item: { prdId: string }) => item.prdId === prd.id);
+    expect(reworkItems).toHaveLength(4);
+    expect(reworkItems.every((item: { status: string }) => item.status === "ready")).toBe(true);
+    expect(reworkItems.every((item: { assignedAgentId?: string }) => !item.assignedAgentId)).toBe(true);
+    expect(reworkItems.every((item: { reworkCount?: number }) => item.reworkCount === 1)).toBe(true);
+
+    const staleAcceptance = await app.inject({
+      method: "POST",
+      url: `/api/prds/${prd.id}/acceptance`,
+      payload: { status: "accepted", reason: "误点了旧交付结果" }
+    });
+    expect(staleAcceptance.statusCode).toBe(409);
+
+    const backendReworkItem = reworkItems.find((item: { role: string }) => item.role === "backend");
+    if (!backendReworkItem) throw new Error("Backend rework item was not generated");
+    const claim = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${backendReworkItem.id}/claim`,
+      payload: { agentId: "agent_backend" }
+    });
+    expect(claim.statusCode).toBe(200);
+    const claimedStart = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${backendReworkItem.id}/start`,
+      payload: { runner: "simulated" }
+    });
+    expect(claimedStart.statusCode).toBe(201);
+    expect(firstRunIds).not.toContain(claimedStart.json().id);
+
+    const reworkStart = await app.inject({
+      method: "POST",
+      url: `/api/prds/${prd.id}/start-team`,
+      payload: { runner: "simulated" }
+    });
+    expect(reworkStart.statusCode).toBe(201);
+    expect(reworkStart.json().runs).toHaveLength(4);
+    expect(reworkStart.json().runs.map((run: { id: string }) => run.id).sort()).not.toEqual(firstRunIds);
+    await Promise.all(reworkStart.json().runs.map((run: { id: string }) => pollRun(app, run.id)));
+
+    const reworkSnapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const allRuns = reworkSnapshot.json().agentRuns.filter((run: { prdId: string }) => run.prdId === prd.id);
+    const reworkAuditActions = reworkSnapshot
+      .json()
+      .auditEvents.filter((event: { prdId?: string }) => event.prdId === prd.id)
+      .map((event: { action: string }) => event.action);
+    expect(allRuns).toHaveLength(8);
+    expect(reworkAuditActions).toContain("work_item.rework_requested");
+
+    await app.close();
+  });
+
   it("does not duplicate a run when start-team sees an already running claimed work item", async () => {
     const app = await buildServer();
     const create = await app.inject({
@@ -437,7 +517,7 @@ async function pollRun(app: Awaited<ReturnType<typeof buildServer>>, runId: stri
 }
 
 async function pollPrdRuns(app: Awaited<ReturnType<typeof buildServer>>, prdId: string, expectedCount: number) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
     const response = await app.inject({ method: "GET", url: "/api/snapshot" });
     const runs = response
       .json()

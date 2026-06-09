@@ -130,6 +130,7 @@ MVP 应收敛为单仓库、单项目、一个主要交付闭环：
 - 记录 `AgentRun`、`WorkspaceRun`、`TestCase`、`TestRun`、`PullRequest`、`ReviewRecord`、`AuditEvent`、成本和失败原因；MVP 的 JSON 快照会把这些证据作为一等记录暴露给 UI 和 E2E。当前可运行 MVP 先生成 `local://pull-requests/...` 本地 PR 记录和 PR body，后续 GitHub Adapter 再负责 push 分支和创建真实 GitHub PR。
 - Reviewer agent 输出审查摘要，并写入关联 PR、测试摘要、风险和发现项的 `ReviewRecord`。
 - 人类最终接受或要求返工。
+- 当人类要求返工时，相关 `WorkItem` 必须清空领取状态、记录 `reworkCount` 和拒绝原因，回到 `ready` 队列；下一次启动 team 时必须创建新的 `AgentRun`，不能复用已被拒绝的旧 run。
 
 Bug 复现和自动返工闭环进入 MVP：bug 报告先生成测试 agent 复现任务，复现成功后自动生成开发 agent 修复任务。bug 修复相关工作项只用短 prompt 点名 `/diagnose`，平台用复现证据、回归测试和质量门确认它真的完成了 Reproduce -> Minimise -> Hypothesise -> Instrument -> Fix -> Regression-test。
 
@@ -168,6 +169,7 @@ Bug 复现和自动返工闭环进入 MVP：bug 报告先生成测试 agent 复�
 - PRD 批准后必须生成可复用 TestCase，并且 TestRun 必须能通过 `testCaseId` 追溯到测试用例和工作项。
 - 预算耗尽、连续失败、危险操作、破坏性契约变更必须进入审批状态。
 - 最终验收必须能明确标记 accepted / rejected，并保留原因。
+- rejected 验收必须形成可继续执行的返工轮次：UI 展示返工次数和拒绝原因，worker 或用户再次启动 team 时生成新的 agent run，并保留旧 run、旧 PR、旧测试和审计证据。
 - 普通用户无需理解 PRD、worktree、AgentRun 或 Pull Request，也能完成提交、确认、查看进度和验收。
 
 ## 系统架构
@@ -374,6 +376,7 @@ MVP 可以优先使用 `codex exec --json`，但必须通过 `CodexRunner` 包�
 - 契约兼容性
 - PR 状态
 - 审计链路完整性
+- 若用户要求修改，返工队列、返工轮次和拒绝原因必须可见
 
 ## 权限、密钥与安全边界
 

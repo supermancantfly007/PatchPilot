@@ -402,7 +402,7 @@ export class PatchPilotStore {
     const existingRun = this.snapshot.agentRuns.find(
       (item) => item.workItemId === workItemId && !["failed", "cancelled"].includes(item.status)
     );
-    if (existingRun) {
+    if (existingRun && !this.shouldStartReworkRun(workItem, existingRun)) {
       return existingRun;
     }
     if (!["ready", "claimed"].includes(workItem.status)) {
@@ -483,8 +483,11 @@ export class PatchPilotStore {
       throw new DomainError("INVALID_STATE", "Run is not ready for acceptance");
     }
     const workItem = this.findWorkItem(run.workItemId);
-    const now = new Date().toISOString();
     const existing = this.snapshot.acceptances.find((item) => item.runId === runId);
+    if (existing?.status === "rejected") {
+      throw new DomainError("INVALID_STATE", "Run was rejected and needs a new rework run");
+    }
+    const now = new Date().toISOString();
     const decision: AcceptanceDecision = {
       runId,
       status,
@@ -493,8 +496,12 @@ export class PatchPilotStore {
     };
     if (existing) Object.assign(existing, decision);
     else this.snapshot.acceptances.unshift(decision);
-    workItem.status = status === "accepted" ? "done" : "blocked";
-    workItem.updatedAt = now;
+    if (status === "accepted") {
+      workItem.status = "done";
+      workItem.updatedAt = now;
+    } else {
+      this.requestWorkItemRework(workItem, run, reason, now);
+    }
     this.addAuditEvent({
       actor: "human",
       action: status === "accepted" ? "acceptance.accepted" : "acceptance.rejected",
@@ -526,7 +533,7 @@ export class PatchPilotStore {
 
     const notReady = workItems.filter((item) => {
       const run = runsByWorkItem.get(item.id);
-      return item.status !== "done" && run?.status !== "succeeded";
+      return item.status !== "done" && (item.status !== "review" || run?.status !== "succeeded" || this.isRunRejected(run.id));
     });
     if (notReady.length > 0) {
       throw new DomainError("INVALID_STATE", "Not all team runs are ready for acceptance");
@@ -546,8 +553,12 @@ export class PatchPilotStore {
       const existing = this.snapshot.acceptances.find((item) => item.runId === run.id);
       if (existing) Object.assign(existing, decision);
       else this.snapshot.acceptances.unshift(decision);
-      workItem.status = status === "accepted" ? "done" : "blocked";
-      workItem.updatedAt = now;
+      if (status === "accepted") {
+        workItem.status = "done";
+        workItem.updatedAt = now;
+      } else {
+        this.requestWorkItemRework(workItem, run, reason, now);
+      }
       this.addAuditEvent({
         actor: "human",
         action: status === "accepted" ? "acceptance.accepted" : "acceptance.rejected",
@@ -871,6 +882,37 @@ export class PatchPilotStore {
       (item) => item.workItemId === workItemId && !["failed", "cancelled"].includes(item.status)
     );
     return Boolean(existingRun && ["running", "review", "done"].includes(status));
+  }
+
+  private shouldStartReworkRun(workItem: WorkItem, run: AgentRun) {
+    if (!["ready", "claimed"].includes(workItem.status) || run.status !== "succeeded") return false;
+    return this.isRunRejected(run.id);
+  }
+
+  private isRunRejected(runId: string) {
+    return this.snapshot.acceptances.some((acceptance) => acceptance.runId === runId && acceptance.status === "rejected");
+  }
+
+  private requestWorkItemRework(workItem: WorkItem, run: AgentRun, reason: string | undefined, now: string) {
+    const normalizedReason = reason?.trim() || "用户要求修改，但没有填写原因。";
+    workItem.status = "ready";
+    workItem.assignedAgentId = undefined;
+    workItem.claimedAt = undefined;
+    workItem.reworkCount = (workItem.reworkCount ?? 0) + 1;
+    workItem.lastRejectionReason = normalizedReason;
+    workItem.updatedAt = now;
+    this.addAuditEvent({
+      actor: "human",
+      action: "work_item.rework_requested",
+      targetType: "work_item",
+      targetId: workItem.id,
+      message: `用户要求返工：${normalizedReason}`,
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id,
+      createdAt: now
+    });
   }
 
   private completeAgentAssignment(workItemId: string, now: string) {

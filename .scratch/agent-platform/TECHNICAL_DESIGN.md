@@ -606,6 +606,15 @@ acceptance.rejected
 9. 平台归档 WorkspaceRun，写入 TestRun 和 AuditEvent。
 10. 通过质量门后等待最终验收。
 
+### 验收返工循环
+
+1. 人类在单 run 或整个 PRD 的验收页选择 rejected 时，必须填写原因。
+2. 平台写入 `AcceptanceDecision(status=rejected)`，保留旧 `AgentRun`、`WorkspaceRun`、`PullRequestRecord`、`ReviewRecord` 和 `TestRun` 证据。
+3. 对应 `WorkItem` 清空 `assignedAgentId` 和 `claimedAt`，`status` 回到 `ready`，`reworkCount += 1`，`lastRejectionReason` 保存用户原因。
+4. UI 在工作台、需求确认页、运行页和验收页展示返工轮次与拒绝原因；被拒绝的旧 run 不能继续显示为可验收。
+5. Scheduler 或用户再次启动 team 时，`startRun` 必须识别“latest succeeded run 已被 rejected 且 WorkItem 为 ready”，并创建新的 `AgentRun`，不能复用旧 run。
+6. 新 run 完成后进入正常 review / acceptance；accepted 后工作项才进入 `done`。
+
 ### 失败处理
 
 | 失败 | 处理 |

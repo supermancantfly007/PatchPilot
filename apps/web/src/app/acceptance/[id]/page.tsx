@@ -63,6 +63,17 @@ function workItemStatusTone(status: WorkItem["status"]) {
   return "amber";
 }
 
+function reworkStatusLabel(item: WorkItem) {
+  if (item.status === "ready") return "待返工";
+  if (item.status === "claimed" || item.status === "running") return "返工中";
+  if (item.status === "review") return "返工待验收";
+  return workItemStatusLabel(item.status);
+}
+
+function reworkStatusTone(item: WorkItem) {
+  return item.status === "review" ? "green" : "amber";
+}
+
 function pullRequestStatusLabel(status: PullRequestRecord["status"]) {
   const labels: Record<PullRequestRecord["status"], string> = {
     draft: "草稿",
@@ -169,15 +180,24 @@ export default function AcceptancePage() {
   const acceptedRunIds = new Set(
     (snapshot?.acceptances ?? []).filter((item) => item.status === "accepted").map((item) => item.runId)
   );
+  const rejectedRunIds = new Set(
+    (snapshot?.acceptances ?? []).filter((item) => item.status === "rejected").map((item) => item.runId)
+  );
   const isTeamAcceptance = teamWorkItems.length > 1;
   const allTeamSucceeded =
     isTeamAcceptance && teamWorkItems.length > 0
-      ? teamWorkItems.every((item) => runsByWorkItem.get(item.id)?.status === "succeeded" || item.status === "done")
-      : run?.status === "succeeded";
+      ? teamWorkItems.every((item) => {
+          const itemRun = runsByWorkItem.get(item.id);
+          return (itemRun?.status === "succeeded" && !rejectedRunIds.has(itemRun.id)) || item.status === "done";
+        })
+      : run?.status === "succeeded" && !rejectedRunIds.has(run.id);
   const targetRunCount = isTeamAcceptance ? teamWorkItems.length : 1;
   const succeededRunCount = isTeamAcceptance
-    ? teamWorkItems.filter((item) => runsByWorkItem.get(item.id)?.status === "succeeded" || item.status === "done").length
-    : run?.status === "succeeded"
+    ? teamWorkItems.filter((item) => {
+        const itemRun = runsByWorkItem.get(item.id);
+        return (itemRun?.status === "succeeded" && !rejectedRunIds.has(itemRun.id)) || item.status === "done";
+      }).length
+    : run?.status === "succeeded" && !rejectedRunIds.has(run.id)
       ? 1
       : 0;
 
@@ -194,7 +214,7 @@ export default function AcceptancePage() {
       } else {
         await api.acceptRun(id, status, reason);
       }
-      router.push("/");
+      router.push(status === "rejected" && run ? `/requirements/${run.requirementId}/confirm` : "/");
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "验收提交失败。");
     } finally {
@@ -288,21 +308,37 @@ export default function AcceptancePage() {
                     const itemRun = runsByWorkItem.get(item.id);
                     const agent = item.assignedAgentId ? agentsById.get(item.assignedAgentId) : undefined;
                     const itemAccepted = itemRun ? acceptedRunIds.has(itemRun.id) : false;
-                    const showWorkItemStatus = ["blocked", "cancelled", "done"].includes(item.status) || itemAccepted;
+                    const itemRejected = itemRun ? rejectedRunIds.has(itemRun.id) : false;
+                    const isRework = (item.reworkCount ?? 0) > 0 && !["done", "cancelled"].includes(item.status);
+                    const showWorkItemStatus = ["blocked", "cancelled", "done"].includes(item.status) || itemAccepted || isRework;
                     return (
                       <div className="team-run-row" key={item.id}>
                         <div>
                           <span className="agent-role">{roleLabels[item.role]} agent</span>
                           <strong>{item.title}</strong>
                           <small>{agent?.name ?? "已由平台调度"} · {itemRun?.result?.tests.length ?? 0} 条测试证据</small>
+                          {isRework ? (
+                            <small className="rework-reason">
+                              返工第 {item.reworkCount} 轮
+                              {item.lastRejectionReason ? ` · ${item.lastRejectionReason}` : ""}
+                            </small>
+                          ) : null}
                         </div>
                         <span
                           className={`status-pill ${
-                            showWorkItemStatus ? workItemStatusTone(item.status) : itemRun ? runStatusTone(itemRun.status) : "amber"
+                            isRework
+                              ? reworkStatusTone(item)
+                              : showWorkItemStatus
+                                ? workItemStatusTone(item.status)
+                                : itemRun
+                                  ? runStatusTone(itemRun.status)
+                                  : "amber"
                           }`}
                         >
                           {itemAccepted || item.status === "done"
                             ? "已完成"
+                            : isRework || itemRejected
+                              ? reworkStatusLabel(item)
                             : showWorkItemStatus
                               ? workItemStatusLabel(item.status)
                               : itemRun

@@ -84,6 +84,21 @@ function statusTone(status: Requirement["status"] | WorkItem["status"] | AgentRu
   return "blue";
 }
 
+function workItemViewLabel(item: WorkItem) {
+  if (!(item.reworkCount ?? 0)) return workItemStatusLabels[item.status];
+  if (item.status === "ready") return "待返工";
+  if (item.status === "claimed" || item.status === "running") return "返工中";
+  if (item.status === "review") return "返工待验收";
+  return workItemStatusLabels[item.status];
+}
+
+function workItemViewTone(item: WorkItem) {
+  if ((item.reworkCount ?? 0) > 0 && !["done", "cancelled"].includes(item.status)) {
+    return item.status === "review" ? "green" : "amber";
+  }
+  return statusTone(item.status);
+}
+
 function agentStatusTone(status: AgentViewStatus) {
   if (status === "busy") return "blue";
   if (status === "offline") return "red";
@@ -189,6 +204,7 @@ export default function HomePage() {
   const failedRuns = agentRuns.filter((run) => run.status === "failed");
   const rejectedAcceptances = acceptances.filter((acceptance) => acceptance.status === "rejected");
   const blockedWorkItems = workItems.filter((item) => item.status === "blocked");
+  const reworkWorkItems = workItems.filter((item) => (item.reworkCount ?? 0) > 0 && !["done", "cancelled"].includes(item.status));
   const openBugs = bugs.filter((bug) => !["fixed", "rejected"].includes(bug.status));
   const busyAgents = agents.filter((agent) => agent.status === "busy");
   const needsAttention = failedRuns.length + rejectedAcceptances.length + blockedWorkItems.length + openBugs.length;
@@ -385,8 +401,14 @@ export default function HomePage() {
                     <span>
                       <strong>{item.title}</strong>
                       <small>{item.scope}</small>
+                      {(item.reworkCount ?? 0) > 0 ? (
+                        <small className="rework-reason">
+                          返工第 {item.reworkCount} 轮
+                          {item.lastRejectionReason ? ` · ${item.lastRejectionReason}` : ""}
+                        </small>
+                      ) : null}
                     </span>
-                    <span className={`status-pill ${statusTone(item.status)}`}>{workItemStatusLabels[item.status]}</span>
+                    <span className={`status-pill ${workItemViewTone(item)}`}>{workItemViewLabel(item)}</span>
                   </div>
                 ))
               ) : (
@@ -444,7 +466,7 @@ export default function HomePage() {
                 <RefreshCw size={18} />
                 <span>
                   <strong>{failedRuns.length + rejectedAcceptances.length + blockedWorkItems.length} 个返工线索</strong>
-                  <small>失败、阻塞和验收拒绝会保留证据</small>
+                  <small>{reworkWorkItems.length} 个任务已回到队列，失败、阻塞和验收拒绝都会保留证据</small>
                 </span>
               </div>
               <button

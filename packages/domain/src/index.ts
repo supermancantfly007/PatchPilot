@@ -114,6 +114,8 @@ export interface WorkItem {
   assignedAgentId?: string;
   claimedAt?: string;
   sourceBugId?: string;
+  reworkCount?: number;
+  lastRejectionReason?: string;
   createdAt?: string;
   updatedAt?: string;
 }

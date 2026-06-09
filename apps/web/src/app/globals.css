@@ -480,6 +480,30 @@ a {
   color: var(--subtle);
 }
 
+.team-run-row small.rework-reason,
+.dashboard-row small.rework-reason,
+.rework-reason {
+  overflow: visible;
+  color: #92400e;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.inline-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(217, 119, 6, 0.1);
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 800;
+  vertical-align: middle;
+}
+
 .team-run-actions {
   display: flex;
   align-items: center;

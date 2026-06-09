@@ -1,7 +1,7 @@
 "use client";
 
 import type { InterfaceContract, Prd, Requirement, RuntimeConfig, WorkItem } from "@patchpilot/domain";
-import { ArrowRight, Bot, CheckCircle2, ClipboardList, Send, UserRound } from "lucide-react";
+import { ArrowRight, Bot, CheckCircle2, ClipboardList, RefreshCw, Send, UserRound } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
@@ -122,6 +122,7 @@ export default function RequirementConfirmPage() {
     .slice()
     .reverse()
     .find((turn) => turn.speaker === "agent");
+  const reworkItems = workItems.filter((item) => (item.reworkCount ?? 0) > 0 && !["done", "cancelled"].includes(item.status));
 
   return (
     <AppShell>
@@ -200,6 +201,11 @@ export default function RequirementConfirmPage() {
                 </>
               ) : (
                 <>
+                  {reworkItems.length > 0 ? (
+                    <StatusNotice title="这些任务已回到返工队列" tone="warning">
+                      上次验收要求修改后，PatchPilot 已清空 agent 领取状态，并把 {reworkItems.length} 个任务重新设为可执行。
+                    </StatusNotice>
+                  ) : null}
                   <StatusNotice
                     title={
                       config?.activeRunner === "codex"
@@ -289,10 +295,23 @@ export default function RequirementConfirmPage() {
               {workItems.length > 0 ? (
                 workItems.map((item) => (
                   <div className="event" key={item.id}>
-                    <strong>{item.title}</strong>
+                    <strong>
+                      {item.title}
+                      {(item.reworkCount ?? 0) > 0 ? (
+                        <span className="inline-status">
+                          <RefreshCw size={13} />
+                          返工第 {item.reworkCount} 轮
+                        </span>
+                      ) : null}
+                    </strong>
                     <p className="muted" style={{ marginBottom: 0 }}>
                       {item.scope}
                     </p>
+                    {item.lastRejectionReason ? (
+                      <p className="rework-reason" style={{ margin: "8px 0 0" }}>
+                        {item.lastRejectionReason}
+                      </p>
+                    ) : null}
                   </div>
                 ))
               ) : (

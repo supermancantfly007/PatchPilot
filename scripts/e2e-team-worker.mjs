@@ -62,6 +62,55 @@ assertEqual(completed.testRuns.length, expectedRoles.length, "worker should reco
 assertEqual(completed.pullRequests.length, expectedRoles.length, "worker should create one PR record per run");
 assertEqual(completed.reviewRecords.length, expectedRoles.length, "worker should create one review record per run");
 
+const firstRunIds = new Set(completed.runs.map((run) => run.id));
+const rejection = await requestJson(`/api/prds/${prd.id}/acceptance`, {
+  method: "POST",
+  body: JSON.stringify({
+    status: "rejected",
+    reason: "验收要求修改后，agent team 应自动重新领取返工任务。"
+  })
+});
+assertEqual(rejection.decisions.length, expectedRoles.length, "team rejection should create one decision per run");
+
+const queuedRework = await poll(async () => {
+  const snapshot = await requestJson("/api/snapshot");
+  const workItems = snapshot.workItems.filter((item) => item.prdId === prd.id);
+  const auditEvents = snapshot.auditEvents.filter((event) => event.prdId === prd.id);
+  if (!workItems.every((item) => item.status === "ready")) return undefined;
+  if (!workItems.every((item) => item.reworkCount === 1)) return undefined;
+  if (!workItems.every((item) => !item.assignedAgentId)) return undefined;
+  if (!auditEvents.some((event) => event.action === "work_item.rework_requested")) return undefined;
+  return { workItems, auditEvents };
+}, 15000);
+
+assertEqual(queuedRework.workItems.length, expectedRoles.length, "rejected work items should return to the ready queue");
+
+await runWorkerOnce();
+
+const reworked = await poll(async () => {
+  const snapshot = await requestJson("/api/snapshot");
+  const workItems = snapshot.workItems.filter((item) => item.prdId === prd.id);
+  const runs = snapshot.agentRuns.filter((run) => run.prdId === prd.id);
+  const latestRuns = latestRunsByWorkItem(runs);
+  const testRuns = snapshot.testRuns.filter((test) => test.prdId === prd.id);
+  const pullRequests = snapshot.pullRequests.filter((pullRequest) => pullRequest.prdId === prd.id);
+  const reviewRecords = snapshot.reviewRecords.filter((review) => review.prdId === prd.id);
+  if (runs.length < expectedRoles.length * 2) return undefined;
+  if (latestRuns.length !== expectedRoles.length) return undefined;
+  if (!latestRuns.every((run) => run.status === "succeeded")) return undefined;
+  if (latestRuns.some((run) => firstRunIds.has(run.id))) return undefined;
+  if (!workItems.every((item) => item.status === "review")) return undefined;
+  if (!workItems.every((item) => item.reworkCount === 1)) return undefined;
+  if (testRuns.length < expectedRoles.length * 2) return undefined;
+  if (!testRuns.every((test) => test.status === "passed")) return undefined;
+  if (pullRequests.length < expectedRoles.length * 2) return undefined;
+  if (reviewRecords.length < expectedRoles.length * 2) return undefined;
+  return { runs, latestRuns, workItems, testRuns, pullRequests, reviewRecords };
+}, 15000);
+
+assertEqual(reworked.runs.length, expectedRoles.length * 2, "rework should create a fresh run per team work item");
+assertEqual(reworked.latestRuns.length, expectedRoles.length, "latest team run set should still have one run per work item");
+
 console.log("PatchPilot team worker E2E passed");
 
 async function runWorkerOnce() {
@@ -114,4 +163,13 @@ function assertEqual(actual, expected, message) {
   if (actual !== expected) {
     throw new Error(`${message}: expected ${expected}, got ${actual}`);
   }
+}
+
+function latestRunsByWorkItem(runs) {
+  const byWorkItem = new Map();
+  for (const run of runs) {
+    const current = byWorkItem.get(run.workItemId);
+    if (!current || run.startedAt > current.startedAt) byWorkItem.set(run.workItemId, run);
+  }
+  return [...byWorkItem.values()];
 }

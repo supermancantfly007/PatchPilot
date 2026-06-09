@@ -46,6 +46,26 @@ try {
   await page.getByRole("heading", { name: "审查证据" }).waitFor();
   await page.getByRole("heading", { name: "PR 交付" }).waitFor();
   await page.getByRole("heading", { name: "交付审计" }).waitFor();
+  await page.getByPlaceholder(/如果要求修改/).fill("首页需要明确显示返工任务已重新进入队列。");
+  await page.getByRole("button", { name: /要求修改/ }).click();
+
+  await page.waitForURL(/\/requirements\/.+\/confirm/);
+  await page.getByText("这些任务已回到返工队列").waitFor();
+  await page.getByText(/返工第 1 轮/).first().waitFor();
+  await page.getByRole("button", { name: /开始执行/ }).click();
+
+  await page.waitForURL(/\/runs\/.+/);
+  await page.getByText(/PatchPilot 正在推进这次任务/).waitFor();
+  await page.getByText("Agent team 进度").waitFor();
+  await page.getByText(/4\/4 完成/).waitFor({ timeout: 15000 });
+  await page.getByText(/返工第 1 轮/).first().waitFor();
+  await page.getByRole("button", { name: /查看结果并确认/ }).waitFor({ state: "visible", timeout: 15000 });
+  await page.getByRole("button", { name: /查看结果并确认/ }).click();
+
+  await page.waitForURL(/\/acceptance\/.+/);
+  await page.getByText("这次 agent 交付完成了").waitFor();
+  await page.getByText(/4\/4 可验收/).waitFor();
+  await page.getByText(/返工第 1 轮/).first().waitFor();
   await page.getByRole("button", { name: /接受结果/ }).click();
 
   await page.waitForURL(baseUrl);

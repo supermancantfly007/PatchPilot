@@ -57,6 +57,7 @@ Compose provides Postgres, Redis, and MinIO with health checks. It does not cont
 - Local Codex runner in an isolated git worktree when `codex` and git are available
 - Simulated runner fallback for demos and CI tests
 - WorkspaceRun, TestCase, TestRun, local PullRequest, ReviewRecord, AuditEvent evidence records plus changed file list, risk summary, reviewer summary, and final acceptance
+- Rejected acceptance requeues the same work items as a new rework round, preserves the rejection reason, and creates fresh agent runs on the next team start
 - Bug reports that first go to the test agent for reproduction, then create a backend fix task for the developer agent
 - JSON-backed local state for fast iteration
 
