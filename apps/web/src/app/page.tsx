@@ -1,10 +1,11 @@
 "use client";
 
-import type { RequirementTemplate } from "@patchpilot/domain";
+import type { RequirementTemplate, RuntimeConfig } from "@patchpilot/domain";
 import { ArrowRight, Paperclip, ShieldCheck, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { StatusNotice } from "@/components/StatusNotice";
 import { TemplateSelector } from "@/components/TemplateSelector";
 import { api } from "@/lib/api";
 
@@ -13,13 +14,24 @@ export default function HomePage() {
   const [template, setTemplate] = useState<RequirementTemplate>("feature");
   const [rawInput, setRawInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [config, setConfig] = useState<RuntimeConfig | null>(null);
+
+  useEffect(() => {
+    void api.getConfig().then(setConfig).catch(() => {
+      setConfig(null);
+    });
+  }, []);
 
   async function submit() {
     if (!rawInput.trim()) return;
     setSubmitting(true);
+    setError(null);
     try {
       const requirement = await api.createRequirement(rawInput, template);
       router.push(`/requirements/${requirement.id}/confirm`);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "提交失败，请稍后再试。");
     } finally {
       setSubmitting(false);
     }
@@ -50,6 +62,13 @@ export default function HomePage() {
           placeholder="你想让 PatchPilot 做什么？例如：做一个白色底的 agent 平台首页，可以提交需求、看到进度并确认结果。"
           value={rawInput}
         />
+        {error ? (
+          <div className="composer-notice">
+            <StatusNotice title="需求没有提交成功" tone="error">
+              {error}。请确认 API 服务已启动，然后重试。
+            </StatusNotice>
+          </div>
+        ) : null}
         <div className="composer-footer">
           <span className="muted" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
             <Paperclip size={16} />
@@ -71,6 +90,15 @@ export default function HomePage() {
       />
 
       <section className="evidence-grid" style={{ marginTop: 28 }}>
+        <div className="metric execution-mode">
+          <span className="muted">当前模式</span>
+          <strong>{config?.activeRunner === "codex" ? "本地 Codex" : "模拟执行"}</strong>
+          <small>
+            {config?.activeRunner === "codex"
+              ? "会在隔离 worktree 中调用本机 Codex 执行，并收集测试证据。"
+              : "会走完整验收闭环，但不会真实修改仓库。"}
+          </small>
+        </div>
         <div className="metric">
           <span className="muted">默认澄清</span>
           <strong>最多 3 问</strong>

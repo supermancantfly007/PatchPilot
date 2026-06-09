@@ -6,6 +6,8 @@ coverage
 .env.*
 !.env.example
 data/*.json
+**/data/*.json
+.patchpilot
 *.log
 *.tsbuildinfo
 .DS_Store

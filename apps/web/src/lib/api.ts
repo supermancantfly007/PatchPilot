@@ -5,23 +5,33 @@ import type {
   Prd,
   Requirement,
   RequirementTemplate,
+  RuntimeConfig,
   WorkItem
 } from "@patchpilot/domain";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers || {})
-    },
+    headers,
     cache: "no-store"
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Request failed: ${response.status}`);
+    let message = text || `Request failed: ${response.status}`;
+    try {
+      const payload = JSON.parse(text) as { message?: string; error?: string };
+      message = payload.message || payload.error || message;
+    } catch {
+      // Keep the raw response text when the server did not return JSON.
+    }
+    throw new Error(message);
   }
   return response.json() as Promise<T>;
 }
@@ -45,8 +55,11 @@ export const api = {
   approvePrd(id: string) {
     return request<{ prd: Prd; workItems: WorkItem[] }>(`/api/prds/${id}/approve`, { method: "POST" });
   },
-  startRun(workItemId: string) {
-    return request<AgentRun>(`/api/work-items/${workItemId}/start`, { method: "POST" });
+  startRun(workItemId: string, runner?: AgentRun["runner"]) {
+    return request<AgentRun>(`/api/work-items/${workItemId}/start`, {
+      method: "POST",
+      body: JSON.stringify({ runner })
+    });
   },
   getRun(id: string) {
     return request<AgentRun>(`/api/runs/${id}`);
@@ -59,6 +72,9 @@ export const api = {
   },
   getSnapshot() {
     return request<PatchPilotSnapshot>("/api/snapshot");
+  },
+  getConfig() {
+    return request<RuntimeConfig>("/api/config");
   },
   eventSourceUrl(runId: string) {
     return `${API_BASE}/api/runs/${runId}/events`;

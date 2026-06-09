@@ -164,6 +164,10 @@ a {
   background: var(--muted);
 }
 
+.composer-notice {
+  padding: 0 16px 16px;
+}
+
 .template-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -225,6 +229,10 @@ a {
 
 .button.danger {
   background: var(--red);
+}
+
+.button.danger:hover {
+  background: #b91c1c;
 }
 
 .button:disabled {
@@ -337,6 +345,12 @@ a {
   color: var(--blue);
 }
 
+.step.failed .step-dot {
+  border-color: rgba(220, 38, 38, 0.25);
+  background: rgba(220, 38, 38, 0.08);
+  color: var(--red);
+}
+
 .event-list {
   display: grid;
   gap: 10px;
@@ -351,7 +365,7 @@ a {
 
 .evidence-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -363,9 +377,23 @@ a {
 }
 
 .metric strong {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 7px;
   margin-top: 5px;
   font-size: 20px;
+}
+
+.metric small {
+  display: block;
+  margin-top: 8px;
+  color: var(--subtle);
+  line-height: 1.45;
+}
+
+.execution-mode {
+  background: #fffbeb;
+  border-color: #fde68a;
 }
 
 .status-pill {
@@ -394,6 +422,73 @@ a {
 .status-pill.amber {
   background: rgba(217, 119, 6, 0.1);
   color: var(--amber);
+}
+
+.status-pill.red {
+  background: rgba(220, 38, 38, 0.1);
+  color: var(--red);
+}
+
+.notice {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--muted);
+  color: #374151;
+  line-height: 1.45;
+}
+
+.notice-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  color: var(--blue);
+}
+
+.notice-copy {
+  display: block;
+  margin-top: 2px;
+  color: var(--subtle);
+}
+
+.notice.success {
+  border-color: rgba(22, 163, 74, 0.25);
+  background: rgba(22, 163, 74, 0.07);
+}
+
+.notice.success .notice-icon {
+  color: var(--green);
+}
+
+.notice.warning {
+  border-color: rgba(217, 119, 6, 0.25);
+  background: rgba(217, 119, 6, 0.08);
+}
+
+.notice.warning .notice-icon {
+  color: var(--amber);
+}
+
+.notice.error {
+  border-color: rgba(220, 38, 38, 0.25);
+  background: rgba(220, 38, 38, 0.07);
+}
+
+.notice.error .notice-icon {
+  color: var(--red);
+}
+
+.compact-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 20px;
+  color: #374151;
 }
 
 @media (max-width: 860px) {

@@ -33,6 +33,8 @@ export async function buildServer() {
 
   app.get("/health", async () => ({ ok: true, service: "patchpilot-api" }));
 
+  app.get("/api/config", async () => store.getRuntimeConfig());
+
   app.get("/api/snapshot", async () => store.getSnapshot());
 
   app.post("/api/requirements", async (request, reply) => {
@@ -59,7 +61,8 @@ export async function buildServer() {
 
   app.post("/api/work-items/:id/start", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
-    const run = await store.startRun(id);
+    const input = z.object({ runner: z.enum(["simulated", "codex"]).optional() }).default({}).parse(request.body);
+    const run = await store.startRun(id, input.runner);
     return reply.code(201).send(run);
   });
 

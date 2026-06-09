@@ -1,10 +1,11 @@
 "use client";
 
-import type { Prd, Requirement, WorkItem } from "@patchpilot/domain";
+import type { Prd, Requirement, RuntimeConfig, WorkItem } from "@patchpilot/domain";
 import { ArrowRight, CheckCircle2, ClipboardList, HelpCircle } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { StatusNotice } from "@/components/StatusNotice";
 import { api } from "@/lib/api";
 
 export default function RequirementConfirmPage() {
@@ -16,28 +17,41 @@ export default function RequirementConfirmPage() {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [config, setConfig] = useState<RuntimeConfig | null>(null);
 
   useEffect(() => {
-    void api.getRequirement(id).then((bundle) => {
-      setRequirement(bundle.requirement);
-      setPrd(bundle.prd || null);
-      setWorkItems(bundle.workItems);
-      setAnswers(
-        Object.fromEntries(
-          bundle.requirement.clarificationQuestions.map((question) => [question.id, question.recommendedAnswer])
-        )
-      );
-      setLoading(false);
-    });
+    setLoading(true);
+    setError(null);
+    void api.getConfig().then(setConfig).catch(() => setConfig(null));
+    void api
+      .getRequirement(id)
+      .then((bundle) => {
+        setRequirement(bundle.requirement);
+        setPrd(bundle.prd || null);
+        setWorkItems(bundle.workItems);
+        setAnswers(
+          Object.fromEntries(
+            bundle.requirement.clarificationQuestions.map((question) => [question.id, question.recommendedAnswer])
+          )
+        );
+      })
+      .catch((nextError) => {
+        setError(nextError instanceof Error ? nextError.message : "需求加载失败。");
+      })
+      .finally(() => setLoading(false));
   }, [id]);
 
   async function generatePrd() {
     if (!requirement) return;
     setSubmitting(true);
+    setError(null);
     try {
       const result = await api.answerClarification(requirement.id, answers);
       setRequirement(result.requirement);
       setPrd(result.prd);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "需求说明生成失败。");
     } finally {
       setSubmitting(false);
     }
@@ -46,6 +60,7 @@ export default function RequirementConfirmPage() {
   async function start() {
     if (!prd) return;
     setSubmitting(true);
+    setError(null);
     try {
       const approved = await api.approvePrd(prd.id);
       const workItem = approved.workItems[0];
@@ -53,6 +68,8 @@ export default function RequirementConfirmPage() {
       setWorkItems(approved.workItems);
       const run = await api.startRun(workItem.id);
       router.push(`/runs/${run.id}`);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "启动执行失败。");
     } finally {
       setSubmitting(false);
     }
@@ -72,7 +89,14 @@ export default function RequirementConfirmPage() {
     return (
       <AppShell>
         <div className="card">
-          <div className="card-body">没有找到这个需求。</div>
+          <div className="card-body grid">
+            <StatusNotice title="没有找到这个需求" tone="error">
+              {error ?? "这个需求可能已被删除，或当前 API 数据已重置。"}
+            </StatusNotice>
+            <button className="button secondary" onClick={() => router.push("/")} type="button">
+              返回工作台
+            </button>
+          </div>
         </div>
       </AppShell>
     );
@@ -93,6 +117,11 @@ export default function RequirementConfirmPage() {
               </div>
             </div>
             <div className="card-body grid">
+              {error ? (
+                <StatusNotice title={prd ? "执行没有启动成功" : "需求说明没有生成成功"} tone="error">
+                  {error}。请保留当前页面，确认 API 服务状态后重试。
+                </StatusNotice>
+              ) : null}
               {!prd ? (
                 <>
                   <p className="muted" style={{ margin: 0 }}>
@@ -132,6 +161,18 @@ export default function RequirementConfirmPage() {
                 </>
               ) : (
                 <>
+                  <StatusNotice
+                    title={
+                      config?.activeRunner === "codex"
+                        ? "下一步会启动本地 Codex agent"
+                        : "下一步会启动本地模拟执行"
+                    }
+                    tone={config?.activeRunner === "codex" ? "info" : "warning"}
+                  >
+                    {config?.activeRunner === "codex"
+                      ? "平台会创建隔离 worktree，让 Codex 在其中开发、测试并返回证据；不会自动合并或发布。"
+                      : "它会展示计划、测试、审查和验收证据，但当前 runner 不会真实修改仓库文件。"}
+                  </StatusNotice>
                   <div className="question-card" style={{ background: "white" }}>
                     <strong>要做什么</strong>
                     <p style={{ margin: 0 }}>{requirement.rawInput}</p>

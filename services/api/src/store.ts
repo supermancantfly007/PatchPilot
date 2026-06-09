@@ -6,10 +6,8 @@ import {
   type AgentRun,
   type AgentRunEvent,
   type PatchPilotSnapshot,
-  type Prd,
   type Requirement,
   type TestRun,
-  type WorkItem,
   advanceTimeline,
   completeTimeline,
   createPrd,
@@ -17,12 +15,16 @@ import {
   createWorkItems,
   emptySnapshot,
   generateClarificationQuestions,
-  makeSimpleSummary
+  makeSimpleSummary,
+  type RuntimeConfig
 } from "@patchpilot/domain";
+import { isCodexAvailable, isGitWorkspaceAvailable, runCodexAgent, type RunnerEvent } from "./codexRunner";
 
 const dataFile = join(process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"), "patchpilot-store.json");
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const simulationDelay = (ms: number) =>
+  Math.max(0, Math.round(ms * Number(process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR ?? 1)));
 
 export class PatchPilotStore {
   private snapshot: PatchPilotSnapshot = emptySnapshot();
@@ -115,13 +117,31 @@ export class PatchPilotStore {
     return { prd, workItems };
   }
 
-  async startRun(workItemId: string) {
+  async getRuntimeConfig(): Promise<RuntimeConfig> {
+    const codexAvailable = await isCodexAvailable();
+    const gitWorkspaceAvailable = await isGitWorkspaceAvailable();
+    const configuredRunner =
+      process.env.PATCHPILOT_RUNNER === "codex" || process.env.PATCHPILOT_RUNNER === "simulated"
+        ? process.env.PATCHPILOT_RUNNER
+        : "auto";
+    return {
+      configuredRunner,
+      activeRunner: await this.resolveRunner(undefined, { codexAvailable, gitWorkspaceAvailable }),
+      codexAvailable,
+      gitWorkspaceAvailable,
+      testCommand: process.env.PATCHPILOT_TEST_COMMAND || "pnpm -r --if-present test",
+      workspaceRoot: process.env.PATCHPILOT_WORKSPACE_ROOT || join(process.cwd(), ".patchpilot", "worktrees")
+    };
+  }
+
+  async startRun(workItemId: string, runnerOverride?: AgentRun["runner"]) {
     await this.load();
     const workItem = this.findWorkItem(workItemId);
     if (workItem.status !== "ready") {
       throw new DomainError("INVALID_STATE", "Work item is not ready to start");
     }
     const prd = this.findPrd(workItem.prdId);
+    const runner = await this.resolveRunner(runnerOverride);
     const now = new Date().toISOString();
     workItem.status = "running";
 
@@ -130,6 +150,7 @@ export class PatchPilotStore {
       requirementId: prd.requirementId,
       prdId: prd.id,
       workItemId,
+      runner,
       status: "running",
       currentStep: "understanding",
       timeline: createTimeline(),
@@ -141,7 +162,7 @@ export class PatchPilotStore {
     this.snapshot.agentRuns.unshift(run);
     await this.save();
 
-    void this.simulateRun(run.id);
+    void this.executeRun(run.id);
     return run;
   }
 
@@ -177,6 +198,53 @@ export class PatchPilotStore {
     return { requirement, prd, workItems };
   }
 
+  private async executeRun(runId: string) {
+    try {
+      await this.load();
+      const run = this.findRun(runId);
+      if (run.runner === "codex") {
+        await this.executeCodexRun(runId);
+        return;
+      }
+      await this.simulateRun(runId);
+    } catch (error) {
+      await this.markRunFailed(runId, error);
+    }
+  }
+
+  private async executeCodexRun(runId: string) {
+    await this.load();
+    const run = this.findRun(runId);
+    const requirement = this.findRequirement(run.requirementId);
+    const prd = this.findPrd(run.prdId);
+    const workItem = this.findWorkItem(run.workItemId);
+
+    await this.appendRunEvent(runId, {
+      step: "planning",
+      type: "plan.created",
+      message: "已确认任务上下文，准备为本地 Codex agent 创建隔离工作区"
+    });
+
+    const result = await runCodexAgent(
+      { runId, requirement, prd, workItem },
+      (event) => this.appendRunEvent(runId, event)
+    );
+
+    await this.load();
+    const completedRun = this.findRun(runId);
+    const completedWorkItem = this.findWorkItem(completedRun.workItemId);
+    completedRun.status = "succeeded";
+    completedRun.timeline = completeTimeline(completedRun.timeline);
+    completedRun.currentStep = "confirming";
+    completedRun.events.push(this.makeEvent("review.completed", "Reviewer agent 已整理执行证据，等待你确认"));
+    completedRun.events.push(this.makeEvent("acceptance.waiting", "执行完成，请查看证据摘要并确认"));
+    completedRun.result = result;
+    completedRun.costActualUsd = 0;
+    completedRun.endedAt = new Date().toISOString();
+    completedWorkItem.status = "review";
+    await this.save();
+  }
+
   private async simulateRun(runId: string) {
     const steps: Array<{
       step: AgentRun["currentStep"];
@@ -194,7 +262,7 @@ export class PatchPilotStore {
 
     try {
       for (const item of steps) {
-        await delay(item.wait);
+        await delay(simulationDelay(item.wait));
         await this.load();
         const run = this.snapshot.agentRuns.find((candidate) => candidate.id === runId);
         if (!run || run.status !== "running") return;
@@ -226,7 +294,8 @@ export class PatchPilotStore {
         riskLevel: "low",
         changedFiles: ["apps/web", "services/api", "packages/domain"],
         tests,
-        reviewerSummary: "变更符合 MVP 普通模式目标：白色底、模板入口、进度展示、完成证据和验收入口齐备。"
+        reviewerSummary: "变更符合 MVP 普通模式目标：白色底、模板入口、进度展示、完成证据和验收入口齐备。",
+        runner: "simulated"
       };
       run.costActualUsd = 0.38;
       run.endedAt = new Date().toISOString();
@@ -241,11 +310,43 @@ export class PatchPilotStore {
     await this.load();
     const run = this.snapshot.agentRuns.find((item) => item.id === runId);
     if (!run) return;
+    const workItem = this.snapshot.workItems.find((item) => item.id === run.workItemId);
     run.status = "failed";
     run.failureSummary = error instanceof Error ? error.message : String(error);
+    run.timeline = run.timeline.map((step) =>
+      step.key === run.currentStep ? { ...step, status: "failed" } : step
+    );
     run.events.push(this.makeEvent("run.failed", "执行失败，已生成失败摘要"));
     run.endedAt = new Date().toISOString();
+    if (workItem) workItem.status = "blocked";
     await this.save();
+  }
+
+  private async appendRunEvent(runId: string, event: RunnerEvent) {
+    await this.load();
+    const run = this.snapshot.agentRuns.find((item) => item.id === runId);
+    if (!run || run.status !== "running") return;
+    if (event.step) {
+      run.currentStep = event.step;
+      run.timeline = advanceTimeline(run.timeline, event.step);
+    }
+    run.events.push(this.makeEvent(event.type, event.message));
+    await this.save();
+  }
+
+  private async resolveRunner(
+    override?: AgentRun["runner"],
+    availability?: { codexAvailable: boolean; gitWorkspaceAvailable: boolean }
+  ): Promise<AgentRun["runner"]> {
+    if (override) return override;
+    if (process.env.NODE_ENV === "test") return "simulated";
+    const configured = process.env.PATCHPILOT_RUNNER;
+    if (configured === "simulated" || configured === "codex") return configured;
+    const checks = availability || {
+      codexAvailable: await isCodexAvailable(),
+      gitWorkspaceAvailable: await isGitWorkspaceAvailable()
+    };
+    return checks.codexAvailable && checks.gitWorkspaceAvailable ? "codex" : "simulated";
   }
 
   private findRequirement(id: string) {

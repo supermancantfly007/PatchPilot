@@ -14,16 +14,22 @@
     "dev:api": "pnpm --filter @patchpilot/api dev",
     "dev:web": "pnpm --filter @patchpilot/web dev",
     "dev:reset": "node scripts/reset-dev-data.mjs",
+    "e2e:smoke": "node scripts/e2e-smoke.mjs",
     "build": "pnpm -r --if-present build",
     "test": "pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck",
-    "lint": "pnpm -r --if-present lint"
+    "lint": "eslint . --max-warnings=0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^24.10.1",
+    "concurrently": "^9.2.1",
+    "eslint": "^10.4.1",
+    "globals": "^17.6.0",
+    "playwright-core": "^1.60.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.15",
-    "concurrently": "^9.2.1"
+    "typescript-eslint": "^8.61.0",
+    "vitest": "^4.0.15"
   }
 }

@@ -31,6 +31,8 @@ export type AcceptanceStatus = "pending" | "accepted" | "rejected";
 
 export type TimelineStepKey = "understanding" | "planning" | "developing" | "testing" | "confirming";
 
+export type AgentRunnerKind = "simulated" | "codex";
+
 export interface TimelineStep {
   key: TimelineStepKey;
   label: string;
@@ -84,6 +86,7 @@ export interface AgentRun {
   requirementId: string;
   prdId: string;
   workItemId: string;
+  runner: AgentRunnerKind;
   status: AgentRunStatus;
   currentStep: TimelineStepKey;
   timeline: TimelineStep[];
@@ -103,9 +106,13 @@ export interface AgentRunEvent {
     | "requirement.understood"
     | "plan.created"
     | "workspace.created"
+    | "codex.started"
+    | "codex.output"
+    | "git.diff.created"
     | "agent.progress"
     | "test.started"
     | "test.passed"
+    | "test.failed"
     | "review.completed"
     | "acceptance.waiting"
     | "run.failed";
@@ -119,6 +126,18 @@ export interface AgentRunResult {
   changedFiles: string[];
   tests: TestRun[];
   reviewerSummary: string;
+  runner: AgentRunnerKind;
+  workspacePath?: string;
+  codexSessionId?: string;
+}
+
+export interface RuntimeConfig {
+  configuredRunner: "auto" | AgentRunnerKind;
+  activeRunner: AgentRunnerKind;
+  codexAvailable: boolean;
+  gitWorkspaceAvailable: boolean;
+  testCommand: string;
+  workspaceRoot: string;
 }
 
 export interface TestRun {
