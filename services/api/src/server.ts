@@ -90,6 +90,13 @@ export async function buildServer() {
     return store.approvePrd(id);
   });
 
+  app.post("/api/prds/:id/start-team", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = z.object({ runner: z.enum(["simulated", "codex"]).optional() }).default({}).parse(request.body);
+    const result = await store.startTeam(id, input.runner);
+    return reply.code(201).send(result);
+  });
+
   app.post("/api/work-items/:id/start", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = z.object({ runner: z.enum(["simulated", "codex"]).optional() }).default({}).parse(request.body);

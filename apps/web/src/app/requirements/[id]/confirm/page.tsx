@@ -74,11 +74,11 @@ export default function RequirementConfirmPage() {
     setSubmitting(true);
     setError(null);
     try {
-      const approved = await api.approvePrd(prd.id);
-      const workItem = approved.workItems[0];
-      if (!workItem) throw new Error("没有生成可执行任务");
-      setWorkItems(approved.workItems);
-      const run = await api.startRun(workItem.id);
+      const started = await api.startTeam(prd.id);
+      const run = started.runs[0];
+      if (!run) throw new Error("没有生成可执行任务");
+      setPrd(started.prd);
+      setWorkItems(started.workItems);
       router.push(`/runs/${run.id}`);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "启动执行失败。");
@@ -199,14 +199,14 @@ export default function RequirementConfirmPage() {
                   <StatusNotice
                     title={
                       config?.activeRunner === "codex"
-                        ? "下一步会启动本地 Codex agent"
+                        ? "下一步会启动本地 Codex agent team"
                         : "下一步会启动本地模拟执行"
                     }
                     tone={config?.activeRunner === "codex" ? "info" : "warning"}
                   >
                     {config?.activeRunner === "codex"
-                      ? "平台会创建隔离 worktree，让 Codex 在其中开发、测试并返回证据；不会自动合并或发布。"
-                      : "它会展示计划、测试、审查和验收证据，但当前 runner 不会真实修改仓库文件。"}
+                      ? "平台会为团队任务创建隔离 worktree，让 Codex 开发、测试并返回证据；不会自动合并或发布。"
+                      : "它会启动团队任务并展示计划、测试、审查和验收证据，但当前 runner 不会真实修改仓库文件。"}
                   </StatusNotice>
                   <div className="question-card" style={{ background: "white" }}>
                     <strong>要做什么</strong>
@@ -229,7 +229,7 @@ export default function RequirementConfirmPage() {
                     </ul>
                   </div>
                   <button className="button" disabled={submitting} onClick={start} type="button">
-                    {submitting ? "启动中" : "开始执行"}
+                    {submitting ? "启动中" : "开始执行 agent team"}
                     <ArrowRight size={17} />
                   </button>
                 </>

@@ -85,6 +85,15 @@ export const api = {
   approvePrd(id: string) {
     return request<{ prd: Prd; workItems: WorkItem[] }>(`/api/prds/${id}/approve`, { method: "POST" });
   },
+  startTeam(prdId: string, runner?: AgentRun["runner"]) {
+    return request<{ prd: Prd; workItems: WorkItem[]; runs: AgentRun[]; skippedWorkItems: WorkItem[] }>(
+      `/api/prds/${prdId}/start-team`,
+      {
+        method: "POST",
+        body: JSON.stringify({ runner })
+      }
+    );
+  },
   startRun(workItemId: string, runner?: AgentRun["runner"]) {
     return request<AgentRun>(`/api/work-items/${workItemId}/start`, {
       method: "POST",

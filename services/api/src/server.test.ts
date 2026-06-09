@@ -152,6 +152,85 @@ describe("PatchPilot API", () => {
     await app.close();
   });
 
+  it("starts the whole agent team for a PRD", async () => {
+    const app = await buildServer();
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/requirements",
+      payload: { rawInput: "让前端后端测试运维 agent 一起交付一个功能", template: "feature" }
+    });
+    const requirement = create.json();
+    const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
+    const prd = prdResponse.json().prd;
+
+    const startTeam = await app.inject({
+      method: "POST",
+      url: `/api/prds/${prd.id}/start-team`,
+      payload: { runner: "simulated" }
+    });
+    expect(startTeam.statusCode).toBe(201);
+    expect(startTeam.json().runs).toHaveLength(4);
+    expect(startTeam.json().workItems.map((item: { role: string }) => item.role).sort()).toEqual([
+      "backend",
+      "frontend",
+      "ops",
+      "test"
+    ]);
+
+    const completedRuns = await pollPrdRuns(app, prd.id, 4);
+    expect(completedRuns.every((run: { status: string }) => run.status === "succeeded")).toBe(true);
+
+    const restartTeam = await app.inject({
+      method: "POST",
+      url: `/api/prds/${prd.id}/start-team`,
+      payload: { runner: "simulated" }
+    });
+    expect(restartTeam.statusCode).toBe(201);
+    expect(restartTeam.json().runs.map((run: { id: string }) => run.id).sort()).toEqual(
+      completedRuns.map((run: { id: string }) => run.id).sort()
+    );
+
+    await app.close();
+  });
+
+  it("does not duplicate a run when start-team sees an already running claimed work item", async () => {
+    const app = await buildServer();
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/requirements",
+      payload: { rawInput: "验证 claimed 任务重复 start-team 不产生重复 run", template: "feature" }
+    });
+    const requirement = create.json();
+    const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
+    const prd = prdResponse.json().prd;
+    const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
+    const workItem = approval.json().workItems[0];
+    await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/claim`,
+      payload: { agentId: "agent_backend" }
+    });
+    const firstStart = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/start`,
+      payload: { runner: "simulated" }
+    });
+
+    const teamStart = await app.inject({
+      method: "POST",
+      url: `/api/prds/${prd.id}/start-team`,
+      payload: { runner: "simulated" }
+    });
+
+    expect(teamStart.statusCode).toBe(201);
+    const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const runsForWorkItem = snapshot.json().agentRuns.filter((run: { workItemId: string }) => run.workItemId === workItem.id);
+    expect(runsForWorkItem).toHaveLength(1);
+    expect(runsForWorkItem[0].id).toBe(firstStart.json().id);
+    await pollPrdRuns(app, prd.id, 4);
+    await app.close();
+  });
+
   it("supports grill-me style clarification turns before PRD creation", async () => {
     const app = await buildServer();
     const create = await app.inject({
@@ -222,4 +301,21 @@ async function pollRun(app: Awaited<ReturnType<typeof buildServer>>, runId: stri
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Run did not finish: ${runId}`);
+}
+
+async function pollPrdRuns(app: Awaited<ReturnType<typeof buildServer>>, prdId: string, expectedCount: number) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const response = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const runs = response
+      .json()
+      .agentRuns.filter((run: { prdId: string }) => run.prdId === prdId);
+    if (
+      runs.length === expectedCount &&
+      runs.every((run: { status: string }) => run.status === "succeeded" || run.status === "failed")
+    ) {
+      return runs;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Runs did not finish for PRD: ${prdId}`);
 }

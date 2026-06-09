@@ -185,6 +185,30 @@ export class PatchPilotStore {
     return { prd, workItems };
   }
 
+  async startTeam(prdId: string, runnerOverride?: AgentRun["runner"]) {
+    await this.load();
+    const { prd } = await this.approvePrd(prdId);
+    const workItems = this.snapshot.workItems.filter((item) => item.prdId === prd.id);
+    const runs: AgentRun[] = [];
+    const skippedWorkItems: typeof workItems = [];
+
+    for (const workItem of workItems) {
+      if (this.canStartOrReuseRun(workItem.id, workItem.status)) {
+        runs.push(await this.startRun(workItem.id, runnerOverride));
+      } else {
+        skippedWorkItems.push(workItem);
+      }
+    }
+
+    await this.load();
+    return {
+      prd,
+      workItems: this.snapshot.workItems.filter((item) => item.prdId === prd.id),
+      runs,
+      skippedWorkItems
+    };
+  }
+
   async createBug(input: {
     title: string;
     description: string;
@@ -319,7 +343,7 @@ export class PatchPilotStore {
     const existingRun = this.snapshot.agentRuns.find(
       (item) => item.workItemId === workItemId && !["failed", "cancelled"].includes(item.status)
     );
-    if (existingRun && ["running", "review", "done"].includes(workItem.status)) {
+    if (existingRun) {
       return existingRun;
     }
     if (!["ready", "claimed"].includes(workItem.status)) {
@@ -666,6 +690,14 @@ export class PatchPilotStore {
       this.snapshot.agents.find((agent) => agent.status === "idle" && agent.role === role) ||
       this.snapshot.agents.find((agent) => agent.status === "idle" && agent.role === "reviewer")
     );
+  }
+
+  private canStartOrReuseRun(workItemId: string, status: PatchPilotSnapshot["workItems"][number]["status"]) {
+    if (["ready", "claimed"].includes(status)) return true;
+    const existingRun = this.snapshot.agentRuns.find(
+      (item) => item.workItemId === workItemId && !["failed", "cancelled"].includes(item.status)
+    );
+    return Boolean(existingRun && ["running", "review", "done"].includes(status));
   }
 
   private completeAgentAssignment(workItemId: string, now: string) {
