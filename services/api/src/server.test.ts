@@ -140,6 +140,67 @@ describe("PatchPilot API", () => {
 
     await app.close();
   });
+
+  it("supports grill-me style clarification turns before PRD creation", async () => {
+    const app = await buildServer();
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/requirements",
+      payload: { rawInput: "做一个可以分配 agent 任务的平台", template: "feature" }
+    });
+    const requirement = create.json();
+    expect(requirement.clarificationTurns).toHaveLength(1);
+    expect(requirement.clarificationTurns[0].speaker).toBe("agent");
+    expect(requirement.clarificationTurns[0].recommendedAnswer).toEqual(expect.any(String));
+
+    const turn = await app.inject({
+      method: "POST",
+      url: `/api/requirements/${requirement.id}/clarification-turn`,
+      payload: { message: "主要用户是项目负责人，第一版要能看任务状态和 agent 归属。" }
+    });
+    expect(turn.statusCode).toBe(200);
+    expect(turn.json().requirement.clarificationTurns).toHaveLength(3);
+    expect(turn.json().nextQuestion.recommendedAnswer).toEqual(expect.any(String));
+
+    const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
+    expect(prdResponse.statusCode).toBe(200);
+    expect(prdResponse.json().prd.bodyMarkdown).toContain("## 澄清记录");
+    expect(prdResponse.json().prd.bodyMarkdown).toContain("主要用户是项目负责人");
+    await app.close();
+  });
+
+  it("creates bug work and lets the test agent claim it", async () => {
+    const app = await buildServer();
+    const bugResponse = await app.inject({
+      method: "POST",
+      url: "/api/bugs",
+      payload: {
+        title: "开始执行按钮没有反应",
+        description: "确认 PRD 后点击开始执行没有跳转。",
+        reproductionSteps: "提交需求，生成 PRD，点击开始执行。",
+        expectedBehavior: "页面跳转到执行进度页。",
+        actualBehavior: "停留在确认页。",
+        severity: "high"
+      }
+    });
+    expect(bugResponse.statusCode).toBe(201);
+    const { bug, workItem } = bugResponse.json();
+    expect(bug.status).toBe("reported");
+    expect(workItem.role).toBe("test");
+    expect(workItem.sourceBugId).toBe(bug.id);
+
+    const claim = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/claim`,
+      payload: { agentId: "agent_test" }
+    });
+    expect(claim.statusCode).toBe(200);
+    expect(claim.json().workItem.status).toBe("claimed");
+    expect(claim.json().agent.status).toBe("busy");
+    expect(claim.json().bug.status).toBe("confirmed");
+
+    await app.close();
+  });
 });
 
 async function pollRun(app: Awaited<ReturnType<typeof buildServer>>, runId: string) {

@@ -3,13 +3,22 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   type AcceptanceDecision,
+  type AgentProfile,
   type AgentRun,
   type AgentRunEvent,
+  type BugReport,
+  type BugSeverity,
   type PatchPilotSnapshot,
   type Requirement,
   type TestRun,
   advanceTimeline,
   completeTimeline,
+  createBugPrd,
+  createBugRequirement,
+  createGrillMeQuestion,
+  createInitialClarificationTurn,
+  createBugWorkItem,
+  createDefaultAgents,
   createPrd,
   createTimeline,
   createWorkItems,
@@ -35,6 +44,7 @@ export class PatchPilotStore {
     try {
       const raw = await readFile(dataFile, "utf8");
       this.snapshot = JSON.parse(raw) as PatchPilotSnapshot;
+      this.normalizeSnapshot();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw new DomainError("STORE_CORRUPT", "Store file could not be read or parsed");
@@ -48,6 +58,11 @@ export class PatchPilotStore {
   async getSnapshot() {
     await this.load();
     return structuredClone(this.snapshot);
+  }
+
+  async getAgents() {
+    await this.load();
+    return structuredClone(this.snapshot.agents);
   }
 
   async createRequirement(input: {
@@ -65,6 +80,7 @@ export class PatchPilotStore {
       status: "clarifying",
       simpleSummary: makeSimpleSummary(input.rawInput, input.template),
       clarificationQuestions: generateClarificationQuestions(input.rawInput, input.template),
+      clarificationTurns: [createInitialClarificationTurn(input.rawInput, input.template, now)],
       createdAt: now,
       updatedAt: now
     };
@@ -87,6 +103,58 @@ export class PatchPilotStore {
     requirement.status = "prd_draft";
     requirement.updatedAt = new Date().toISOString();
 
+    const prd = createPrd(requirement);
+    this.snapshot.prds = this.snapshot.prds.filter((item) => item.requirementId !== requirementId);
+    this.snapshot.prds.unshift(prd);
+    await this.save();
+    return { requirement, prd };
+  }
+
+  async addClarificationTurn(requirementId: string, message: string) {
+    await this.load();
+    const requirement = this.findRequirement(requirementId);
+    if (!["clarifying", "prd_draft"].includes(requirement.status)) {
+      throw new DomainError("INVALID_STATE", "Requirement is not waiting for clarification");
+    }
+    const now = new Date().toISOString();
+    requirement.clarificationTurns.push({
+      id: `turn_${randomUUID()}`,
+      speaker: "user",
+      message,
+      createdAt: now
+    });
+
+    const nextQuestion = createGrillMeQuestion(
+      requirement.rawInput,
+      requirement.template,
+      requirement.clarificationTurns
+    );
+    requirement.clarificationTurns.push({
+      id: `turn_${randomUUID()}`,
+      speaker: "agent",
+      message: nextQuestion.question,
+      recommendedAnswer: nextQuestion.recommendedAnswer,
+      createdAt: now
+    });
+    requirement.clarificationQuestions = [
+      ...requirement.clarificationQuestions,
+      nextQuestion
+    ];
+    requirement.status = "clarifying";
+    requirement.updatedAt = now;
+    await this.save();
+    return { requirement, nextQuestion };
+  }
+
+  async createPrdFromClarification(requirementId: string) {
+    await this.load();
+    const requirement = this.findRequirement(requirementId);
+    if (!["clarifying", "prd_draft"].includes(requirement.status)) {
+      throw new DomainError("INVALID_STATE", "Requirement cannot create a PRD from its current state");
+    }
+    const now = new Date().toISOString();
+    requirement.status = "prd_draft";
+    requirement.updatedAt = now;
     const prd = createPrd(requirement);
     this.snapshot.prds = this.snapshot.prds.filter((item) => item.requirementId !== requirementId);
     this.snapshot.prds.unshift(prd);
@@ -117,6 +185,117 @@ export class PatchPilotStore {
     return { prd, workItems };
   }
 
+  async createBug(input: {
+    title: string;
+    description: string;
+    reproductionSteps: string;
+    expectedBehavior: string;
+    actualBehavior: string;
+    severity: BugSeverity;
+    reporter?: string;
+  }) {
+    await this.load();
+    const now = new Date().toISOString();
+    const bugId = `bug_${randomUUID()}`;
+    const requirementId = `req_${bugId}`;
+    const requirement = createBugRequirement({
+      id: requirementId,
+      title: input.title,
+      description: input.description,
+      reproductionSteps: input.reproductionSteps,
+      expectedBehavior: input.expectedBehavior,
+      actualBehavior: input.actualBehavior,
+      now
+    });
+    const prd = createBugPrd(requirement, now);
+    const workItem = createBugWorkItem({
+      bugId,
+      requirementId,
+      prdId: prd.id,
+      title: input.title,
+      now
+    });
+    const bug: BugReport = {
+      id: bugId,
+      title: input.title,
+      description: input.description,
+      reproductionSteps: input.reproductionSteps,
+      expectedBehavior: input.expectedBehavior,
+      actualBehavior: input.actualBehavior,
+      severity: input.severity,
+      status: "reported",
+      reporter: input.reporter?.trim() || "human",
+      requirementId,
+      prdId: prd.id,
+      workItemId: workItem.id,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.snapshot.requirements.unshift(requirement);
+    this.snapshot.prds.unshift(prd);
+    this.snapshot.workItems.unshift(workItem);
+    this.snapshot.bugs.unshift(bug);
+    await this.save();
+    return { bug, requirement, prd, workItem };
+  }
+
+  async claimWorkItem(workItemId: string, agentId: string) {
+    await this.load();
+    const workItem = this.findWorkItem(workItemId);
+    const agent = this.findAgent(agentId);
+    if (!["ready", "blocked"].includes(workItem.status)) {
+      throw new DomainError("INVALID_STATE", "Work item is not available to claim");
+    }
+    if (!this.agentCanClaim(agent, workItem.role)) {
+      throw new DomainError("INVALID_STATE", `Agent ${agent.name} cannot claim ${workItem.role} work`);
+    }
+
+    const now = new Date().toISOString();
+    workItem.status = "claimed";
+    workItem.assignedAgentId = agent.id;
+    workItem.claimedAt = now;
+    workItem.updatedAt = now;
+    agent.status = "busy";
+    agent.currentWorkItemId = workItem.id;
+    agent.lastSeenAt = now;
+
+    const bug = workItem.sourceBugId
+      ? this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId)
+      : undefined;
+    if (bug && bug.status === "reported") {
+      bug.status = "confirmed";
+      bug.updatedAt = now;
+    }
+
+    await this.save();
+    return { workItem, agent, bug };
+  }
+
+  async releaseWorkItem(workItemId: string) {
+    await this.load();
+    const workItem = this.findWorkItem(workItemId);
+    if (workItem.status !== "claimed") {
+      throw new DomainError("INVALID_STATE", "Only claimed work items can be released");
+    }
+
+    const agent = workItem.assignedAgentId
+      ? this.snapshot.agents.find((item) => item.id === workItem.assignedAgentId)
+      : undefined;
+    const now = new Date().toISOString();
+    workItem.status = "ready";
+    workItem.assignedAgentId = undefined;
+    workItem.claimedAt = undefined;
+    workItem.updatedAt = now;
+    if (agent) {
+      agent.status = "idle";
+      agent.currentWorkItemId = undefined;
+      agent.lastSeenAt = now;
+    }
+    await this.save();
+    return { workItem, agent };
+  }
+
   async getRuntimeConfig(): Promise<RuntimeConfig> {
     const codexAvailable = await isCodexAvailable();
     const gitWorkspaceAvailable = await isGitWorkspaceAvailable();
@@ -137,13 +316,21 @@ export class PatchPilotStore {
   async startRun(workItemId: string, runnerOverride?: AgentRun["runner"]) {
     await this.load();
     const workItem = this.findWorkItem(workItemId);
-    if (workItem.status !== "ready") {
+    if (!["ready", "claimed"].includes(workItem.status)) {
       throw new DomainError("INVALID_STATE", "Work item is not ready to start");
     }
     const prd = this.findPrd(workItem.prdId);
     const runner = await this.resolveRunner(runnerOverride);
     const now = new Date().toISOString();
     workItem.status = "running";
+    workItem.updatedAt = now;
+    if (workItem.sourceBugId) {
+      const bug = this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId);
+      if (bug) {
+        bug.status = "fixing";
+        bug.updatedAt = now;
+      }
+    }
 
     const run: AgentRun = {
       id: `run_${randomUUID()}`,
@@ -300,6 +487,9 @@ export class PatchPilotStore {
       run.costActualUsd = 0.38;
       run.endedAt = new Date().toISOString();
       workItem.status = "review";
+      workItem.updatedAt = run.endedAt;
+      this.completeAgentAssignment(workItem.id, run.endedAt);
+      this.completeBugIfNeeded(workItem, run.endedAt);
       await this.save();
     } catch (error) {
       await this.markRunFailed(runId, error);
@@ -319,6 +509,10 @@ export class PatchPilotStore {
     run.events.push(this.makeEvent("run.failed", "执行失败，已生成失败摘要"));
     run.endedAt = new Date().toISOString();
     if (workItem) workItem.status = "blocked";
+    if (workItem) {
+      workItem.updatedAt = run.endedAt;
+      this.completeAgentAssignment(workItem.id, run.endedAt);
+    }
     await this.save();
   }
 
@@ -367,6 +561,12 @@ export class PatchPilotStore {
     return workItem;
   }
 
+  private findAgent(id: string) {
+    const agent = this.snapshot.agents.find((item) => item.id === id);
+    if (!agent) throw new DomainError("NOT_FOUND", `Agent not found: ${id}`);
+    return agent;
+  }
+
   private findRun(id: string) {
     const run = this.snapshot.agentRuns.find((item) => item.id === id);
     if (!run) throw new DomainError("NOT_FOUND", `AgentRun not found: ${id}`);
@@ -388,7 +588,77 @@ export class PatchPilotStore {
     await writeFile(tempFile, JSON.stringify(this.snapshot, null, 2));
     await rename(tempFile, dataFile);
   }
+
+  private normalizeSnapshot() {
+    const now = new Date().toISOString();
+    this.snapshot.requirements ||= [];
+    this.snapshot.prds ||= [];
+    this.snapshot.workItems ||= [];
+    this.snapshot.agentRuns ||= [];
+    this.snapshot.acceptances ||= [];
+    this.snapshot.bugs ||= [];
+    this.snapshot.agents = this.mergeDefaultAgents(this.snapshot.agents || [], now);
+    this.snapshot.requirements = this.snapshot.requirements.map((item) => ({
+      ...item,
+      clarificationTurns:
+        item.clarificationTurns && item.clarificationTurns.length > 0
+          ? item.clarificationTurns
+          : [createInitialClarificationTurn(item.rawInput, item.template, item.createdAt || now)]
+    }));
+    this.snapshot.workItems = this.snapshot.workItems.map((item) => ({
+      ...item,
+      role: item.role || (item.sourceBugId ? "test" : "backend"),
+      createdAt: item.createdAt || now,
+      updatedAt: item.updatedAt || now
+    }));
+    this.rebuildAgentBusyState(now);
+  }
+
+  private mergeDefaultAgents(existing: AgentProfile[], now: string) {
+    const byId = new Map(existing.map((agent) => [agent.id, agent]));
+    for (const agent of createDefaultAgents(now)) {
+      if (!byId.has(agent.id)) byId.set(agent.id, agent);
+    }
+    return [...byId.values()];
+  }
+
+  private rebuildAgentBusyState(now: string) {
+    for (const agent of this.snapshot.agents) {
+      if (agent.currentWorkItemId) {
+        const active = this.snapshot.workItems.find(
+          (item) => item.id === agent.currentWorkItemId && ["claimed", "running"].includes(item.status)
+        );
+        if (!active) {
+          agent.status = "idle";
+          agent.currentWorkItemId = undefined;
+          agent.lastSeenAt = now;
+        }
+      }
+    }
+  }
+
+  private agentCanClaim(agent: AgentProfile, role: WorkItemRole) {
+    return agent.status !== "offline" && (agent.role === role || agent.role === "reviewer");
+  }
+
+  private completeAgentAssignment(workItemId: string, now: string) {
+    const agent = this.snapshot.agents.find((item) => item.currentWorkItemId === workItemId);
+    if (!agent) return;
+    agent.status = "idle";
+    agent.currentWorkItemId = undefined;
+    agent.lastSeenAt = now;
+  }
+
+  private completeBugIfNeeded(workItem: { sourceBugId?: string }, now: string) {
+    if (!workItem.sourceBugId) return;
+    const bug = this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId);
+    if (!bug) return;
+    bug.status = "fixed";
+    bug.updatedAt = now;
+  }
 }
+
+type WorkItemRole = PatchPilotSnapshot["workItems"][number]["role"];
 
 export class DomainError extends Error {
   constructor(

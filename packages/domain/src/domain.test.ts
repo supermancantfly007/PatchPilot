@@ -5,16 +5,21 @@ import {
   createPrd,
   createTimeline,
   createWorkItems,
+  createInitialClarificationTurn,
   generateClarificationQuestions,
   makeSimpleSummary,
   type Requirement
 } from "./index";
 
 describe("domain helpers", () => {
-  it("creates no more than three clarification questions", () => {
-    const questions = generateClarificationQuestions("做一个 agent 平台", "feature");
-    expect(questions).toHaveLength(3);
-    expect(questions[0]?.recommendedAnswer).toContain("agent 平台");
+  it("creates grill-me style clarification prompts with recommended answers", () => {
+    const turn = createInitialClarificationTurn("做一个 agent 平台", "feature", "2026-06-09T00:00:00.000Z");
+    const legacyQuestions = generateClarificationQuestions("做一个 agent 平台", "feature");
+
+    expect(turn.speaker).toBe("agent");
+    expect(turn.message).toContain("用户可见结果");
+    expect(turn.recommendedAnswer).toContain("agent 平台");
+    expect(legacyQuestions[0]?.recommendedAnswer).toContain("agent 平台");
   });
 
   it("advances the simple timeline in order", () => {
@@ -33,6 +38,9 @@ describe("domain helpers", () => {
       status: "prd_draft",
       simpleSummary: makeSimpleSummary("构建一个可用 agent 平台", "feature"),
       clarificationQuestions: [],
+      clarificationTurns: [
+        createInitialClarificationTurn("构建一个可用 agent 平台", "feature", "2026-06-09T00:00:00.000Z")
+      ],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };

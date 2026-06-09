@@ -1,6 +1,8 @@
 import type {
   AcceptanceDecision,
   AgentRun,
+  BugReport,
+  ClarificationQuestion,
   PatchPilotSnapshot,
   Prd,
   Requirement,
@@ -43,6 +45,20 @@ export const api = {
       body: JSON.stringify({ rawInput, template })
     });
   },
+  createBug(input: {
+    title: string;
+    description: string;
+    reproductionSteps: string;
+    expectedBehavior: string;
+    actualBehavior: string;
+    severity?: BugReport["severity"];
+    reporter?: string;
+  }) {
+    return request<{ bug: BugReport; requirement: Requirement; prd: Prd; workItem: WorkItem }>("/api/bugs", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  },
   getRequirement(id: string) {
     return request<{ requirement: Requirement; prd?: Prd; workItems: WorkItem[] }>(`/api/requirements/${id}`);
   },
@@ -50,6 +66,20 @@ export const api = {
     return request<{ requirement: Requirement; prd: Prd }>(`/api/requirements/${id}/clarification-answer`, {
       method: "POST",
       body: JSON.stringify({ answers })
+    });
+  },
+  addClarificationTurn(id: string, message: string) {
+    return request<{ requirement: Requirement; nextQuestion: ClarificationQuestion }>(
+      `/api/requirements/${id}/clarification-turn`,
+      {
+      method: "POST",
+      body: JSON.stringify({ message })
+      }
+    );
+  },
+  createPrdFromClarification(id: string) {
+    return request<{ requirement: Requirement; prd: Prd }>(`/api/requirements/${id}/prd`, {
+      method: "POST"
     });
   },
   approvePrd(id: string) {

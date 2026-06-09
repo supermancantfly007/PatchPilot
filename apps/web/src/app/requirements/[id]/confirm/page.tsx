@@ -1,7 +1,7 @@
 "use client";
 
 import type { Prd, Requirement, RuntimeConfig, WorkItem } from "@patchpilot/domain";
-import { ArrowRight, CheckCircle2, ClipboardList, HelpCircle } from "lucide-react";
+import { ArrowRight, Bot, CheckCircle2, ClipboardList, Send, UserRound } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
@@ -14,7 +14,7 @@ export default function RequirementConfirmPage() {
   const [requirement, setRequirement] = useState<Requirement | null>(null);
   const [prd, setPrd] = useState<Prd | null>(null);
   const [workItems, setWorkItems] = useState<WorkItem[]>([]);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [draftAnswer, setDraftAnswer] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,11 +30,6 @@ export default function RequirementConfirmPage() {
         setRequirement(bundle.requirement);
         setPrd(bundle.prd || null);
         setWorkItems(bundle.workItems);
-        setAnswers(
-          Object.fromEntries(
-            bundle.requirement.clarificationQuestions.map((question) => [question.id, question.recommendedAnswer])
-          )
-        );
       })
       .catch((nextError) => {
         setError(nextError instanceof Error ? nextError.message : "需求加载失败。");
@@ -42,12 +37,29 @@ export default function RequirementConfirmPage() {
       .finally(() => setLoading(false));
   }, [id]);
 
+  async function sendClarificationTurn(message = draftAnswer) {
+    if (!requirement) return;
+    const answer = message.trim();
+    if (!answer) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const result = await api.addClarificationTurn(requirement.id, answer);
+      setRequirement(result.requirement);
+      setDraftAnswer("");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "澄清回答提交失败。");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function generatePrd() {
     if (!requirement) return;
     setSubmitting(true);
     setError(null);
     try {
-      const result = await api.answerClarification(requirement.id, answers);
+      const result = await api.createPrdFromClarification(requirement.id);
       setRequirement(result.requirement);
       setPrd(result.prd);
     } catch (nextError) {
@@ -102,6 +114,11 @@ export default function RequirementConfirmPage() {
     );
   }
 
+  const latestAgentTurn = requirement.clarificationTurns
+    .slice()
+    .reverse()
+    .find((turn) => turn.speaker === "agent");
+
   return (
     <AppShell>
       <div className="two-col">
@@ -125,39 +142,57 @@ export default function RequirementConfirmPage() {
               {!prd ? (
                 <>
                   <p className="muted" style={{ margin: 0 }}>
-                    先回答最多 3 个问题。推荐答案已经填好，也可以直接让平台决定。
+                    像 Codex CLI 一样逐个问题澄清。每次只问一个问题，推荐答案可以直接使用。
                   </p>
-                  {requirement.clarificationQuestions.map((question) => (
-                    <div className="question-card" key={question.id}>
-                      <strong style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <HelpCircle size={17} />
-                        {question.question}
-                      </strong>
-                      <input
-                        className="input"
-                        onChange={(event) =>
-                          setAnswers((current) => ({ ...current, [question.id]: event.target.value }))
-                        }
-                        value={answers[question.id] || ""}
-                      />
-                      <button
-                        className="button secondary"
-                        onClick={() =>
-                          setAnswers((current) => ({
-                            ...current,
-                            [question.id]: question.recommendedAnswer
-                          }))
-                        }
-                        type="button"
-                      >
-                        使用推荐答案
-                      </button>
-                    </div>
-                  ))}
-                  <button className="button" disabled={submitting} onClick={generatePrd} type="button">
-                    {submitting ? "生成中" : "生成需求说明"}
-                    <ArrowRight size={17} />
-                  </button>
+                  <div className="clarification-chat">
+                    {requirement.clarificationTurns.map((turn) => (
+                      <div className={`chat-turn ${turn.speaker}`} key={turn.id}>
+                        <span className="chat-avatar">
+                          {turn.speaker === "agent" ? <Bot size={16} /> : <UserRound size={16} />}
+                        </span>
+                        <div className="chat-bubble">
+                          <strong>{turn.speaker === "agent" ? "PatchPilot" : "你"}</strong>
+                          <p>{turn.message}</p>
+                          {turn.recommendedAnswer ? (
+                            <div className="recommended-answer">
+                              <span>推荐答案</span>
+                              <p>{turn.recommendedAnswer}</p>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <textarea
+                    className="input"
+                    onChange={(event) => setDraftAnswer(event.target.value)}
+                    placeholder="回答当前问题，或使用推荐答案。"
+                    style={{ minHeight: 96 }}
+                    value={draftAnswer}
+                  />
+                  <div className="action-row">
+                    <button
+                      className="button secondary"
+                      disabled={!latestAgentTurn?.recommendedAnswer || submitting}
+                      onClick={() => setDraftAnswer(latestAgentTurn?.recommendedAnswer || "")}
+                      type="button"
+                    >
+                      使用推荐答案
+                    </button>
+                    <button
+                      className="button secondary"
+                      disabled={!draftAnswer.trim() || submitting}
+                      onClick={() => void sendClarificationTurn()}
+                      type="button"
+                    >
+                      {submitting ? "发送中" : "发送并继续澄清"}
+                      <Send size={17} />
+                    </button>
+                    <button className="button" disabled={submitting} onClick={generatePrd} type="button">
+                      {submitting ? "生成中" : "生成需求说明"}
+                      <ArrowRight size={17} />
+                    </button>
+                  </div>
                 </>
               ) : (
                 <>

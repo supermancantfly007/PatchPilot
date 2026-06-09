@@ -33,6 +33,14 @@ export type TimelineStepKey = "understanding" | "planning" | "developing" | "tes
 
 export type AgentRunnerKind = "simulated" | "codex";
 
+export type AgentRole = "product" | "frontend" | "backend" | "test" | "ops" | "reviewer";
+
+export type AgentStatus = "idle" | "busy" | "offline";
+
+export type BugSeverity = "low" | "medium" | "high" | "critical";
+
+export type BugStatus = "reported" | "confirmed" | "fixing" | "fixed" | "rejected";
+
 export interface TimelineStep {
   key: TimelineStepKey;
   label: string;
@@ -48,6 +56,7 @@ export interface Requirement {
   status: RequirementStatus;
   simpleSummary: string;
   clarificationQuestions: ClarificationQuestion[];
+  clarificationTurns: ClarificationTurn[];
   createdAt: string;
   updatedAt: string;
 }
@@ -57,6 +66,14 @@ export interface ClarificationQuestion {
   question: string;
   recommendedAnswer: string;
   answer?: string;
+}
+
+export interface ClarificationTurn {
+  id: string;
+  speaker: "agent" | "user";
+  message: string;
+  recommendedAnswer?: string;
+  createdAt: string;
 }
 
 export interface Prd {
@@ -75,10 +92,42 @@ export interface WorkItem {
   prdId: string;
   title: string;
   status: WorkItemStatus;
+  role: AgentRole;
   scope: string;
   nonGoals: string[];
   acceptanceCriteria: string[];
   testSuggestions: string[];
+  assignedAgentId?: string;
+  claimedAt?: string;
+  sourceBugId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AgentProfile {
+  id: string;
+  name: string;
+  role: AgentRole;
+  status: AgentStatus;
+  currentWorkItemId?: string;
+  lastSeenAt: string;
+}
+
+export interface BugReport {
+  id: string;
+  title: string;
+  description: string;
+  reproductionSteps: string;
+  expectedBehavior: string;
+  actualBehavior: string;
+  severity: BugSeverity;
+  status: BugStatus;
+  reporter: string;
+  requirementId: string;
+  prdId: string;
+  workItemId: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AgentRun {
@@ -161,6 +210,8 @@ export interface PatchPilotSnapshot {
   workItems: WorkItem[];
   agentRuns: AgentRun[];
   acceptances: AcceptanceDecision[];
+  bugs: BugReport[];
+  agents: AgentProfile[];
 }
 
 export const emptySnapshot = (): PatchPilotSnapshot => ({
@@ -168,8 +219,21 @@ export const emptySnapshot = (): PatchPilotSnapshot => ({
   prds: [],
   workItems: [],
   agentRuns: [],
-  acceptances: []
+  acceptances: [],
+  bugs: [],
+  agents: createDefaultAgents(new Date().toISOString())
 });
+
+export function createDefaultAgents(now: string): AgentProfile[] {
+  return [
+    { id: "agent_product", name: "产品 Agent", role: "product", status: "idle", lastSeenAt: now },
+    { id: "agent_frontend", name: "前端 Agent", role: "frontend", status: "idle", lastSeenAt: now },
+    { id: "agent_backend", name: "后端 Agent", role: "backend", status: "idle", lastSeenAt: now },
+    { id: "agent_test", name: "测试 Agent", role: "test", status: "idle", lastSeenAt: now },
+    { id: "agent_ops", name: "运维 Agent", role: "ops", status: "idle", lastSeenAt: now },
+    { id: "agent_reviewer", name: "Reviewer Agent", role: "reviewer", status: "idle", lastSeenAt: now }
+  ];
+}
 
 export function createTimeline(): TimelineStep[] {
   return [
@@ -278,6 +342,121 @@ export function generateClarificationQuestions(input: string, template: Requirem
   return questionsByTemplate[template];
 }
 
+export function createInitialClarificationTurn(
+  input: string,
+  template: RequirementTemplate,
+  now: string
+): ClarificationTurn {
+  const question = createGrillMeQuestion(input, template, []);
+  return {
+    id: `turn_${now.replace(/\W/g, "")}_agent_0`,
+    speaker: "agent",
+    message: question.question,
+    recommendedAnswer: question.recommendedAnswer,
+    createdAt: now
+  };
+}
+
+export function createGrillMeQuestion(
+  input: string,
+  template: RequirementTemplate,
+  turns: ClarificationTurn[]
+): ClarificationQuestion {
+  const answers = turns.filter((turn) => turn.speaker === "user");
+  const base = input.trim().slice(0, 90) || "这个需求";
+  const primaryOutcome: ClarificationQuestion = {
+    id: "primary_outcome",
+    question: "这次最重要的用户可见结果是什么？",
+    recommendedAnswer: `用户能完成「${base}」并看到明确的成功反馈`
+  };
+  const users: ClarificationQuestion = {
+    id: "users",
+    question: "第一版主要给谁用？他们在什么场景下打开它？",
+    recommendedAnswer: "先服务普通需求提交者，让他们不用理解工程细节也能启动和验收 agent 工作"
+  };
+  const boundaries: ClarificationQuestion = {
+    id: "boundaries",
+    question: "哪些事情第一版明确不做，避免 agent 误解范围？",
+    recommendedAnswer: "不自动合并、不自动发布、不访问生产密钥或生产数据"
+  };
+  const acceptanceSignal: ClarificationQuestion = {
+    id: "acceptance_signal",
+    question: "你验收时最想看到哪几类证据？",
+    recommendedAnswer: "需求摘要、执行过程、变更范围、测试结果、风险提示和可点击验收入口"
+  };
+  const failureHandling: ClarificationQuestion = {
+    id: "failure_handling",
+    question: "如果 agent 做失败了，用户应该看到什么、下一步能做什么？",
+    recommendedAnswer: "展示失败摘要、失败阶段、可复现日志，并允许重新提交或转成 bug 单"
+  };
+  const common: ClarificationQuestion[] = [
+    primaryOutcome,
+    users,
+    boundaries,
+    acceptanceSignal,
+    failureHandling
+  ];
+
+  const byTemplate: Record<RequirementTemplate, ClarificationQuestion[]> = {
+    feature: common,
+    ui: [
+      primaryOutcome,
+      {
+        id: "visual_style",
+        question: "这个界面应当给用户什么第一印象？",
+        recommendedAnswer: "白色底、清爽、按钮明确、状态清晰，普通用户不需要读说明也能继续"
+      },
+      {
+        id: "critical_path",
+        question: "页面上最核心的一条操作路径是什么？",
+        recommendedAnswer: "输入需求 -> 逐轮澄清 -> 确认 PRD -> 启动 agent -> 查看证据 -> 验收"
+      },
+      boundaries,
+      acceptanceSignal
+    ],
+    bug: [
+      {
+        id: "repro_loop",
+        question: "这个 bug 最稳定的复现步骤是什么？",
+        recommendedAnswer: "写出从打开页面/调用接口到看到错误的每一步，包含输入数据和实际错误"
+      },
+      {
+        id: "expected_vs_actual",
+        question: "正确行为和现在的错误行为分别是什么？",
+        recommendedAnswer: "正确行为是流程继续并展示成功反馈；错误行为是当前失败现象稳定出现"
+      },
+      {
+        id: "regression_signal",
+        question: "修复后用什么反馈循环证明 bug 不再复现？",
+        recommendedAnswer: "先加一个失败的集成测试或 E2E smoke，再修复到测试通过"
+      },
+      boundaries,
+      acceptanceSignal
+    ],
+    document: [
+      {
+        id: "source_priority",
+        question: "文档中哪一段必须先变成可运行能力？",
+        recommendedAnswer: "先落地能从需求输入走到验收结果的核心闭环"
+      },
+      primaryOutcome,
+      users,
+      boundaries,
+      acceptanceSignal
+    ]
+  };
+
+  const plan = byTemplate[template];
+  const next = plan[answers.length];
+  if (next) return next;
+
+  return {
+    id: `follow_up_${answers.length + 1}`,
+    question: "还有没有一个必须补充的边界、反例或验收细节？如果没有，就可以生成 PRD。",
+    recommendedAnswer: "没有更多补充，可以基于当前澄清记录生成 PRD"
+  };
+}
+
 export function makeSimpleSummary(input: string, template: RequirementTemplate): string {
   const label: Record<RequirementTemplate, string> = {
     feature: "新功能",
@@ -291,6 +470,12 @@ export function makeSimpleSummary(input: string, template: RequirementTemplate):
 
 export function createPrd(requirement: Requirement): Prd {
   const title = requirement.simpleSummary;
+  const clarificationSummary =
+    requirement.clarificationTurns.length > 0
+      ? requirement.clarificationTurns
+          .map((turn) => `- ${turn.speaker === "agent" ? "平台" : "用户"}：${turn.message}`)
+          .join("\n")
+      : "- 尚无澄清记录";
   const acceptanceCriteria = [
     "用户能在普通模式下理解本次变更的目标和结果",
     "平台生成的工作项包含范围、非目标、验收标准和测试建议",
@@ -310,6 +495,9 @@ export function createPrd(requirement: Requirement): Prd {
       "## 要做什么",
       requirement.rawInput,
       "",
+      "## 澄清记录",
+      clarificationSummary,
+      "",
       "## 不做什么",
       "- 不自动合并到主分支",
       "- 不访问生产密钥或生产数据",
@@ -322,16 +510,126 @@ export function createPrd(requirement: Requirement): Prd {
 }
 
 export function createWorkItems(prd: Prd): WorkItem[] {
+  const now = new Date().toISOString();
   return [
     {
       id: `wi_${prd.requirementId}_001`,
       prdId: prd.id,
       title: "完成最小可验收交付闭环",
       status: "ready",
+      role: "backend",
       scope: "围绕已确认需求完成一次端到端变更，包括实现、测试、审查摘要和验收入口。",
       nonGoals: ["不自动合并", "不执行生产发布", "不访问生产密钥"],
       acceptanceCriteria: prd.acceptanceCriteria,
-      testSuggestions: ["运行目标测试命令", "检查完成页证据摘要", "确认风险提示和验收按钮可用"]
+      testSuggestions: ["运行目标测试命令", "检查完成页证据摘要", "确认风险提示和验收按钮可用"],
+      createdAt: now,
+      updatedAt: now
     }
   ];
+}
+
+export function createBugRequirement(input: {
+  id: string;
+  title: string;
+  description: string;
+  reproductionSteps: string;
+  expectedBehavior: string;
+  actualBehavior: string;
+  now: string;
+}): Requirement {
+  const rawInput = [
+    input.description,
+    "",
+    "复现步骤：",
+    input.reproductionSteps,
+    "",
+    "期望行为：",
+    input.expectedBehavior,
+    "",
+    "实际行为：",
+    input.actualBehavior
+  ].join("\n");
+
+  return {
+    id: input.id,
+    title: `Bug 修复：${input.title}`,
+    rawInput,
+    template: "bug",
+    status: "approved",
+    simpleSummary: `Bug 修复：${input.title}`,
+    clarificationQuestions: generateClarificationQuestions(rawInput, "bug").map((question) => ({
+      ...question,
+      answer: question.recommendedAnswer
+    })),
+    clarificationTurns: [
+      createInitialClarificationTurn(rawInput, "bug", input.now),
+      {
+        id: `turn_${input.now.replace(/\W/g, "")}_user_0`,
+        speaker: "user",
+        message: "已按 bug 表单提交复现步骤、期望行为和实际行为。",
+        createdAt: input.now
+      }
+    ],
+    createdAt: input.now,
+    updatedAt: input.now
+  };
+}
+
+export function createBugPrd(requirement: Requirement, now: string): Prd {
+  const acceptanceCriteria = [
+    "测试 agent 能根据复现步骤确认问题存在或给出阻塞原因",
+    "开发 agent 完成修复后保留原有正常流程",
+    "结果页包含复现结论、修复摘要、测试证据和验收入口"
+  ];
+
+  return {
+    id: `prd_${requirement.id}`,
+    requirementId: requirement.id,
+    version: 1,
+    status: "approved",
+    title: requirement.simpleSummary,
+    acceptanceCriteria,
+    approvedAt: now,
+    bodyMarkdown: [
+      `# ${requirement.simpleSummary}`,
+      "",
+      "## 要修什么",
+      requirement.rawInput,
+      "",
+      "## 不做什么",
+      "- 不访问生产密钥或生产数据",
+      "- 不自动合并到主分支",
+      "- 不扩大到无关重构",
+      "",
+      "## 如何验收",
+      ...acceptanceCriteria.map((criterion) => `- ${criterion}`)
+    ].join("\n")
+  };
+}
+
+export function createBugWorkItem(input: {
+  bugId: string;
+  requirementId: string;
+  prdId: string;
+  title: string;
+  now: string;
+}): WorkItem {
+  return {
+    id: `wi_${input.requirementId}_bugfix`,
+    prdId: input.prdId,
+    title: `复现并修复：${input.title}`,
+    status: "ready",
+    role: "test",
+    sourceBugId: input.bugId,
+    scope: "先由测试 agent 根据复现步骤确认问题，再交给开发 agent 修复并补充回归测试证据。",
+    nonGoals: ["不自动发布", "不修改无关模块", "不访问生产数据"],
+    acceptanceCriteria: [
+      "复现步骤被记录并给出确认结果",
+      "修复后相关测试通过",
+      "验收页展示风险、测试证据和变更范围"
+    ],
+    testSuggestions: ["用 bug 复现步骤写回归检查", "运行目标测试命令", "在验收页确认测试证据"],
+    createdAt: input.now,
+    updatedAt: input.now
+  };
 }

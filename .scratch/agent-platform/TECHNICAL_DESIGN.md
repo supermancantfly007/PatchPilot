@@ -8,7 +8,7 @@ Source PRD: `.scratch/agent-platform/PRD.md`
 
 本技术方案把 PRD 中的 agent 自动开发平台落成可实现架构。核心原则是：
 
-- 普通用户体验保持极简：一个输入框、模板、三问澄清、订单式进度、完成证据摘要。
+- 普通用户体验保持极简：一个输入框、模板、`grill-me` 式逐轮澄清对话、订单式进度、完成证据摘要。
 - 工程交付保持可控：状态机、隔离工作区、Pull Request 边界、测试质量门、权限、预算、审计和失败恢复都必须可执行。
 - MVP 先做单仓库、单项目、PRD 到 PR 的闭环，不先做完整企业控制台和多仓库编排。
 
@@ -102,13 +102,13 @@ TypeScript 适合这个平台的第一阶段：
 
 UI 分两层：
 
-- 普通模式：一个输入框、模板按钮、三问澄清、订单式进度、完成页。
+- 普通模式：一个输入框、模板按钮、像 Codex CLI 一样一问一答的澄清窗口、订单式进度、完成页。
 - 专业模式：PRD、WorkItem、AgentRun、WorkspaceRun、TestRun、Pull Request、AuditEvent、成本和审批。
 
 MVP 页面：
 
 - `/`：输入框 + 四个模板。
-- `/requirements/:id/confirm`：简版需求确认。
+- `/requirements/:id/confirm`：逐轮澄清对话、推荐答案、简版需求确认。
 - `/runs/:id`：订单式进度页，SSE 展示实时状态。
 - `/runs/:id/details`：专业视图。
 - `/acceptance/:id`：完成摘要、预览、测试结果、接受/要求修改。
@@ -127,8 +127,14 @@ API 使用 Fastify 提供：
 
 ```text
 POST   /api/requirements
-POST   /api/requirements/:id/clarification-answer
+POST   /api/requirements/:id/clarification-turn
+POST   /api/requirements/:id/prd
+POST   /api/requirements/:id/clarification-answer  # compatibility
 POST   /api/prds/:id/approve
+GET    /api/agents
+POST   /api/bugs
+POST   /api/work-items/:id/claim
+POST   /api/work-items/:id/release
 POST   /api/work-items/:id/start
 GET    /api/runs/:id
 GET    /api/runs/:id/events
@@ -145,11 +151,11 @@ POST   /api/acceptance/:id/reject
 
 | Workflow | 责任 |
 | --- | --- |
-| `RequirementIntakeWorkflow` | 需求进入、三问澄清、PRD 草案、确认等待 |
+| `RequirementIntakeWorkflow` | 需求进入、`grill-me` 逐轮澄清、PRD 草案、确认等待 |
 | `WorkItemPlanningWorkflow` | PRD 到 1-3 个垂直工作项和测试建议 |
 | `WorkItemExecutionWorkflow` | claim、workspace、CodexRun、test、PR、review |
 | `ApprovalWorkflow` | 等待人工或策略审批 |
-| `DefectReproductionWorkflow` | MVP+1，bug 复现和修复前证据 |
+| `DefectReproductionWorkflow` | `/diagnose` 驱动的 bug 复现、诊断和修复前证据 |
 | `RetrospectiveWorkflow` | 完成后汇总成本、测试、风险和审计链路 |
 
 Temporal 使用原则：
@@ -175,6 +181,12 @@ MVP 本地 Markdown 模式使用文件锁实现 claim；数据库模式使用 Po
 ### CodexRunner
 
 `CodexRunner` 是平台与 Codex 的唯一集成面。
+
+CodexRunner prompt 应保持短，给 AI 充分发挥空间。平台只注入任务文件、工作区边界和 skill 名称：
+
+- 功能开发类 WorkItem：只提示“使用 `/tdd`”。
+- Bug 修复类 WorkItem：只提示“使用 `/diagnose`”。
+- 不把 skill 全文或长流程说明塞进 prompt。完整规则由任务文件、AGENTS.md、测试建议和质量门承载。
 
 ```ts
 interface CodexRunner {
@@ -533,8 +545,8 @@ acceptance.rejected
 
 1. 用户提交自然语言、截图、录屏、文档或报错。
 2. Intake activity 生成摘要和风险初判。
-3. Clarification activity 最多生成 3 个问题。
-4. 用户回答或选择“让平台决定”。
+3. Clarification activity 按 `/grill-me` 规则一次生成一个问题和推荐答案。
+4. 用户在对话窗口逐轮回答、接受推荐或继续补充；能从代码或文档中确定的问题由平台自行探索。
 5. PRD activity 生成完整 PRD 和简版需求确认。
 6. 用户批准。
 7. 写入 `prd_versions` 和 `audit_events`。
@@ -550,12 +562,13 @@ acceptance.rejected
 
 1. Scheduler claim WorkItem。
 2. Workspace Manager 创建 worktree 和 container。
-3. CodexRunner 启动 Codex。
-4. Codex 修改代码并输出事件。
-5. Test Runner 执行目标测试。
-6. PR Adapter 创建 Pull Request。
-7. Reviewer agent 生成 review summary。
-8. 通过质量门后等待最终验收。
+3. CodexRunner 根据 WorkItem 类型选择极短 prompt：功能用 `/tdd`，bug 用 `/diagnose`。
+4. CodexRunner 启动 Codex。
+5. Codex 修改代码并输出事件。
+6. Test Runner 执行目标测试。
+7. PR Adapter 创建 Pull Request。
+8. Reviewer agent 生成 review summary。
+9. 通过质量门后等待最终验收。
 
 ### 失败处理
 
@@ -824,7 +837,7 @@ budgets:
 | Agent 循环成本失控 | per-run 预算、最大返工次数、硬暂停 |
 | 测试不稳定 | flaky 检测、quarantine 到期、关键路径不允许长期豁免 |
 | 沙箱逃逸 | rootless、无 Docker socket、无宿主 home、生产用强隔离 runtime |
-| 需求不清 | 三问澄清、简版需求确认、低置信度不自动执行 |
+| 需求不清 | grill-me 逐轮澄清、简版需求确认、低置信度不自动执行 |
 | 多 agent 冲突 | worktree per item、lease/fencing、PR 边界 |
 | 审计缺失 | 状态变化必须写 AuditEvent，CI 检查审计完整性 |
 | Codex 集成替换成本 | CodexRunner adapter 隔离 SDK/exec/MCP 差异 |

@@ -264,29 +264,32 @@ function buildTaskMarkdown(context: CodexRunContext) {
 }
 
 function buildCodexPrompt(context: CodexRunContext, taskFilePath: string) {
+  const method = context.workItem.sourceBugId ? "使用 /diagnose。" : "使用 /tdd。";
+
   return [
-    "你是 PatchPilot 平台启动的本地 Codex 开发 agent。",
-    `请在当前隔离工作区完成 ${context.workItem.title}。`,
+    "你是 PatchPilot 启动的本地 Codex agent。",
+    `完成：${context.workItem.title}`,
     `任务说明文件：${taskFilePath}`,
     "",
-    "要求：",
-    "- 只修改当前工作区内的文件。",
-    "- 不访问生产密钥或生产数据。",
-    "- 优先做能端到端验收的最小垂直切片。",
-    "- 开发完成后运行相关测试；如果测试失败，先修复再结束。",
-    "- 最终回复必须包含变更摘要、测试命令和剩余风险。"
+    method,
+    "",
+    "边界：只改当前工作区；不碰生产密钥或生产数据。",
+    "完成后简述：变更、测试、风险。"
   ].join("\n");
 }
 
 function buildRepairPrompt(context: CodexRunContext, testSummary: string) {
+  const method = context.workItem.sourceBugId ? "继续使用 /diagnose。" : "继续使用 /tdd。";
+
   return [
-    "上一轮实现后的测试没有通过，请在当前隔离工作区修复。",
+    "测试失败。请修复当前任务。",
     `任务：${context.workItem.title}`,
+    method,
     "",
-    "测试失败摘要：",
+    "失败摘要：",
     testSummary,
     "",
-    "请只做必要修改，重新运行相关测试，并在最终回复说明修复点。"
+    "完成后简述：修复、测试、风险。"
   ].join("\n");
 }
 

@@ -14,6 +14,10 @@ const clarificationSchema = z.object({
   answers: z.record(z.string(), z.string()).default({})
 });
 
+const clarificationTurnSchema = z.object({
+  message: z.string().trim().min(1)
+});
+
 const acceptanceSchema = z.object({
   status: z.enum(["accepted", "rejected"]),
   reason: z.string().optional()
@@ -27,6 +31,20 @@ const acceptanceSchema = z.object({
   }
 });
 
+const bugInputSchema = z.object({
+  title: z.string().trim().min(3),
+  description: z.string().trim().min(3),
+  reproductionSteps: z.string().trim().min(3),
+  expectedBehavior: z.string().trim().min(3),
+  actualBehavior: z.string().trim().min(3),
+  severity: z.enum(["low", "medium", "high", "critical"]).default("medium"),
+  reporter: z.string().trim().optional()
+});
+
+const claimSchema = z.object({
+  agentId: z.string().trim().min(1)
+});
+
 export async function buildServer() {
   const app = Fastify({ logger: true });
   await app.register(cors, { origin: true });
@@ -36,6 +54,8 @@ export async function buildServer() {
   app.get("/api/config", async () => store.getRuntimeConfig());
 
   app.get("/api/snapshot", async () => store.getSnapshot());
+
+  app.get("/api/agents", async () => store.getAgents());
 
   app.post("/api/requirements", async (request, reply) => {
     const input = requirementInputSchema.parse(request.body);
@@ -54,6 +74,17 @@ export async function buildServer() {
     return store.answerClarification(id, input.answers);
   });
 
+  app.post("/api/requirements/:id/clarification-turn", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = clarificationTurnSchema.parse(request.body);
+    return store.addClarificationTurn(id, input.message);
+  });
+
+  app.post("/api/requirements/:id/prd", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    return store.createPrdFromClarification(id);
+  });
+
   app.post("/api/prds/:id/approve", async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     return store.approvePrd(id);
@@ -64,6 +95,23 @@ export async function buildServer() {
     const input = z.object({ runner: z.enum(["simulated", "codex"]).optional() }).default({}).parse(request.body);
     const run = await store.startRun(id, input.runner);
     return reply.code(201).send(run);
+  });
+
+  app.post("/api/work-items/:id/claim", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = claimSchema.parse(request.body);
+    return store.claimWorkItem(id, input.agentId);
+  });
+
+  app.post("/api/work-items/:id/release", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    return store.releaseWorkItem(id);
+  });
+
+  app.post("/api/bugs", async (request, reply) => {
+    const input = bugInputSchema.parse(request.body);
+    const result = await store.createBug(input);
+    return reply.code(201).send(result);
   });
 
   app.get("/api/runs/:id", async (request) => {
