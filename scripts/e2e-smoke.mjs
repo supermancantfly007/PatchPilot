@@ -21,6 +21,8 @@ try {
   await page.getByText("简版需求确认").waitFor();
   await page.getByRole("button", { name: /生成需求说明/ }).click();
   await page.locator("strong").filter({ hasText: "如何验收" }).first().waitFor();
+  await page.getByRole("heading", { name: "接口契约" }).waitFor();
+  await page.getByText("交付控制 HTTP API").waitFor();
   await page.getByRole("button", { name: /开始执行/ }).click();
 
   await page.waitForURL(/\/runs\/.+/);

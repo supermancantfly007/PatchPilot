@@ -1,6 +1,6 @@
 "use client";
 
-import type { Prd, Requirement, RuntimeConfig, WorkItem } from "@patchpilot/domain";
+import type { InterfaceContract, Prd, Requirement, RuntimeConfig, WorkItem } from "@patchpilot/domain";
 import { ArrowRight, Bot, CheckCircle2, ClipboardList, Send, UserRound } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -14,6 +14,7 @@ export default function RequirementConfirmPage() {
   const [requirement, setRequirement] = useState<Requirement | null>(null);
   const [prd, setPrd] = useState<Prd | null>(null);
   const [workItems, setWorkItems] = useState<WorkItem[]>([]);
+  const [interfaceContracts, setInterfaceContracts] = useState<InterfaceContract[]>([]);
   const [draftAnswer, setDraftAnswer] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -30,6 +31,7 @@ export default function RequirementConfirmPage() {
         setRequirement(bundle.requirement);
         setPrd(bundle.prd || null);
         setWorkItems(bundle.workItems);
+        setInterfaceContracts(bundle.interfaceContracts);
       })
       .catch((nextError) => {
         setError(nextError instanceof Error ? nextError.message : "需求加载失败。");
@@ -62,6 +64,7 @@ export default function RequirementConfirmPage() {
       const result = await api.createPrdFromClarification(requirement.id);
       setRequirement(result.requirement);
       setPrd(result.prd);
+      setInterfaceContracts(result.interfaceContracts);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "需求说明生成失败。");
     } finally {
@@ -79,6 +82,7 @@ export default function RequirementConfirmPage() {
       if (!run) throw new Error("没有生成可执行任务");
       setPrd(started.prd);
       setWorkItems(started.workItems);
+      setInterfaceContracts(started.interfaceContracts);
       router.push(`/runs/${run.id}`);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "启动执行失败。");
@@ -250,6 +254,29 @@ export default function RequirementConfirmPage() {
               ) : (
                 <p className="muted" style={{ margin: 0 }}>
                   需求说明生成后，这里会展示完整 PRD。普通用户只需要看左侧三块确认内容。
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header">
+              <h3>接口契约</h3>
+              <span className="status-pill">{interfaceContracts.length ? `${interfaceContracts.length} 份` : "待生成"}</span>
+            </div>
+            <div className="card-body event-list">
+              {interfaceContracts.length > 0 ? (
+                interfaceContracts.map((contract) => (
+                  <div className="event" key={contract.id}>
+                    <strong>{contract.name}</strong>
+                    <p className="muted" style={{ margin: "6px 0" }}>
+                      {contract.kind.toUpperCase()} · {contract.providerRole} {"->"} {contract.consumerRoles.join(", ")}
+                    </p>
+                    <p style={{ margin: 0 }}>{contract.summary}</p>
+                  </div>
+                ))
+              ) : (
+                <p className="muted" style={{ margin: 0 }}>
+                  PRD 批准后会生成 HTTP、事件流和共享状态契约，前端、后端、测试 agent 会以此对齐。
                 </p>
               )}
             </div>

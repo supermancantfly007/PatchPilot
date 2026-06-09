@@ -22,6 +22,10 @@ describe("PatchPilot API", () => {
     });
     expect(answer.statusCode).toBe(200);
     expect(answer.json().prd.bodyMarkdown).toContain("## 如何验收");
+    expect(answer.json().interfaceContracts).toHaveLength(3);
+    expect(answer.json().interfaceContracts.every((contract: { status: string }) => contract.status === "draft")).toBe(
+      true
+    );
 
     await app.close();
   });
@@ -120,6 +124,10 @@ describe("PatchPilot API", () => {
     const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
     expect(approval.statusCode).toBe(200);
     const workItem = approval.json().workItems[0];
+    expect(approval.json().interfaceContracts).toHaveLength(3);
+    expect(
+      approval.json().interfaceContracts.every((contract: { status: string }) => contract.status === "approved")
+    ).toBe(true);
 
     const start = await app.inject({
       method: "POST",
@@ -170,6 +178,10 @@ describe("PatchPilot API", () => {
     });
     expect(startTeam.statusCode).toBe(201);
     expect(startTeam.json().runs).toHaveLength(4);
+    expect(startTeam.json().interfaceContracts).toHaveLength(3);
+    expect(
+      startTeam.json().interfaceContracts.every((contract: { status: string }) => contract.status === "approved")
+    ).toBe(true);
     expect(startTeam.json().workItems.map((item: { role: string }) => item.role).sort()).toEqual([
       "backend",
       "frontend",

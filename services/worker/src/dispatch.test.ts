@@ -83,6 +83,7 @@ function snapshot(input: {
     prds: [],
     workItems: input.workItems,
     agentRuns: [],
+    interfaceContracts: [],
     acceptances: [],
     bugs: [],
     agents: input.agents

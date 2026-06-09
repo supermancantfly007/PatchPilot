@@ -320,8 +320,9 @@ Contract Registry 保存：
 
 MVP 规则：
 
-- 只有检测到 API/schema/event 变更时才强制契约流程。
-- 不要求所有工作项都有契约。
+- 每个 PRD 草稿默认生成 HTTP API、AgentRun 事件流、共享状态 schema 三类 draft contracts。
+- PRD 批准或 start-team 后，默认契约升级为 approved，成为前端、后端、测试和运维 agent 的协作基线。
+- 检测到 API/schema/event 变更时，再生成 contract diff 和 provider/consumer 测试要求。
 
 ### Approval Service
 

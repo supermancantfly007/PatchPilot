@@ -21,6 +21,7 @@ import {
   createInitialClarificationTurn,
   createBugWorkItem,
   createDefaultAgents,
+  createInterfaceContracts,
   createPrd,
   createTimeline,
   createWorkItems,
@@ -108,8 +109,12 @@ export class PatchPilotStore {
     const prd = createPrd(requirement);
     this.snapshot.prds = this.snapshot.prds.filter((item) => item.requirementId !== requirementId);
     this.snapshot.prds.unshift(prd);
+    this.snapshot.interfaceContracts = [
+      ...createInterfaceContracts(prd, "draft"),
+      ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prd.id)
+    ];
     await this.save();
-    return { requirement, prd };
+    return { requirement, prd, interfaceContracts: this.snapshot.interfaceContracts.filter((item) => item.prdId === prd.id) };
   }
 
   async addClarificationTurn(requirementId: string, message: string) {
@@ -160,8 +165,12 @@ export class PatchPilotStore {
     const prd = createPrd(requirement);
     this.snapshot.prds = this.snapshot.prds.filter((item) => item.requirementId !== requirementId);
     this.snapshot.prds.unshift(prd);
+    this.snapshot.interfaceContracts = [
+      ...createInterfaceContracts(prd, "draft"),
+      ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prd.id)
+    ];
     await this.save();
-    return { requirement, prd };
+    return { requirement, prd, interfaceContracts: this.snapshot.interfaceContracts.filter((item) => item.prdId === prd.id) };
   }
 
   async approvePrd(prdId: string) {
@@ -169,7 +178,16 @@ export class PatchPilotStore {
     const prd = this.findPrd(prdId);
     if (prd.status === "approved") {
       const existingWorkItems = this.snapshot.workItems.filter((item) => item.prdId === prdId);
-      return { prd, workItems: existingWorkItems };
+      let existingInterfaceContracts = this.snapshot.interfaceContracts.filter((item) => item.prdId === prdId);
+      if (existingInterfaceContracts.length === 0) {
+        existingInterfaceContracts = createInterfaceContracts(prd);
+        this.snapshot.interfaceContracts = [
+          ...existingInterfaceContracts,
+          ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prdId)
+        ];
+        await this.save();
+      }
+      return { prd, workItems: existingWorkItems, interfaceContracts: existingInterfaceContracts };
     }
     prd.status = "approved";
     prd.approvedAt = new Date().toISOString();
@@ -179,17 +197,22 @@ export class PatchPilotStore {
     requirement.updatedAt = new Date().toISOString();
 
     const workItems = createWorkItems(prd);
+    const interfaceContracts = createInterfaceContracts(prd);
     this.snapshot.workItems = [
       ...workItems,
       ...this.snapshot.workItems.filter((item) => item.prdId !== prdId)
     ];
+    this.snapshot.interfaceContracts = [
+      ...interfaceContracts,
+      ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prdId)
+    ];
     await this.save();
-    return { prd, workItems };
+    return { prd, workItems, interfaceContracts };
   }
 
   async startTeam(prdId: string, runnerOverride?: AgentRun["runner"]) {
     await this.load();
-    const { prd } = await this.approvePrd(prdId);
+    const { prd, interfaceContracts } = await this.approvePrd(prdId);
     const workItems = this.snapshot.workItems.filter((item) => item.prdId === prd.id);
     const runs: AgentRun[] = [];
     const skippedWorkItems: typeof workItems = [];
@@ -206,6 +229,7 @@ export class PatchPilotStore {
     return {
       prd,
       workItems: this.snapshot.workItems.filter((item) => item.prdId === prd.id),
+      interfaceContracts,
       runs,
       skippedWorkItems
     };
@@ -261,6 +285,7 @@ export class PatchPilotStore {
     this.snapshot.requirements.unshift(requirement);
     this.snapshot.prds.unshift(prd);
     this.snapshot.workItems.unshift(workItem);
+    this.snapshot.interfaceContracts.unshift(...createInterfaceContracts(prd));
     this.snapshot.bugs.unshift(bug);
     await this.save();
     return { bug, requirement, prd, workItem };
@@ -477,7 +502,10 @@ export class PatchPilotStore {
     const requirement = this.findRequirement(requirementId);
     const prd = this.snapshot.prds.find((item) => item.requirementId === requirementId);
     const workItems = prd ? this.snapshot.workItems.filter((item) => item.prdId === prd.id) : [];
-    return { requirement, prd, workItems };
+    const interfaceContracts = prd
+      ? this.snapshot.interfaceContracts.filter((item) => item.prdId === prd.id)
+      : [];
+    return { requirement, prd, workItems, interfaceContracts };
   }
 
   private async executeRun(runId: string) {
@@ -684,6 +712,7 @@ export class PatchPilotStore {
     this.snapshot.requirements ||= [];
     this.snapshot.prds ||= [];
     this.snapshot.workItems ||= [];
+    this.snapshot.interfaceContracts ||= [];
     this.snapshot.agentRuns ||= [];
     this.snapshot.acceptances ||= [];
     this.snapshot.bugs ||= [];

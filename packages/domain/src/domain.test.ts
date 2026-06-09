@@ -5,6 +5,7 @@ import {
   createPrd,
   createBugFixWorkItem,
   createBugWorkItem,
+  createInterfaceContracts,
   createTimeline,
   createWorkItems,
   createInitialClarificationTurn,
@@ -54,6 +55,30 @@ describe("domain helpers", () => {
     expect(workItems).toHaveLength(4);
     expect(workItems.map((item) => item.role)).toEqual(["backend", "frontend", "test", "ops"]);
     expect(workItems.every((item) => item.acceptanceCriteria === prd.acceptanceCriteria)).toBe(true);
+  });
+
+  it("creates interface contracts for agent collaboration", () => {
+    const requirement: Requirement = {
+      id: "req_contract",
+      title: "Agent 平台",
+      rawInput: "构建一个可用 agent 平台",
+      template: "feature",
+      status: "prd_draft",
+      simpleSummary: makeSimpleSummary("构建一个可用 agent 平台", "feature"),
+      clarificationQuestions: [],
+      clarificationTurns: [
+        createInitialClarificationTurn("构建一个可用 agent 平台", "feature", "2026-06-09T00:00:00.000Z")
+      ],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const prd = createPrd(requirement);
+    const contracts = createInterfaceContracts(prd, "draft");
+
+    expect(contracts).toHaveLength(3);
+    expect(contracts.map((contract) => contract.kind)).toEqual(["http", "event", "schema"]);
+    expect(contracts.every((contract) => contract.status === "draft")).toBe(true);
+    expect(contracts.every((contract) => contract.prdId === prd.id)).toBe(true);
   });
 
   it("can mark the full timeline complete", () => {

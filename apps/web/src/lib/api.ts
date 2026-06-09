@@ -3,6 +3,7 @@ import type {
   AgentRun,
   BugReport,
   ClarificationQuestion,
+  InterfaceContract,
   PatchPilotSnapshot,
   Prd,
   Requirement,
@@ -60,13 +61,18 @@ export const api = {
     });
   },
   getRequirement(id: string) {
-    return request<{ requirement: Requirement; prd?: Prd; workItems: WorkItem[] }>(`/api/requirements/${id}`);
+    return request<{ requirement: Requirement; prd?: Prd; workItems: WorkItem[]; interfaceContracts: InterfaceContract[] }>(
+      `/api/requirements/${id}`
+    );
   },
   answerClarification(id: string, answers: Record<string, string>) {
-    return request<{ requirement: Requirement; prd: Prd }>(`/api/requirements/${id}/clarification-answer`, {
-      method: "POST",
-      body: JSON.stringify({ answers })
-    });
+    return request<{ requirement: Requirement; prd: Prd; interfaceContracts: InterfaceContract[] }>(
+      `/api/requirements/${id}/clarification-answer`,
+      {
+        method: "POST",
+        body: JSON.stringify({ answers })
+      }
+    );
   },
   addClarificationTurn(id: string, message: string) {
     return request<{ requirement: Requirement; nextQuestion: ClarificationQuestion }>(
@@ -78,21 +84,30 @@ export const api = {
     );
   },
   createPrdFromClarification(id: string) {
-    return request<{ requirement: Requirement; prd: Prd }>(`/api/requirements/${id}/prd`, {
-      method: "POST"
-    });
-  },
-  approvePrd(id: string) {
-    return request<{ prd: Prd; workItems: WorkItem[] }>(`/api/prds/${id}/approve`, { method: "POST" });
-  },
-  startTeam(prdId: string, runner?: AgentRun["runner"]) {
-    return request<{ prd: Prd; workItems: WorkItem[]; runs: AgentRun[]; skippedWorkItems: WorkItem[] }>(
-      `/api/prds/${prdId}/start-team`,
+    return request<{ requirement: Requirement; prd: Prd; interfaceContracts: InterfaceContract[] }>(
+      `/api/requirements/${id}/prd`,
       {
-        method: "POST",
-        body: JSON.stringify({ runner })
+        method: "POST"
       }
     );
+  },
+  approvePrd(id: string) {
+    return request<{ prd: Prd; workItems: WorkItem[]; interfaceContracts: InterfaceContract[] }>(
+      `/api/prds/${id}/approve`,
+      { method: "POST" }
+    );
+  },
+  startTeam(prdId: string, runner?: AgentRun["runner"]) {
+    return request<{
+      prd: Prd;
+      workItems: WorkItem[];
+      interfaceContracts: InterfaceContract[];
+      runs: AgentRun[];
+      skippedWorkItems: WorkItem[];
+    }>(`/api/prds/${prdId}/start-team`, {
+      method: "POST",
+      body: JSON.stringify({ runner })
+    });
   },
   startRun(workItemId: string, runner?: AgentRun["runner"]) {
     return request<AgentRun>(`/api/work-items/${workItemId}/start`, {

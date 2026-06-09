@@ -41,6 +41,10 @@ export type BugSeverity = "low" | "medium" | "high" | "critical";
 
 export type BugStatus = "reported" | "confirmed" | "fixing" | "fixed" | "rejected";
 
+export type InterfaceContractKind = "http" | "event" | "schema";
+
+export type InterfaceContractStatus = "draft" | "approved" | "breaking_change_pending" | "deprecated";
+
 export interface TimelineStep {
   key: TimelineStepKey;
   label: string;
@@ -102,6 +106,22 @@ export interface WorkItem {
   sourceBugId?: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface InterfaceContract {
+  id: string;
+  prdId: string;
+  name: string;
+  kind: InterfaceContractKind;
+  status: InterfaceContractStatus;
+  version: number;
+  summary: string;
+  providerRole: AgentRole;
+  consumerRoles: AgentRole[];
+  specMarkdown: string;
+  testSuggestions: string[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AgentProfile {
@@ -208,6 +228,7 @@ export interface PatchPilotSnapshot {
   requirements: Requirement[];
   prds: Prd[];
   workItems: WorkItem[];
+  interfaceContracts: InterfaceContract[];
   agentRuns: AgentRun[];
   acceptances: AcceptanceDecision[];
   bugs: BugReport[];
@@ -218,6 +239,7 @@ export const emptySnapshot = (): PatchPilotSnapshot => ({
   requirements: [],
   prds: [],
   workItems: [],
+  interfaceContracts: [],
   agentRuns: [],
   acceptances: [],
   bugs: [],
@@ -561,6 +583,84 @@ export function createWorkItems(prd: Prd): WorkItem[] {
       nonGoals: ["不做生产 Kubernetes 部署", "不引入强制云服务", "不自动发布"],
       acceptanceCriteria: prd.acceptanceCriteria,
       testSuggestions: ["验证 dev 脚本", "检查端口和 env 文档", "确认可选 Docker 中间件不影响本地模拟闭环"],
+      createdAt: now,
+      updatedAt: now
+    }
+  ];
+}
+
+export function createInterfaceContracts(
+  prd: Prd,
+  status: InterfaceContractStatus = "approved"
+): InterfaceContract[] {
+  const now = new Date().toISOString();
+  return [
+    {
+      id: `ic_${prd.requirementId}_control_api`,
+      prdId: prd.id,
+      name: "交付控制 HTTP API",
+      kind: "http",
+      status,
+      version: 1,
+      summary: "前端、worker 和测试 agent 通过这些接口提交需求、启动团队任务、读取运行状态和提交验收。",
+      providerRole: "backend",
+      consumerRoles: ["frontend", "test", "ops"],
+      specMarkdown: [
+        "## HTTP Contract",
+        "- `POST /api/requirements` 创建需求并返回 Requirement",
+        "- `POST /api/requirements/:id/prd` 基于澄清记录生成 PRD",
+        "- `POST /api/prds/:id/start-team` 启动同一 PRD 下的 agent team",
+        "- `GET /api/runs/:id/events` 以 SSE 推送 AgentRun 快照",
+        "- `POST /api/prds/:id/acceptance` 批量提交团队验收",
+        "- `POST /api/bugs` 创建 bug 复现任务"
+      ].join("\n"),
+      testSuggestions: ["API 生命周期测试覆盖主要端点", "前端 smoke 使用公开接口完成完整路径", "worker e2e 验证 claim/start 协议"],
+      createdAt: now,
+      updatedAt: now
+    },
+    {
+      id: `ic_${prd.requirementId}_run_events`,
+      prdId: prd.id,
+      name: "AgentRun 事件流",
+      kind: "event",
+      status,
+      version: 1,
+      summary: "运行页和测试 agent 依赖事件流判断理解、计划、开发、测试、审查和等待验收阶段。",
+      providerRole: "backend",
+      consumerRoles: ["frontend", "test", "reviewer"],
+      specMarkdown: [
+        "## Event Contract",
+        "- Stream: `GET /api/runs/:id/events`",
+        "- Envelope: `data: AgentRun`",
+        "- Required fields: `id`, `status`, `currentStep`, `timeline`, `events`, `result?`, `failureSummary?`",
+        "- Terminal statuses: `succeeded`, `failed`, `cancelled`",
+        "- UI must fall back to snapshot polling if SSE disconnects"
+      ].join("\n"),
+      testSuggestions: ["SSE 首包必须包含当前 run", "终态后事件流关闭", "断流时前端能读取快照"],
+      createdAt: now,
+      updatedAt: now
+    },
+    {
+      id: `ic_${prd.requirementId}_delivery_state`,
+      prdId: prd.id,
+      name: "交付状态共享 Schema",
+      kind: "schema",
+      status,
+      version: 1,
+      summary: "前端、后端、worker 和测试共享 Requirement、PRD、WorkItem、InterfaceContract、AgentRun、Bug 和 Acceptance 状态结构。",
+      providerRole: "backend",
+      consumerRoles: ["frontend", "test", "ops", "reviewer"],
+      specMarkdown: [
+        "## Schema Contract",
+        "- `Requirement` 保存原始输入、澄清回合和 PRD 草案状态",
+        "- `Prd` 保存版本、正文和验收标准",
+        "- `WorkItem` 保存角色、范围、非目标、测试建议和领取状态",
+        "- `InterfaceContract` 保存协作接口、生产者、消费者和测试建议",
+        "- `AgentRun` 保存执行事件、测试证据、成本和结果",
+        "- `BugReport` 保存复现、修复和关闭状态",
+        "- `AcceptanceDecision` 保存最终验收结论"
+      ].join("\n"),
+      testSuggestions: ["domain 类型测试覆盖默认契约", "snapshot 兼容旧数据补默认数组", "UI 专业视图展示契约摘要"],
       createdAt: now,
       updatedAt: now
     }

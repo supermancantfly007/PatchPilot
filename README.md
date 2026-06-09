@@ -51,6 +51,7 @@ Compose provides Postgres, Redis, and MinIO with health checks. It does not cont
 - White-background Next.js workbench for simple requirement intake
 - Grill-me style one-question-at-a-time clarification and generated PRD
 - Work item creation with scope, non-goals, acceptance criteria, and test suggestions
+- Draft and approved interface contracts for HTTP APIs, AgentRun events, and shared delivery state
 - Server-sent progress events for planning, developing, testing, review, and acceptance
 - Local Codex runner in an isolated git worktree when `codex` and git are available
 - Simulated runner fallback for demos and CI tests
