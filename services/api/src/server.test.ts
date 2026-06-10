@@ -6,7 +6,14 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CodexRunError, type CodexRunner } from "@patchpilot/codex-runner";
 import { contractVersion } from "@patchpilot/contracts";
-import { emptySnapshot, verifyAuditChain, type AgentRun, type ArtifactRecord, type TestRun } from "@patchpilot/domain";
+import {
+  emptySnapshot,
+  verifyAuditChain,
+  type AgentRun,
+  type ArtifactRecord,
+  type PatchPilotSnapshot,
+  type TestRun
+} from "@patchpilot/domain";
 import { buildServer } from "./server";
 import { PatchPilotStore } from "./store";
 
@@ -762,6 +769,47 @@ artifacts:
     const snapshotAfterAcceptance = await app.inject({ method: "GET", url: "/api/snapshot" });
     const doneWorkItem = snapshotAfterAcceptance.json().workItems.find((item: { id: string }) => item.id === workItem.id);
     expect(doneWorkItem.status).toBe("done");
+
+    await app.close();
+  });
+
+  it("blocks accepted decisions when the acceptance quality gate is unmet", async () => {
+    const store = new PatchPilotStore();
+    const app = await buildServer({ store });
+    const workItem = await createApprovedWorkItem(app, "验证验收质量门会阻止失败证据被接受");
+
+    const start = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/start`,
+      payload: { runner: "simulated" }
+    });
+    expect(start.statusCode).toBe(201);
+    const run = await pollRun(app, start.json().id);
+    expect(run.status).toBe("succeeded");
+
+    const mutableSnapshot = (store as unknown as { snapshot: PatchPilotSnapshot }).snapshot;
+    const testCase = mutableSnapshot.testCases.find((item) => item.workItemId === workItem.id);
+    if (!testCase) throw new Error("Expected simulated run to create TestCase evidence");
+    testCase.status = "failed";
+
+    const acceptance = await app.inject({
+      method: "POST",
+      url: `/api/acceptance/${run.id}`,
+      payload: { status: "accepted" }
+    });
+    expect(acceptance.statusCode).toBe(409);
+    expect(acceptance.json().message).toContain("Acceptance quality gate failed");
+    expect(acceptance.json().message).toContain("TestCase");
+
+    const rejection = await app.inject({
+      method: "POST",
+      url: `/api/acceptance/${run.id}`,
+      payload: { status: "rejected", reason: "TestCase 证据没有通过，要求返工。" }
+    });
+    expect(rejection.statusCode).toBe(200);
+    const snapshotAfterRejection = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const reworkItem = snapshotAfterRejection.json().workItems.find((item: { id: string }) => item.id === workItem.id);
+    expect(reworkItem.status).toBe("ready");
 
     await app.close();
   });

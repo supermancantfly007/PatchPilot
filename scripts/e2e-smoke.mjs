@@ -192,6 +192,14 @@ async function runSmokeScenario(scenario) {
     await page.getByText("4 个 agent 已完成交付").waitFor();
     await page.getByText("12 组文件").waitFor();
     await page.getByText("团队审查摘要").waitFor();
+    await page.getByText("验收质量门").waitFor();
+    await page.getByText("验收标准、测试、缺陷、契约、PR 和审计证据均满足接受条件。").waitFor();
+    await page.getByText("验收标准覆盖", { exact: true }).waitFor();
+    await page.getByText("未解决缺陷", { exact: true }).first().waitFor();
+    await page.getByText("Flaky", { exact: true }).waitFor();
+    await page.getByText("契约兼容", { exact: true }).waitFor();
+    await page.getByText("PR 状态", { exact: true }).first().waitFor();
+    await page.getByText("审计完整性", { exact: true }).first().waitFor();
     await page.getByRole("heading", { name: "测试用例" }).waitFor();
     await page.getByText("测试用例通过率").waitFor();
     await page.getByText("100%").first().waitFor();
@@ -231,6 +239,8 @@ async function runSmokeScenario(scenario) {
     await page.getByText("4 个 agent 已完成交付").waitFor();
     await page.getByText("12 组文件").waitFor();
     await page.getByText("团队审查摘要").waitFor();
+    await page.getByText("验收质量门").waitFor();
+    await page.getByText("验收标准、测试、缺陷、契约、PR 和审计证据均满足接受条件。").waitFor();
     await page.getByText(/返工第 1 轮/).first().waitFor();
     await checkpoint("rework acceptance");
     const acceptResult = page.getByRole("button", { name: /接受结果/ });

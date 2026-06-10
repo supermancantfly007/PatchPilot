@@ -2,6 +2,7 @@ import type {
   AcceptanceDecision,
   AgentRun,
   ApprovalRecord,
+  AuditChainVerification,
   BugReport,
   ClarificationQuestion,
   IntakeArtifactReference,
@@ -151,6 +152,9 @@ export const api = {
   },
   getSnapshot() {
     return request<PatchPilotSnapshot>(apiPath("snapshot"));
+  },
+  verifyAudit() {
+    return request<AuditChainVerification>(apiPath("verifyAudit"));
   },
   getConfig() {
     return request<RuntimeConfig>(apiPath("getConfig"));

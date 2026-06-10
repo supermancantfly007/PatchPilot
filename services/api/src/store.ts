@@ -37,6 +37,7 @@ import {
   createInitialClarificationTurn,
   createBugWorkItem,
   createDefaultAgents,
+  evaluateAcceptanceQualityGate,
   createPrd,
   createTestCasesForWorkItems,
   createTimeline,
@@ -796,6 +797,14 @@ export class PatchPilotStore {
     if (existing?.status === "rejected") {
       throw new DomainError("INVALID_STATE", "Run was rejected and needs a new rework run");
     }
+    if (status === "accepted") {
+      this.assertAcceptanceQualityGate({
+        prdId: run.prdId,
+        runIds: [run.id],
+        workItemIds: [run.workItemId],
+        scope: "run"
+      });
+    }
     const now = new Date().toISOString();
     const beforeJson = {
       acceptance: existing ? { runId: existing.runId, status: existing.status, reason: existing.reason || null } : null,
@@ -855,6 +864,18 @@ export class PatchPilotStore {
     });
     if (notReady.length > 0) {
       throw new DomainError("INVALID_STATE", "Not all team runs are ready for acceptance");
+    }
+
+    const acceptanceRuns = workItems
+      .map((item) => runsByWorkItem.get(item.id))
+      .filter((item): item is AgentRun => item !== undefined && item.status === "succeeded");
+    if (status === "accepted") {
+      this.assertAcceptanceQualityGate({
+        prdId,
+        runIds: acceptanceRuns.map((run) => run.id),
+        workItemIds: workItems.map((item) => item.id),
+        scope: "prd"
+      });
     }
 
     const now = new Date().toISOString();
@@ -1796,6 +1817,19 @@ export class PatchPilotStore {
 
   private isRunRejected(runId: string) {
     return this.snapshot.acceptances.some((acceptance) => acceptance.runId === runId && acceptance.status === "rejected");
+  }
+
+  private assertAcceptanceQualityGate(input: { prdId: string; runIds: string[]; workItemIds: string[]; scope: "run" | "prd" }) {
+    const gate = evaluateAcceptanceQualityGate({
+      snapshot: this.snapshot,
+      prdId: input.prdId,
+      runIds: input.runIds,
+      workItemIds: input.workItemIds,
+      scope: input.scope
+    });
+    if (!gate.passed) {
+      throw new DomainError("INVALID_STATE", `Acceptance quality gate failed: ${gate.blockingReasons.join("; ")}`);
+    }
   }
 
   private withMutation<T>(operation: () => Promise<T>): Promise<T> {
