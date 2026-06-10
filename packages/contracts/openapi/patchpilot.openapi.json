@@ -1329,7 +1329,6 @@
         "required": [
           "id",
           "envVar",
-          "sourceEnv",
           "environment"
         ],
         "properties": {
@@ -1350,6 +1349,69 @@
             ]
           },
           "description": {
+            "type": "string"
+          },
+          "ttlSeconds": {
+            "type": "number"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/RuntimeSecretBrokerProviderConfig"
+          }
+        }
+      },
+      "RuntimeSecretBrokerProviderConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "env",
+              "local_fake",
+              "vault"
+            ]
+          },
+          "sourceEnv": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "tokenEnv": {
+            "type": "string"
+          },
+          "mount": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "kvVersion": {
+            "type": "number",
+            "enum": [
+              1,
+              2
+            ]
+          },
+          "namespaceEnv": {
+            "type": "string"
+          },
+          "ttlSeconds": {
+            "type": "number"
+          },
+          "seedEnv": {
+            "type": "string"
+          },
+          "rotatePath": {
+            "type": "string"
+          },
+          "revokePath": {
             "type": "string"
           }
         }
@@ -2770,7 +2832,8 @@
           "mode",
           "requestedSecretIds",
           "injected",
-          "denied"
+          "denied",
+          "revoked"
         ],
         "properties": {
           "enabled": {
@@ -2779,7 +2842,8 @@
           "mode": {
             "type": "string",
             "enum": [
-              "env"
+              "env",
+              "adapter"
             ]
           },
           "requestedSecretIds": {
@@ -2799,6 +2863,12 @@
             "items": {
               "$ref": "#/components/schemas/SecretBrokerDeniedSecretEvidence"
             }
+          },
+          "revoked": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecretBrokerGrantOperationEvidence"
+            }
           }
         }
       },
@@ -2808,8 +2878,13 @@
         "required": [
           "id",
           "envVar",
-          "sourceEnv",
-          "environment"
+          "environment",
+          "provider",
+          "issuedAt",
+          "renewable",
+          "rotationSupported",
+          "revocationSupported",
+          "valueFingerprint"
         ],
         "properties": {
           "id": {
@@ -2827,6 +2902,43 @@
               "dev",
               "ci"
             ]
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "env",
+              "local_fake",
+              "vault"
+            ]
+          },
+          "leaseId": {
+            "type": "string"
+          },
+          "issuedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ttlSeconds": {
+            "type": "number"
+          },
+          "renewable": {
+            "type": "boolean"
+          },
+          "rotationSupported": {
+            "type": "boolean"
+          },
+          "revocationSupported": {
+            "type": "boolean"
+          },
+          "valueFingerprint": {
+            "type": "string"
+          },
+          "providerAuditId": {
+            "type": "string"
           }
         }
       },
@@ -2847,8 +2959,74 @@
               "broker_disabled",
               "not_configured",
               "source_env_missing",
-              "production_secret_denied"
+              "production_secret_denied",
+              "provider_auth_missing",
+              "provider_read_failed",
+              "provider_revoked"
             ]
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "env",
+              "local_fake",
+              "vault"
+            ]
+          }
+        }
+      },
+      "SecretBrokerGrantOperationEvidence": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "provider",
+          "action",
+          "status",
+          "occurredAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "env",
+              "local_fake",
+              "vault"
+            ]
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "rotate",
+              "revoke"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "unsupported",
+              "failed"
+            ]
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "leaseId": {
+            "type": "string"
+          },
+          "rotationVersion": {
+            "type": "string"
+          },
+          "providerAuditId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
           }
         }
       },

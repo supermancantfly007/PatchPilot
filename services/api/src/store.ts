@@ -75,6 +75,7 @@ import {
   LocalCodexRunner,
   classifyFailureMessage,
   resolveSecretBrokerGrants,
+  revokeSecretBrokerGrants,
   type CodexRunner,
   type CodexRunnerEvent
 } from "@patchpilot/codex-runner";
@@ -1135,14 +1136,15 @@ export class PatchPilotStore {
       },
       metadataJson: manifestSummary
     });
-    const secretBrokerResolution = this.resolveAndAuditSecretBroker(
+    const secretBrokerResolution = await this.resolveAndAuditSecretBroker(
       run,
       workItem,
       config.security.secretBroker,
       capabilityManifest
     );
     const redactionOptions = { knownSecrets: Object.values(secretBrokerResolution.env) };
-    let result: AgentRunResult;
+    let result: AgentRunResult | undefined;
+    let runError: unknown;
     try {
       result = await this.codexRunner.run(
         { runId, requirement, prd, workItem },
@@ -1157,8 +1159,19 @@ export class PatchPilotStore {
         }
       );
     } catch (error) {
-      throw redactRunError(error, redactionOptions);
+      runError = redactRunError(error, redactionOptions);
     }
+    const revocationEvidence = await this.revokeAndAuditSecretBroker(
+      run,
+      workItem,
+      config.security.secretBroker,
+      secretBrokerResolution
+    );
+    secretBrokerResolution.evidence.revoked.push(...revocationEvidence);
+    if (runError) {
+      throw attachSecretBrokerEvidence(runError, secretBrokerResolution.evidence);
+    }
+    if (!result) throw createRunFailureError("Codex runner did not return a result.", "environment_failed");
     if (secretBrokerResolution.evidence.requestedSecretIds.length > 0) {
       result.secretBrokerEvidence = secretBrokerResolution.evidence;
     }
@@ -3052,13 +3065,13 @@ export class PatchPilotStore {
     });
   }
 
-  private resolveAndAuditSecretBroker(
+  private async resolveAndAuditSecretBroker(
     run: AgentRun,
     workItem: WorkItem,
     secretBrokerConfig: ReturnType<typeof readPatchPilotConfig>["security"]["secretBroker"],
     capabilityManifest: CapabilityManifest
   ) {
-    const resolution = resolveSecretBrokerGrants({
+    const resolution = await resolveSecretBrokerGrants({
       config: secretBrokerConfig,
       workItem,
       env: process.env,
@@ -3108,7 +3121,7 @@ export class PatchPilotStore {
       action: "secret_broker.secrets_injected",
       targetType: "agent_run",
       targetId: run.id,
-      message: `Secret Broker 已注入 ${evidence.injected.length} 个明确配置的开发/CI token。`,
+      message: `Secret Broker 已注入 ${evidence.injected.length} 个明确授权的短期 secret grant。`,
       requirementId: run.requirementId,
       prdId: run.prdId,
       workItemId: workItem.id,
@@ -3122,11 +3135,57 @@ export class PatchPilotStore {
       metadataJson: {
         brokerEnabled: evidence.enabled,
         mode: evidence.mode,
+        providers: evidence.injected.map((secret) => secret.provider),
+        expiresAt: evidence.injected.map((secret) => secret.expiresAt).filter((value): value is string => Boolean(value)),
         allowProductionSecrets: secretBrokerConfig.allowProductionSecrets,
         secretValuesStored: false
       }
     });
     return resolution;
+  }
+
+  private async revokeAndAuditSecretBroker(
+    run: AgentRun,
+    workItem: WorkItem,
+    secretBrokerConfig: ReturnType<typeof readPatchPilotConfig>["security"]["secretBroker"],
+    resolution: Awaited<ReturnType<typeof resolveSecretBrokerGrants>>
+  ) {
+    if (resolution.grants.length === 0) return [];
+    const revocationEvidence = await revokeSecretBrokerGrants({
+      config: secretBrokerConfig,
+      grants: resolution.grants,
+      env: process.env
+    });
+    const auditedEvidence = revocationEvidence.filter(
+      (item) => item.provider !== "env" || item.status !== "unsupported"
+    );
+    if (auditedEvidence.length === 0) return [];
+    const now = new Date().toISOString();
+    this.addAuditEvent({
+      actor: "secret_broker",
+      action: "secret_broker.grants_revoked",
+      targetType: "agent_run",
+      targetId: run.id,
+      message: `Secret Broker 已完成 ${auditedEvidence.length} 个 adapter grant 的撤销处理。`,
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id,
+      createdAt: now,
+      beforeJson: {
+        injected: resolution.evidence.injected.map(auditSecretBrokerInjectedSecret)
+      },
+      afterJson: {
+        revoked: auditedEvidence.map(auditSecretBrokerGrantOperation)
+      },
+      metadataJson: {
+        brokerEnabled: resolution.evidence.enabled,
+        mode: resolution.evidence.mode,
+        statuses: auditedEvidence.map((item) => item.status),
+        secretValuesStored: false
+      }
+    });
+    return auditedEvidence;
   }
 
   private recordFailureDefect(
@@ -3774,8 +3833,18 @@ function auditSecretBrokerInjectedSecret(
   return {
     id: secret.id,
     envVar: secret.envVar,
-    sourceEnv: secret.sourceEnv,
-    environment: secret.environment
+    sourceEnv: secret.sourceEnv ?? null,
+    environment: secret.environment,
+    provider: secret.provider,
+    leaseId: secret.leaseId ?? null,
+    issuedAt: secret.issuedAt,
+    expiresAt: secret.expiresAt ?? null,
+    ttlSeconds: secret.ttlSeconds ?? null,
+    renewable: secret.renewable,
+    rotationSupported: secret.rotationSupported,
+    revocationSupported: secret.revocationSupported,
+    valueFingerprint: secret.valueFingerprint,
+    providerAuditId: secret.providerAuditId ?? null
   };
 }
 
@@ -3784,7 +3853,24 @@ function auditSecretBrokerDeniedSecret(
 ): Record<string, AuditJsonValue> {
   return {
     id: secret.id,
-    reason: secret.reason
+    reason: secret.reason,
+    provider: secret.provider ?? null
+  };
+}
+
+function auditSecretBrokerGrantOperation(
+  operation: SecretBrokerEvidence["revoked"][number]
+): Record<string, AuditJsonValue> {
+  return {
+    id: operation.id,
+    provider: operation.provider,
+    action: operation.action,
+    status: operation.status,
+    occurredAt: operation.occurredAt,
+    leaseId: operation.leaseId ?? null,
+    rotationVersion: operation.rotationVersion ?? null,
+    providerAuditId: operation.providerAuditId ?? null,
+    reason: operation.reason ?? null
   };
 }
 
@@ -3950,6 +4036,13 @@ function redactRunError(error: unknown, redactionOptions: SecretRedactionOptions
   return new Error(redactSecrets(String(error), redactionOptions).redacted);
 }
 
+function attachSecretBrokerEvidence(error: unknown, evidence: SecretBrokerEvidence) {
+  if (evidence.requestedSecretIds.length === 0 || !error || typeof error !== "object") return error;
+  const record = error as Error & { secretBrokerEvidence?: SecretBrokerEvidence };
+  if (!record.secretBrokerEvidence) record.secretBrokerEvidence = redactJsonValue(evidence) as SecretBrokerEvidence;
+  return error;
+}
+
 function createRunFailureError(
   message: string,
   failureType: FailureType,
@@ -4018,14 +4111,17 @@ function asSecretBrokerEvidence(value: unknown): SecretBrokerEvidence | undefine
   if (!record) return undefined;
   if (
     typeof record.enabled !== "boolean" ||
-    record.mode !== "env" ||
+    (record.mode !== "env" && record.mode !== "adapter") ||
     !Array.isArray(record.requestedSecretIds) ||
     !Array.isArray(record.injected) ||
     !Array.isArray(record.denied)
   ) {
     return undefined;
   }
-  return record as unknown as SecretBrokerEvidence;
+  return {
+    ...record,
+    revoked: Array.isArray(record.revoked) ? record.revoked : []
+  } as unknown as SecretBrokerEvidence;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

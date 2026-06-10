@@ -131,9 +131,22 @@ export {
   type RootlessContainerSandboxConfig
 } from "./containerSandbox";
 export {
+  EnvSecretProvider,
+  LocalFakeSecretProvider,
+  SecretBrokerProviderError,
+  VaultSecretProvider,
+  createSecretBrokerProviderRegistry,
+  defaultSecretBrokerGrantTtlSeconds,
   requestedSecretIdsForWorkItem,
   resolveSecretBrokerGrants,
+  revokeSecretBrokerGrants,
+  rotateSecretBrokerSecret,
   secretCapabilityPrefix,
+  type SecretBrokerProvider,
+  type SecretBrokerProviderGrant,
+  type SecretBrokerProviderReadInput,
+  type SecretBrokerProviderRegistry,
+  type SecretBrokerResolvedGrant,
   type SecretBrokerResolution
 } from "./secretBroker";
 
