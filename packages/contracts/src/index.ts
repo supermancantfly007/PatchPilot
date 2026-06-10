@@ -779,7 +779,8 @@ export const openApiSchemas = {
   RuntimeSecurityConfig: objectSchema({
     codexSandbox: { type: "string" },
     codexBypass: { type: "boolean" },
-    containerSandbox: schemaRef("RuntimeContainerSandboxConfig")
+    containerSandbox: schemaRef("RuntimeContainerSandboxConfig"),
+    egressPolicy: schemaRef("RuntimeEgressPolicyConfig")
   }),
   RuntimeContainerSandboxConfig: objectSchema({
     enabled: { type: "boolean" },
@@ -792,6 +793,16 @@ export const openApiSchemas = {
     pidsLimit: { type: "number" },
     uid: { type: "number" },
     gid: { type: "number" }
+  }),
+  RuntimeEgressPolicyConfig: objectSchema({
+    enabled: { type: "boolean" },
+    allowedHosts: arrayOf({ type: "string" }),
+    allowGitRemotes: { type: "boolean" },
+    proxyImage: { type: "string" },
+    proxyPort: { type: "number" },
+    auditLogPath: { type: "string" },
+    denyPrivateNetworks: { const: true },
+    denyMetadataEndpoints: { const: true }
   }),
   RuntimeBudgetConfig: objectSchema({
     codexTimeoutMs: { type: "number" },
@@ -994,8 +1005,29 @@ export const openApiSchemas = {
     baseCommit: { type: "string" },
     headCommit: { type: "string" },
     codexSessionId: { type: "string" },
-    artifactIds: arrayOf(id)
+    artifactIds: arrayOf(id),
+    egressPolicyEvidence: schemaRef("EgressPolicyEvidence")
   }, ["summary", "previewUrl", "riskLevel", "changedFiles", "tests", "reviewerSummary", "runner"]),
+  EgressPolicyEvidence: looseObjectSchema({
+    enabled: { type: "boolean" },
+    mode: enumSchema(["proxy_sidecar", "disabled"]),
+    allowedHosts: arrayOf({ type: "string" }),
+    auditLogPath: { type: "string" },
+    allowedCount: { type: "number" },
+    deniedCount: { type: "number" },
+    denied: arrayOf(schemaRef("EgressPolicyAuditEntry")),
+    recent: arrayOf(schemaRef("EgressPolicyAuditEntry"))
+  }, ["enabled", "mode", "allowedHosts", "auditLogPath", "allowedCount", "deniedCount", "denied", "recent"]),
+  EgressPolicyAuditEntry: looseObjectSchema({
+    at: isoDate,
+    decision: enumSchema(["allowed", "denied"]),
+    reason: { type: "string" },
+    protocol: { type: "string" },
+    host: { type: "string" },
+    port: { type: "number" },
+    target: { type: "string" },
+    resolvedIps: arrayOf({ type: "string" })
+  }, ["at", "decision", "reason", "protocol", "host", "port", "target"]),
   WorkspaceRun: looseObjectSchema({
     id,
     runId: id,
@@ -1050,7 +1082,8 @@ export const openApiSchemas = {
     retryCount: { type: "number" },
     attempt: { type: "number" },
     maxAttempts: { type: "number" },
-    flakySignal: { type: "boolean" }
+    flakySignal: { type: "boolean" },
+    egressPolicyEvidence: schemaRef("EgressPolicyEvidence")
   }, ["id", "status", "command", "summary", "durationMs"]),
   ArtifactRecord: objectSchema({
     id,

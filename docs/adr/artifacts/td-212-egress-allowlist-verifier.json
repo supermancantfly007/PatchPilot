@@ -1,0 +1,58 @@
+{
+  "workItem": "TD-212 network egress allowlist",
+  "generatedAt": "2026-06-10T19:25:50.106Z",
+  "verifier": "scripts/e2e-egress-allowlist.mjs",
+  "allowedRequest": {
+    "target": "http://registry.npmjs.org/-/ping",
+    "statusCode": 301
+  },
+  "deniedRequest": {
+    "target": "http://169.254.169.254/latest/meta-data",
+    "statusCode": 403,
+    "responseExcerpt": "PatchPilot egress policy denied http://169.254.169.254/latest/meta-data: metadata_endpoint\n"
+  },
+  "evidence": {
+    "enabled": true,
+    "mode": "proxy_sidecar",
+    "allowedHosts": [
+      "registry.npmjs.org"
+    ],
+    "auditLogPath": ".patchpilot/egress-audit.jsonl",
+    "allowedCount": 1,
+    "deniedCount": 1,
+    "denied": [
+      {
+        "at": "2026-06-10T19:25:50.104Z",
+        "decision": "denied",
+        "protocol": "http",
+        "host": "169.254.169.254",
+        "port": 80,
+        "target": "http://169.254.169.254/latest/meta-data",
+        "reason": "metadata_endpoint"
+      }
+    ],
+    "recent": [
+      {
+        "at": "2026-06-10T19:25:49.618Z",
+        "decision": "allowed",
+        "reason": "allowlisted",
+        "protocol": "http",
+        "host": "registry.npmjs.org",
+        "port": 80,
+        "target": "http://registry.npmjs.org/-/ping",
+        "resolvedIps": [
+          "198.18.0.23"
+        ]
+      },
+      {
+        "at": "2026-06-10T19:25:50.104Z",
+        "decision": "denied",
+        "protocol": "http",
+        "host": "169.254.169.254",
+        "port": 80,
+        "target": "http://169.254.169.254/latest/meta-data",
+        "reason": "metadata_endpoint"
+      }
+    ]
+  }
+}

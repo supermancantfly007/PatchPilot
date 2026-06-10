@@ -1,6 +1,16 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import type { EgressPolicyEvidence, EgressPolicyRuntimeConfig } from "@patchpilot/domain";
+import {
+  buildEffectiveEgressAllowedHosts,
+  buildEgressProxyNodeEvalScript,
+  defaultEgressPolicyConfig,
+  egressProxyHost,
+  readEgressPolicyEvidence
+} from "./egressPolicy";
+
+export { defaultEgressPolicyConfig } from "./egressPolicy";
 
 export type ContainerRuntimeKind = "auto" | "docker" | "podman";
 
@@ -17,6 +27,10 @@ export interface ContainerSandboxConfig {
   gid: number;
 }
 
+export interface RootlessContainerSandboxConfig extends ContainerSandboxConfig {
+  egressPolicy: EgressPolicyRuntimeConfig;
+}
+
 export interface SandboxedCommandOptions {
   workspacePath: string;
   command: string;
@@ -31,6 +45,7 @@ export interface SandboxedCommandResult {
   timedOut: boolean;
   diskLimitExceeded: boolean;
   durationMs: number;
+  egressPolicyEvidence?: EgressPolicyEvidence;
 }
 
 export interface SandboxedProcess {
@@ -39,11 +54,27 @@ export interface SandboxedProcess {
     timedOut: boolean;
     diskLimitExceeded: boolean;
     durationMs: number;
+    egressPolicyEvidence?: EgressPolicyEvidence;
   }>;
 }
 
+interface EgressProxyContext {
+  networkName: string;
+  proxyName: string;
+  allowedHosts: string[];
+}
+
+interface EgressProxyRunArgsInput {
+  config: RootlessContainerSandboxConfig;
+  runtime: Exclude<ContainerRuntimeKind, "auto">;
+  proxyName: string;
+  networkName: string;
+  workspacePath: string;
+  allowedHosts: string[];
+}
+
 export class RootlessContainerSandbox {
-  constructor(private readonly config: ContainerSandboxConfig) {}
+  constructor(private readonly config: RootlessContainerSandboxConfig) {}
 
   async run(options: SandboxedCommandOptions): Promise<SandboxedCommandResult> {
     const process = await this.spawn(options);
@@ -67,7 +98,8 @@ export class RootlessContainerSandbox {
       output,
       timedOut: completion.timedOut,
       diskLimitExceeded: completion.diskLimitExceeded,
-      durationMs: completion.durationMs
+      durationMs: completion.durationMs,
+      ...(completion.egressPolicyEvidence ? { egressPolicyEvidence: completion.egressPolicyEvidence } : {})
     };
   }
 
@@ -81,13 +113,17 @@ export class RootlessContainerSandbox {
     }
 
     const containerName = `patchpilot-${randomUUID()}`;
+    const egressProxy = this.config.egressPolicy.enabled
+      ? await this.startEgressProxy(runtime, containerName, options.workspacePath)
+      : undefined;
     const args = buildRootlessContainerRunArgs({
       config: this.config,
       runtime,
       containerName,
       workspacePath: options.workspacePath,
       command: options.command,
-      env: options.env
+      env: options.env,
+      egressProxy
     });
     const startedAt = Date.now();
     let timedOut = false;
@@ -125,6 +161,7 @@ export class RootlessContainerSandbox {
       timedOut: boolean;
       diskLimitExceeded: boolean;
       durationMs: number;
+      egressPolicyEvidence?: EgressPolicyEvidence;
     }>((resolve) => {
       child.on("close", async () => {
         closed = true;
@@ -134,29 +171,75 @@ export class RootlessContainerSandbox {
           const sizeBytes = await readDirectorySizeBytes(options.workspacePath);
           diskLimitExceeded = sizeBytes > this.config.workspaceDiskMb * 1024 * 1024;
         }
+        const egressPolicyEvidence = egressProxy
+          ? await this.collectEgressPolicyEvidence(options.workspacePath, egressProxy.allowedHosts)
+          : undefined;
+        await cleanupEgressProxy(runtime, egressProxy);
         resolve({
           timedOut,
           diskLimitExceeded,
-          durationMs: Date.now() - startedAt
+          durationMs: Date.now() - startedAt,
+          ...(egressPolicyEvidence ? { egressPolicyEvidence } : {})
         });
       });
     });
 
     return { child, done };
   }
+
+  collectEgressPolicyEvidence(workspacePath: string, allowedHosts?: string[]) {
+    return readEgressPolicyEvidence(
+      this.config.egressPolicy,
+      workspacePath,
+      allowedHosts ?? this.config.egressPolicy.allowedHosts
+    );
+  }
+
+  private async startEgressProxy(
+    runtime: Exclude<ContainerRuntimeKind, "auto">,
+    containerName: string,
+    workspacePath: string
+  ): Promise<EgressProxyContext> {
+    const networkName = `${containerName.slice(0, 31)}-net`;
+    const proxyName = `${containerName.slice(0, 25)}-egress`;
+    const allowedHosts = await buildEffectiveEgressAllowedHosts(this.config.egressPolicy, workspacePath);
+    await runRuntimeCommand(runtime, ["network", "create", "--internal", networkName], 10_000);
+    try {
+      const proxyArgs = buildEgressProxyRunArgs({
+        config: this.config,
+        runtime,
+        proxyName,
+        networkName,
+        workspacePath,
+        allowedHosts
+      });
+      await runRuntimeCommand(runtime, proxyArgs, 20_000);
+      await runRuntimeCommand(
+        runtime,
+        ["network", "connect", "--alias", egressProxyHost, networkName, proxyName],
+        10_000
+      );
+      await waitForEgressProxy(runtime, proxyName, this.config.egressPolicy.proxyPort);
+      return { networkName, proxyName, allowedHosts };
+    } catch (error) {
+      await cleanupEgressProxy(runtime, { networkName, proxyName, allowedHosts });
+      throw error;
+    }
+  }
 }
 
 export interface BuildRootlessContainerRunArgsInput {
-  config: ContainerSandboxConfig;
+  config: RootlessContainerSandboxConfig;
   runtime: Exclude<ContainerRuntimeKind, "auto">;
   containerName: string;
   workspacePath: string;
   command: string;
   env?: NodeJS.ProcessEnv;
+  egressProxy?: EgressProxyContext;
 }
 
 export function buildRootlessContainerRunArgs(input: BuildRootlessContainerRunArgsInput) {
-  const env = sanitizeContainerEnv(input.env);
+  const env = sanitizeContainerEnv(input.env, input.egressProxy ? input.config.egressPolicy : undefined);
   const args = [
     "run",
     "--rm",
@@ -186,6 +269,10 @@ export function buildRootlessContainerRunArgs(input: BuildRootlessContainerRunAr
     `type=bind,src=${input.workspacePath},dst=/workspace`
   ];
 
+  if (input.egressProxy) {
+    args.push("--network", input.egressProxy.networkName);
+  }
+
   if (input.runtime === "podman") {
     args.push("--userns", "keep-id");
   }
@@ -195,6 +282,51 @@ export function buildRootlessContainerRunArgs(input: BuildRootlessContainerRunAr
   }
 
   args.push(input.config.image, "sh", "-lc", input.command);
+  return args;
+}
+
+export function buildEgressProxyRunArgs(input: EgressProxyRunArgsInput) {
+  const args = [
+    "run",
+    "--rm",
+    "--detach",
+    "--name",
+    input.proxyName,
+    "--workdir",
+    "/workspace",
+    "--user",
+    `${input.config.uid}:${input.config.gid}`,
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--pids-limit",
+    "128",
+    "--cpus",
+    "0.5",
+    "--memory",
+    "256m",
+    "--read-only",
+    "--tmpfs",
+    `/tmp:rw,nosuid,nodev,size=${Math.min(input.config.tmpfsMb, 128)}m`,
+    "--mount",
+    `type=bind,src=${input.workspacePath},dst=/workspace`,
+    "--env",
+    `PP_EGRESS_PROXY_PORT=${input.config.egressPolicy.proxyPort}`,
+    "--env",
+    `PP_EGRESS_AUDIT_LOG=/workspace/${input.config.egressPolicy.auditLogPath}`,
+    "--env",
+    `PP_EGRESS_ALLOWED_HOSTS=${JSON.stringify(input.allowedHosts)}`,
+    input.config.egressPolicy.proxyImage,
+    "node",
+    "-e",
+    buildEgressProxyNodeEvalScript()
+  ];
+
+  if (input.runtime === "podman") {
+    args.splice(args.indexOf("--mount"), 0, "--userns", "keep-id");
+  }
+
   return args;
 }
 
@@ -208,7 +340,7 @@ export async function resolveContainerRuntime(runtime: ContainerRuntimeKind) {
   return undefined;
 }
 
-export function defaultContainerSandboxConfig(): ContainerSandboxConfig {
+export function defaultContainerSandboxConfig(): RootlessContainerSandboxConfig {
   return {
     enabled: false,
     runtime: "auto",
@@ -219,7 +351,8 @@ export function defaultContainerSandboxConfig(): ContainerSandboxConfig {
     tmpfsMb: 256,
     pidsLimit: 512,
     uid: typeof process.getuid === "function" && process.getuid() > 0 ? process.getuid() : 1000,
-    gid: typeof process.getgid === "function" && process.getgid() > 0 ? process.getgid() : 1000
+    gid: typeof process.getgid === "function" && process.getgid() > 0 ? process.getgid() : 1000,
+    egressPolicy: defaultEgressPolicyConfig()
   };
 }
 
@@ -231,7 +364,7 @@ export function toContainerWorkspacePath(hostWorkspacePath: string, hostPath: st
   return `/workspace/${normalizedPath.slice(normalizedWorkspace.length + 1)}`;
 }
 
-function sanitizeContainerEnv(env: NodeJS.ProcessEnv = {}) {
+function sanitizeContainerEnv(env: NodeJS.ProcessEnv = {}, egressPolicy?: EgressPolicyRuntimeConfig) {
   const sanitized: Record<string, string> = {
     HOME: "/home/patchpilot",
     XDG_CONFIG_HOME: "/home/patchpilot/.config",
@@ -244,7 +377,60 @@ function sanitizeContainerEnv(env: NodeJS.ProcessEnv = {}) {
     if (["HOME", "DOCKER_HOST", "DOCKER_CONFIG", "XDG_RUNTIME_DIR"].includes(key)) continue;
     sanitized[key] = value;
   }
+  if (egressPolicy?.enabled) {
+    const proxyUrl = `http://${egressProxyHost}:${egressPolicy.proxyPort}`;
+    Object.assign(sanitized, {
+      HTTP_PROXY: proxyUrl,
+      HTTPS_PROXY: proxyUrl,
+      ALL_PROXY: proxyUrl,
+      http_proxy: proxyUrl,
+      https_proxy: proxyUrl,
+      all_proxy: proxyUrl,
+      NO_PROXY: "localhost,127.0.0.1,::1",
+      no_proxy: "localhost,127.0.0.1,::1",
+      NPM_CONFIG_PROXY: proxyUrl,
+      NPM_CONFIG_HTTPS_PROXY: proxyUrl,
+      npm_config_proxy: proxyUrl,
+      npm_config_https_proxy: proxyUrl,
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "http.proxy",
+      GIT_CONFIG_VALUE_0: proxyUrl,
+      GIT_CONFIG_KEY_1: "https.proxy",
+      GIT_CONFIG_VALUE_1: proxyUrl,
+      PATCHPILOT_EGRESS_POLICY: "proxy_sidecar"
+    });
+  }
   return sanitized;
+}
+
+async function waitForEgressProxy(
+  runtime: Exclude<ContainerRuntimeKind, "auto">,
+  proxyName: string,
+  proxyPort: number
+) {
+  const script = [
+    "const http = require('node:http');",
+    `const request = http.get('http://127.0.0.1:${proxyPort}/__health', (response) => process.exit(response.statusCode === 200 ? 0 : 1));`,
+    "request.on('error', () => process.exit(1));",
+    "request.setTimeout(1000, () => process.exit(1));"
+  ].join("");
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 10_000) {
+    const result = await runRuntimeCommand(runtime, ["exec", proxyName, "node", "-e", script], 2_000, true);
+    if (result.exitCode === 0) return;
+    await sleep(250);
+  }
+  const logs = await runRuntimeCommand(runtime, ["logs", proxyName], 5_000, true);
+  throw new Error(`Egress policy proxy did not become ready: ${logs.output.trim()}`);
+}
+
+async function cleanupEgressProxy(
+  runtime: Exclude<ContainerRuntimeKind, "auto">,
+  context: EgressProxyContext | undefined
+) {
+  if (!context) return;
+  await runRuntimeCommand(runtime, ["kill", context.proxyName], 5_000, true);
+  await runRuntimeCommand(runtime, ["network", "rm", context.networkName], 10_000, true);
 }
 
 function commandExists(command: string) {
@@ -279,6 +465,46 @@ function runShell(command: string) {
     child.on("error", (error) => resolve({ exitCode: 1, output: error.message }));
     child.on("close", (exitCode) => resolve({ exitCode, output }));
   });
+}
+
+function runRuntimeCommand(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  allowFailure = false
+) {
+  return new Promise<{ exitCode: number | null; output: string }>((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let output = "";
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+    }, timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      if (allowFailure) resolve({ exitCode: 1, output: error.message });
+      else reject(error);
+    });
+    child.on("close", (exitCode) => {
+      clearTimeout(timeout);
+      if (exitCode !== 0 && !allowFailure) {
+        reject(new Error(`${command} ${args.join(" ")} failed: ${output.trim()}`));
+        return;
+      }
+      resolve({ exitCode, output });
+    });
+  });
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function stripTrailingSlash(value: string) {

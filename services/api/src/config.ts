@@ -1,6 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import type { AgentRunnerKind, ArtifactStorageProvider, ContainerRuntimeKind } from "@patchpilot/domain";
+import {
+  defaultEgressAllowedHosts,
+  defaultEgressAuditLogPath,
+  type AgentRunnerKind,
+  type ArtifactStorageProvider,
+  type ContainerRuntimeKind
+} from "@patchpilot/domain";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
@@ -34,6 +40,12 @@ export interface PatchPilotConfigEnv extends NodeJS.ProcessEnv {
   PATCHPILOT_CONTAINER_SANDBOX_PIDS_LIMIT?: string;
   PATCHPILOT_CONTAINER_SANDBOX_UID?: string;
   PATCHPILOT_CONTAINER_SANDBOX_GID?: string;
+  PATCHPILOT_EGRESS_POLICY_ENABLED?: string;
+  PATCHPILOT_EGRESS_ALLOWED_HOSTS?: string;
+  PATCHPILOT_EGRESS_ALLOW_GIT_REMOTES?: string;
+  PATCHPILOT_EGRESS_PROXY_IMAGE?: string;
+  PATCHPILOT_EGRESS_PROXY_PORT?: string;
+  PATCHPILOT_EGRESS_AUDIT_LOG_PATH?: string;
   PATCHPILOT_PREVIEW_URL?: string;
   PATCHPILOT_ARTIFACT_STORE?: string;
   PATCHPILOT_ARTIFACT_ROOT?: string;
@@ -87,6 +99,16 @@ export interface ResolvedPatchPilotConfig {
       pidsLimit: number;
       uid: number;
       gid: number;
+    };
+    egressPolicy: {
+      enabled: boolean;
+      allowedHosts: string[];
+      allowGitRemotes: boolean;
+      proxyImage: string;
+      proxyPort: number;
+      auditLogPath: string;
+      denyPrivateNetworks: true;
+      denyMetadataEndpoints: true;
     };
   };
   budget: {
@@ -165,6 +187,14 @@ const rawConfigSchema = z.object({
       pidsLimit: z.number().int().positive().optional(),
       uid: z.number().int().positive().optional(),
       gid: z.number().int().positive().optional()
+    }).optional(),
+    egressPolicy: z.object({
+      enabled: z.boolean().optional(),
+      allowedHosts: stringArraySchema.optional(),
+      allowGitRemotes: z.boolean().optional(),
+      proxyImage: z.string().optional(),
+      proxyPort: z.number().int().positive().optional(),
+      auditLogPath: z.string().optional()
     }).optional()
   }).optional(),
   budget: z.object({
@@ -297,6 +327,32 @@ export function readPatchPilotConfig(options: ReadConfigOptions = {}): ResolvedP
           raw.security?.containerSandbox?.gid,
           typeof process.getgid === "function" && process.getgid() > 0 ? process.getgid() : 1000
         )
+      },
+      egressPolicy: {
+        enabled: pickBoolean(env.PATCHPILOT_EGRESS_POLICY_ENABLED, raw.security?.egressPolicy?.enabled, true),
+        allowedHosts: pickStringList(
+          env.PATCHPILOT_EGRESS_ALLOWED_HOSTS,
+          raw.security?.egressPolicy?.allowedHosts,
+          [...defaultEgressAllowedHosts]
+        ),
+        allowGitRemotes: pickBoolean(
+          env.PATCHPILOT_EGRESS_ALLOW_GIT_REMOTES,
+          raw.security?.egressPolicy?.allowGitRemotes,
+          true
+        ),
+        proxyImage: pickString(
+          env.PATCHPILOT_EGRESS_PROXY_IMAGE,
+          raw.security?.egressPolicy?.proxyImage,
+          "node:24-alpine"
+        ),
+        proxyPort: pickInteger(env.PATCHPILOT_EGRESS_PROXY_PORT, raw.security?.egressPolicy?.proxyPort, 3128),
+        auditLogPath: pickString(
+          env.PATCHPILOT_EGRESS_AUDIT_LOG_PATH,
+          raw.security?.egressPolicy?.auditLogPath,
+          defaultEgressAuditLogPath
+        ),
+        denyPrivateNetworks: true,
+        denyMetadataEndpoints: true
       }
     },
     budget: {
@@ -374,6 +430,21 @@ function pickString(envValue: string | undefined, configValue: string | undefine
   const normalizedConfig = configValue?.trim();
   if (normalizedConfig) return normalizedConfig;
   return defaultValue;
+}
+
+function pickStringList(envValue: string | undefined, configValue: string[] | undefined, defaultValue: string[]) {
+  const normalizedEnv = envValue?.trim();
+  if (normalizedEnv) return splitList(normalizedEnv);
+  const normalizedConfig = configValue?.map((value) => value.trim()).filter(Boolean);
+  if (normalizedConfig && normalizedConfig.length > 0) return normalizedConfig;
+  return defaultValue;
+}
+
+function splitList(value: string) {
+  return value
+    .split(/[,\n]/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function pickNumber(envValue: string | undefined, configValue: number | undefined, defaultValue: number) {

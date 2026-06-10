@@ -12,6 +12,7 @@ import {
   verifyAuditChain,
   type AgentRun,
   type ArtifactRecord,
+  type EgressPolicyEvidence,
   type PatchPilotSnapshot,
   type TestRun
 } from "@patchpilot/domain";
@@ -1272,6 +1273,107 @@ artifacts:
     expect(auditActions).toEqual(
       expect.arrayContaining(["test_run.failed", "defect.created", "agent_run.failed"])
     );
+
+    await app.close();
+  });
+
+  it("writes audit evidence when egress policy denies a prohibited endpoint", async () => {
+    const egressPolicyEvidence: EgressPolicyEvidence = {
+      enabled: true,
+      mode: "proxy_sidecar",
+      allowedHosts: ["registry.npmjs.org", "api.openai.com"],
+      auditLogPath: ".patchpilot/egress-audit.jsonl",
+      allowedCount: 1,
+      deniedCount: 1,
+      denied: [
+        {
+          at: "2026-06-11T00:00:01.000Z",
+          decision: "denied",
+          reason: "metadata_endpoint",
+          protocol: "http",
+          host: "169.254.169.254",
+          port: 80,
+          target: "http://169.254.169.254/latest/meta-data",
+          resolvedIps: ["169.254.169.254"]
+        }
+      ],
+      recent: [
+        {
+          at: "2026-06-11T00:00:00.000Z",
+          decision: "allowed",
+          reason: "allowlisted",
+          protocol: "https",
+          host: "registry.npmjs.org",
+          port: 443,
+          target: "https://registry.npmjs.org/"
+        },
+        {
+          at: "2026-06-11T00:00:01.000Z",
+          decision: "denied",
+          reason: "metadata_endpoint",
+          protocol: "http",
+          host: "169.254.169.254",
+          port: 80,
+          target: "http://169.254.169.254/latest/meta-data",
+          resolvedIps: ["169.254.169.254"]
+        }
+      ]
+    };
+    const fakeCodexRunner: CodexRunner = {
+      isAvailable: async () => true,
+      isGitWorkspaceAvailable: async () => true,
+      run: async (_context, emit) => {
+        await emit({
+          step: "developing",
+          type: "codex.output",
+          message: "Fake Codex runner attempted prohibited metadata egress"
+        });
+        throw new CodexRunError(
+          "Codex 执行失败：PatchPilot egress policy denied http://169.254.169.254/latest/meta-data",
+          "policy_denied",
+          undefined,
+          egressPolicyEvidence
+        );
+      }
+    };
+    const app = await buildServer({ store: new PatchPilotStore({ codexRunner: fakeCodexRunner }) });
+    const workItem = await createApprovedWorkItem(app, "验证 egress policy deny audit");
+
+    const start = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/start`,
+      payload: { runner: "codex" }
+    });
+    expect(start.statusCode).toBe(201);
+
+    const failedRun = await pollRun(app, start.json().id);
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      failureType: "policy_denied"
+    });
+
+    const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const deniedAudit = snapshot
+      .json()
+      .auditEvents.find((event: { action: string; runId?: string }) =>
+        event.action === "network.egress_denied" && event.runId === failedRun.id
+      );
+    expect(deniedAudit).toMatchObject({
+      targetType: "agent_run",
+      targetId: failedRun.id,
+      afterJson: {
+        deniedCount: 1,
+        denied: [
+          {
+            reason: "metadata_endpoint",
+            target: "http://169.254.169.254/latest/meta-data"
+          }
+        ]
+      },
+      metadataJson: {
+        auditLogPath: ".patchpilot/egress-audit.jsonl"
+      }
+    });
 
     await app.close();
   });

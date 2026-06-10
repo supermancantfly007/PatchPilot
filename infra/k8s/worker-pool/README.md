@@ -64,10 +64,9 @@ The namespace starts with default-deny ingress and egress. Explicit egress is al
 
 - DNS in `kube-system`;
 - worker controller traffic to a PatchPilot API Pod in a namespace labeled `patchpilot.dev/control-plane=true`;
-- AgentRun telemetry to an OpenTelemetry collector in a namespace labeled `patchpilot.dev/observability=true`;
-- AgentRun HTTP/HTTPS egress to public IP space while excluding RFC1918 and link-local ranges, including common cloud metadata endpoints.
+- AgentRun telemetry to an OpenTelemetry collector in a namespace labeled `patchpilot.dev/observability=true`.
 
-This is a Kubernetes baseline, not the final TD-212 egress allowlist. FQDN-level allowlisting for Git remotes, package registries, and Codex/OpenAI endpoints needs a CNI or egress proxy that supports DNS-aware policy.
+AgentRun Pods do not get broad public HTTP/HTTPS egress in this template. TD-212 enforces the local/MVP path through an audited egress proxy in the rootless container sandbox. Production overlays must add a DNS-aware CNI policy or egress proxy that allows only declared Git remotes, package registries, and OpenAI/Codex endpoints while continuing to deny RFC1918, link-local, and cloud metadata endpoints.
 
 ## Quota
 

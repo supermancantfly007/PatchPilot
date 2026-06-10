@@ -14,6 +14,8 @@ import type {
   AgentRunEvent,
   AgentRunResult,
   AgentRunToolCall,
+  EgressPolicyEvidence,
+  EgressPolicyRuntimeConfig,
   FailureType,
   Prd,
   Requirement,
@@ -51,6 +53,7 @@ export interface CodexRunnerConfig {
     codexSandbox: string;
     codexBypass: boolean;
     containerSandbox: ContainerSandboxConfig;
+    egressPolicy: EgressPolicyRuntimeConfig;
   };
   budget: {
     codexTimeoutMs: number;
@@ -67,7 +70,8 @@ export class CodexRunError extends Error {
   constructor(
     message: string,
     public readonly failureType: FailureType,
-    public readonly testRun?: TestRun
+    public readonly testRun?: TestRun,
+    public readonly egressPolicyEvidence?: EgressPolicyEvidence
   ) {
     super(message);
     this.name = "CodexRunError";
@@ -93,16 +97,20 @@ interface CodexExecResult {
   lastMessagePath: string;
   sessionId?: string;
   capture: CodexExecCapture;
+  egressPolicyEvidence?: EgressPolicyEvidence;
 }
 
 export {
   RootlessContainerSandbox,
+  buildEgressProxyRunArgs,
   buildRootlessContainerRunArgs,
   defaultContainerSandboxConfig,
+  defaultEgressPolicyConfig,
   resolveContainerRuntime,
   toContainerWorkspacePath,
   type ContainerRuntimeKind,
-  type ContainerSandboxConfig
+  type ContainerSandboxConfig,
+  type RootlessContainerSandboxConfig
 } from "./containerSandbox";
 
 export class LocalCodexRunner implements CodexRunner {
@@ -136,7 +144,10 @@ export class LocalCodexRunner implements CodexRunner {
     });
 
     const containerSandbox = config.security.containerSandbox.enabled
-      ? new RootlessContainerSandbox(config.security.containerSandbox)
+      ? new RootlessContainerSandbox({
+          ...config.security.containerSandbox,
+          egressPolicy: config.security.egressPolicy
+        })
       : undefined;
     if (containerSandbox) {
       await emit({
@@ -144,6 +155,13 @@ export class LocalCodexRunner implements CodexRunner {
         type: "workspace.created",
         message: `已启用 rootless container sandbox：${config.security.containerSandbox.runtime}/${config.security.containerSandbox.image}`
       });
+      if (config.security.egressPolicy.enabled) {
+        await emit({
+          step: "developing",
+          type: "workspace.created",
+          message: `已启用网络 egress allowlist：${config.security.egressPolicy.allowedHosts.length} 个静态目的地，Git remote 动态放行=${config.security.egressPolicy.allowGitRemotes}`
+        });
+      }
     }
 
     const taskFilePath = containerSandbox
@@ -219,6 +237,9 @@ export class LocalCodexRunner implements CodexRunner {
       commit: commit.headCommit
     }));
     const codexCapture = mergeCodexCaptures(codexExecResults.map((result) => result.capture));
+    const egressPolicyEvidence = containerSandbox
+      ? await containerSandbox.collectEgressPolicyEvidence(workspace.path)
+      : undefined;
 
     return {
       summary: artifacts.summary,
@@ -239,7 +260,8 @@ export class LocalCodexRunner implements CodexRunner {
       baseBranch: commit.baseBranch,
       baseCommit: commit.baseCommit,
       headCommit: commit.headCommit,
-      codexSessionId: firstCodexRun.sessionId
+      codexSessionId: firstCodexRun.sessionId,
+      ...(egressPolicyEvidence ? { egressPolicyEvidence } : {})
     };
   }
 }
@@ -250,7 +272,8 @@ async function runConfiguredTests(
   config: CodexRunnerConfig,
   containerSandbox: RootlessContainerSandbox | undefined
 ): Promise<TestRun> {
-  return runTestCommand({
+  let egressPolicyEvidence: EgressPolicyEvidence | undefined;
+  const testRun = await runTestCommand({
     command: config.test.command,
     cwd: workspacePath,
     timeoutMs: config.test.timeoutMs,
@@ -270,6 +293,7 @@ async function runConfiguredTests(
               env: { ...options.env, CI: "1" },
               maxOutputBytes: options.maxOutputBytes
             });
+            egressPolicyEvidence = result.egressPolicyEvidence;
             const quotaOutput = result.diskLimitExceeded
               ? `${result.output}\nContainer sandbox workspace disk quota exceeded.`
               : result.output;
@@ -283,6 +307,7 @@ async function runConfiguredTests(
         }
       : {})
   });
+  return egressPolicyEvidence ? { ...testRun, egressPolicyEvidence } : testRun;
 }
 
 async function runCodexExec(
@@ -364,6 +389,7 @@ async function runCodexExec(
   await pendingEmit;
 
   if (exitCode !== 0 || sandboxCompletion?.diskLimitExceeded) {
+    const egressPolicyEvidence = sandboxCompletion?.egressPolicyEvidence;
     const message = summarizeCodexExecFailure({
       stderr: sandboxCompletion?.diskLimitExceeded
         ? `${stderr}\nContainer sandbox workspace disk quota exceeded.`
@@ -371,10 +397,15 @@ async function runCodexExec(
       stdoutRemainder: stdoutBuffer,
       exitCode
     });
-    throw new CodexRunError(message, classifyFailureMessage(message));
+    throw new CodexRunError(message, classifyFailureMessage(message), undefined, egressPolicyEvidence);
   }
 
-  return { lastMessagePath, sessionId, capture };
+  return {
+    lastMessagePath,
+    sessionId,
+    capture,
+    ...(sandboxCompletion?.egressPolicyEvidence ? { egressPolicyEvidence: sandboxCompletion.egressPolicyEvidence } : {})
+  };
 }
 
 

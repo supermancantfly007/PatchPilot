@@ -31,6 +31,7 @@
     "e2e:professional-governance": "node scripts/e2e-professional-governance.mjs",
     "e2e:otel": "node scripts/e2e-otel.mjs",
     "e2e:metrics": "node scripts/e2e-metrics.mjs",
+    "e2e:egress": "tsx scripts/e2e-egress-allowlist.mjs",
     "e2e:temporal": "tsx scripts/e2e-temporal.mjs",
     "e2e:smoke": "node scripts/e2e-smoke.mjs",
     "e2e:team": "node scripts/e2e-team-worker.mjs",
