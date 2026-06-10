@@ -169,6 +169,11 @@ export const httpApiContract = {
       path: "/health",
       response: "HealthResponse"
     },
+    metrics: {
+      method: "GET",
+      path: "/metrics",
+      response: "text/plain; version=0.0.4"
+    },
     getConfig: {
       method: "GET",
       path: "/api/config",
@@ -558,6 +563,18 @@ function responseFor(schemaName: string) {
       description: "Server-sent event stream. Each data frame contains an AgentRun JSON payload.",
       content: {
         "text/event-stream": {
+          schema: {
+            type: "string"
+          }
+        }
+      }
+    };
+  }
+  if (schemaName.startsWith("text/plain")) {
+    return {
+      description: "Plain text response.",
+      content: {
+        "text/plain": {
           schema: {
             type: "string"
           }

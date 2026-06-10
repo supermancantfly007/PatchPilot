@@ -39,6 +39,13 @@ import {
 } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 
+export {
+  prometheusContentType,
+  prometheusMetricNames,
+  renderPrometheusMetrics,
+  type PrometheusMetricsSnapshot
+} from "./prometheus";
+
 export type TelemetryExporter = "none" | "otlp" | "in_memory";
 
 export interface TelemetryEnv {

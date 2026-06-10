@@ -12,7 +12,13 @@ import {
   requirementInputSchema,
   startRunSchema
 } from "@patchpilot/contracts";
-import { getTelemetry, shutdownTelemetry, type PatchPilotTelemetry } from "@patchpilot/telemetry";
+import {
+  getTelemetry,
+  prometheusContentType,
+  renderPrometheusMetrics,
+  shutdownTelemetry,
+  type PatchPilotTelemetry
+} from "@patchpilot/telemetry";
 import Fastify from "fastify";
 import { z } from "zod";
 import { DomainError, PatchPilotStore } from "./store";
@@ -28,6 +34,11 @@ export async function buildServer(options: { store?: PatchPilotStore; telemetry?
   });
 
   app.get(apiRoute("health"), async () => ({ ok: true, service: "patchpilot-api" }));
+
+  app.get(apiRoute("metrics"), async (_request, reply) => {
+    const snapshot = await store.getSnapshot();
+    return reply.type(prometheusContentType).send(renderPrometheusMetrics(snapshot));
+  });
 
   app.get(apiRoute("getConfig"), async () => store.getRuntimeConfig());
 

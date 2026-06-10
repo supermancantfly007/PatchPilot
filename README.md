@@ -162,6 +162,15 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 
 When enabled, the API emits AgentRun traces, metrics, and logs with `patchpilot.requirement.id`, `patchpilot.prd.id`, `patchpilot.workflow.id`, `patchpilot.work_item.id`, `patchpilot.agent_run.id`, and `patchpilot.test_run.id` attributes where those IDs exist in the MVP. The worker emits dispatch/tick telemetry with WorkItem and PRD correlation. `pnpm e2e:otel` starts a lightweight local OTLP HTTP test collector and proves one simulated run exports telemetry without requiring Docker.
 
+Prometheus/Grafana-compatible scrape endpoint:
+
+```bash
+curl http://localhost:4000/metrics
+pnpm e2e:metrics
+```
+
+`/metrics` returns Prometheus text format for run duration, failure type, WorkItem queue depth, run cost, TestRun pass rate, and acceptance rate. Metric names are stable `patchpilot_*` series with low-cardinality labels such as `runner`, `status`, `role`, and `failure_type`.
+
 Codex runner environment:
 
 ```bash
@@ -213,4 +222,5 @@ pnpm e2e:cli
 pnpm e2e:budget
 pnpm e2e:failure-defect
 pnpm e2e:otel
+pnpm e2e:metrics
 ```

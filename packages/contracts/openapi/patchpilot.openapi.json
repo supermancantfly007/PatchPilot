@@ -27,6 +27,27 @@
         }
       }
     },
+    "/metrics": {
+      "get": {
+        "operationId": "metrics",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "GET /metrics",
+        "responses": {
+          "200": {
+            "description": "Plain text response.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/config": {
       "get": {
         "operationId": "getConfig",
