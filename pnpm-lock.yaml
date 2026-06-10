@@ -272,6 +272,9 @@ importers:
 
   packages/workflows:
     dependencies:
+      '@patchpilot/domain':
+        specifier: workspace:*
+        version: link:../domain
       '@temporalio/client':
         specifier: ^1.18.0
         version: 1.18.0

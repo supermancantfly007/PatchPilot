@@ -181,7 +181,7 @@ PATCHPILOT_WORKER_ONCE=false
 
 ## Temporal Workflow Engine
 
-TD-204 adds the Temporal TypeScript SDK boundary without replacing the existing polling worker. The Temporal worker is a separate process that currently runs a canary workflow proving worker startup, activity execution, signal/query handlers, retry policy, and idempotency-key plumbing. Product workflows such as requirement intake and work item execution remain separate follow-up tasks.
+TD-204 adds the Temporal TypeScript SDK boundary without replacing the existing polling worker. The Temporal worker is a separate process that runs a canary workflow proving worker startup, activity execution, signal/query handlers, retry policy, and idempotency-key plumbing. TD-205 adds `RequirementIntakeWorkflow` for requirement intake, iterative clarification signals, PRD draft generation, and a durable confirmation wait. Work item planning, execution, approvals, and defect workflows remain separate follow-up tasks.
 
 Start a local Temporal server through the optional compose middleware:
 
@@ -189,7 +189,7 @@ Start a local Temporal server through the optional compose middleware:
 docker compose -f infra/docker-compose.yml up -d postgres temporal
 ```
 
-Then run the TD-204 acceptance canary:
+Then run the Temporal acceptance E2E for the TD-204 canary and TD-205 requirement intake workflow:
 
 ```bash
 pnpm e2e:temporal
