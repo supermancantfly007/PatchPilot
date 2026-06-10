@@ -8,6 +8,7 @@ import {
   createTimeline,
   createTestCasesForWorkItems,
   createWorkItems,
+  emptySnapshot,
   createInitialClarificationTurn,
   generateClarificationQuestions,
   makeSimpleSummary,
@@ -93,5 +94,9 @@ describe("domain helpers", () => {
     expect(testCaseStatusFromTestRunStatus("blocked")).toBe("blocked");
     expect(testCaseStatusFromTestRunStatus("skipped")).toBe("blocked");
     expect(testCaseStatusFromTestRunStatus("running")).toBe("ready");
+  });
+
+  it("initializes approval records in empty snapshots", () => {
+    expect(emptySnapshot().approvals).toEqual([]);
   });
 });

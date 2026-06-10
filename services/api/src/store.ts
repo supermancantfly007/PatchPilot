@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   type AcceptanceDecision,
+  type ApprovalRecord,
   type AgentProfile,
   type AgentRun,
   type AgentRunEvent,
@@ -84,12 +85,73 @@ export class PatchPilotStore {
 
   async getSnapshot() {
     await this.load();
+    if (this.expireOverdueApprovals()) await this.save();
     return structuredClone(this.snapshot);
   }
 
   async getAgents() {
     await this.load();
     return structuredClone(this.snapshot.agents);
+  }
+
+  async createApproval(
+    input: Pick<
+      ApprovalRecord,
+      | "kind"
+      | "targetType"
+      | "targetId"
+      | "requestedBy"
+      | "requestedReason"
+      | "riskLevel"
+      | "expiresAt"
+      | "requirementId"
+      | "prdId"
+      | "workItemId"
+      | "runId"
+    >
+  ) {
+    return this.withMutation(async () => {
+      await this.load();
+      const now = new Date().toISOString();
+      this.expireOverdueApprovals(now);
+      const isExpired = this.isApprovalExpired(input.expiresAt, now);
+      const approval: ApprovalRecord = {
+        id: `approval_${randomUUID()}`,
+        ...input,
+        status: isExpired ? "expired" : "pending",
+        ...(isExpired ? {
+          decisionReason: "Approval expired before a decision was recorded.",
+          decidedAt: now
+        } : {}),
+        createdAt: now,
+        updatedAt: now
+      };
+
+      this.snapshot.approvals.unshift(approval);
+      this.addAuditEvent({
+        actor: input.requestedBy,
+        action: "approval.requested",
+        targetType: "approval",
+        targetId: approval.id,
+        message: `已请求 ${approval.kind} 审批：${approval.requestedReason}`,
+        requirementId: approval.requirementId,
+        prdId: approval.prdId,
+        workItemId: approval.workItemId,
+        runId: approval.runId
+      });
+      if (isExpired) this.addApprovalExpiredAudit(approval, now);
+
+      await this.save();
+      return structuredClone(approval);
+    });
+  }
+
+  async approveApproval(id: string, input: { decidedBy: string; decisionReason: string }) {
+    return this.decideApproval(id, "approved", input);
+  }
+
+  async denyApproval(id: string, input: { decidedBy: string; decisionReason: string }) {
+    return this.decideApproval(id, "denied", input);
   }
 
   async createRequirement(input: {
@@ -883,6 +945,12 @@ export class PatchPilotStore {
     return run;
   }
 
+  private findApproval(id: string) {
+    const approval = this.snapshot.approvals.find((item) => item.id === id);
+    if (!approval) throw new DomainError("NOT_FOUND", `Approval not found: ${id}`);
+    return approval;
+  }
+
   private makeEvent(type: AgentRunEvent["type"], message: string): AgentRunEvent {
     return {
       id: `evt_${randomUUID()}`,
@@ -890,6 +958,79 @@ export class PatchPilotStore {
       type,
       message
     };
+  }
+
+  private async decideApproval(
+    id: string,
+    status: Extract<ApprovalRecord["status"], "approved" | "denied">,
+    input: { decidedBy: string; decisionReason: string }
+  ) {
+    return this.withMutation(async () => {
+      await this.load();
+      const now = new Date().toISOString();
+      this.expireOverdueApprovals(now);
+      const approval = this.findApproval(id);
+      if (approval.status !== "pending") {
+        throw new DomainError("INVALID_STATE", `Approval is already ${approval.status}`);
+      }
+
+      approval.status = status;
+      approval.decisionReason = input.decisionReason;
+      approval.decidedAt = now;
+      approval.updatedAt = now;
+      if (status === "approved") approval.approvedBy = input.decidedBy;
+      else approval.deniedBy = input.decidedBy;
+
+      this.addAuditEvent({
+        actor: input.decidedBy,
+        action: status === "approved" ? "approval.approved" : "approval.denied",
+        targetType: "approval",
+        targetId: approval.id,
+        message: status === "approved" ? "审批已批准。" : "审批已拒绝。",
+        requirementId: approval.requirementId,
+        prdId: approval.prdId,
+        workItemId: approval.workItemId,
+        runId: approval.runId
+      });
+
+      await this.save();
+      return structuredClone(approval);
+    });
+  }
+
+  private expireOverdueApprovals(now = new Date().toISOString()) {
+    let changed = false;
+    for (const approval of this.snapshot.approvals) {
+      if (approval.status !== "pending" || !this.isApprovalExpired(approval.expiresAt, now)) continue;
+      approval.status = "expired";
+      approval.decisionReason = approval.decisionReason || "Approval expired before a decision was recorded.";
+      approval.decidedAt = approval.decidedAt || now;
+      approval.updatedAt = now;
+      this.addApprovalExpiredAudit(approval, now);
+      changed = true;
+    }
+    return changed;
+  }
+
+  private addApprovalExpiredAudit(approval: ApprovalRecord, now: string) {
+    this.addAuditEvent({
+      actor: "scheduler",
+      action: "approval.expired",
+      targetType: "approval",
+      targetId: approval.id,
+      message: "审批已过期，未记录批准或拒绝决定。",
+      requirementId: approval.requirementId,
+      prdId: approval.prdId,
+      workItemId: approval.workItemId,
+      runId: approval.runId,
+      createdAt: now
+    });
+  }
+
+  private isApprovalExpired(expiresAt: string, now: string) {
+    const expiresAtMs = Date.parse(expiresAt);
+    const nowMs = Date.parse(now);
+    return !Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs;
   }
 
   private async save() {
@@ -914,8 +1055,15 @@ export class PatchPilotStore {
     this.snapshot.reviewRecords ||= [];
     this.snapshot.auditEvents ||= [];
     this.snapshot.acceptances ||= [];
+    this.snapshot.approvals ||= [];
     this.snapshot.bugs ||= [];
     this.snapshot.agents = this.mergeDefaultAgents(this.snapshot.agents || [], now);
+    this.snapshot.approvals = this.snapshot.approvals.map((item) => ({
+      ...item,
+      status: item.status || "pending",
+      createdAt: item.createdAt || now,
+      updatedAt: item.updatedAt || item.createdAt || now
+    }));
     this.snapshot.requirements = this.snapshot.requirements.map((item) => ({
       ...item,
       clarificationTurns:

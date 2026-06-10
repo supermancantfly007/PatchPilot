@@ -20,22 +20,25 @@ describe("contract artifacts", () => {
     expect(contractVersion).toBe("patchpilot.mvp.v1");
     expect(contractArtifacts.map((artifact) => artifact.kind)).toEqual(["http", "event", "schema"]);
     expect(httpApiContract.operations.createRequirement.path).toBe("/api/requirements");
+    expect(httpApiContract.operations.createApproval.path).toBe("/api/approvals");
     expect(runEventStreamContract.stream.payload).toBe("AgentRun");
     expect(sharedStateContract.rootSchema).toBe("PatchPilotSnapshot");
+    expect(sharedStateContract.schemas).toContain("ApprovalRecord");
   });
 
   it("derives operation and schema types from the artifacts", () => {
-    const operation: ApiOperationId = "claimWorkItem";
+    const operation: ApiOperationId = "approveApproval";
     const terminalStatus: RunEventTerminalStatus = "succeeded";
-    const schema: SharedStateSchemaName = "PatchPilotSnapshot";
+    const schema: SharedStateSchemaName = "ApprovalRecord";
 
-    expect(apiRoute(operation)).toBe("/api/work-items/:id/claim");
+    expect(apiRoute(operation)).toBe("/api/approvals/:id/approve");
     expect(terminalStatus).toBe("succeeded");
-    expect(schema).toBe("PatchPilotSnapshot");
+    expect(schema).toBe("ApprovalRecord");
   });
 
   it("builds concrete API paths from route artifacts", () => {
     expect(apiPath("claimWorkItem", { id: "wi backend/1" })).toBe("/api/work-items/wi%20backend%2F1/claim");
+    expect(apiPath("denyApproval", { id: "approval budget/1" })).toBe("/api/approvals/approval%20budget%2F1/deny");
     expect(() => apiPath("claimWorkItem")).toThrow('Missing API path parameter "id"');
   });
 

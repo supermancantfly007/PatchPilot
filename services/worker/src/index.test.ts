@@ -89,6 +89,7 @@ function snapshot(): PatchPilotSnapshot {
     reviewRecords: [],
     auditEvents: [],
     acceptances: [],
+    approvals: [],
     bugs: [],
     agents: [agent()]
   };

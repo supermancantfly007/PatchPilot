@@ -311,6 +311,99 @@
         }
       }
     },
+    "/api/approvals": {
+      "post": {
+        "operationId": "createApproval",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "POST /api/approvals",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApprovalRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalRecord"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/approvals/:id/approve": {
+      "post": {
+        "operationId": "approveApproval",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "POST /api/approvals/:id/approve",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalDecisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalRecord"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/approvals/:id/deny": {
+      "post": {
+        "operationId": "denyApproval",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "POST /api/approvals/:id/deny",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalDecisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalRecord"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/work-items/:id/start": {
       "post": {
         "operationId": "startWorkItem",
@@ -652,6 +745,106 @@
         "required": [],
         "properties": {
           "claimToken": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "CreateApprovalRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "targetType",
+          "targetId",
+          "requestedBy",
+          "requestedReason",
+          "riskLevel",
+          "expiresAt"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "prd_approval",
+              "budget_exceeded",
+              "dangerous_operation",
+              "breaking_contract",
+              "network_allowlist_change",
+              "secret_grant",
+              "production_data_access"
+            ]
+          },
+          "targetType": {
+            "type": "string",
+            "enum": [
+              "prd",
+              "work_item",
+              "agent_run",
+              "interface_contract",
+              "budget",
+              "policy",
+              "secret",
+              "network",
+              "repository"
+            ]
+          },
+          "targetId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requestedBy": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requestedReason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "riskLevel": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "requirementId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "ApprovalDecisionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "decidedBy",
+          "decisionReason"
+        ],
+        "properties": {
+          "decidedBy": {
+            "type": "string",
+            "minLength": 1
+          },
+          "decisionReason": {
             "type": "string",
             "minLength": 1
           }
@@ -2016,6 +2209,124 @@
           }
         }
       },
+      "ApprovalRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "targetType",
+          "targetId",
+          "requestedBy",
+          "requestedReason",
+          "riskLevel",
+          "expiresAt",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "prd_approval",
+              "budget_exceeded",
+              "dangerous_operation",
+              "breaking_contract",
+              "network_allowlist_change",
+              "secret_grant",
+              "production_data_access"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "denied",
+              "expired"
+            ]
+          },
+          "targetType": {
+            "type": "string",
+            "enum": [
+              "prd",
+              "work_item",
+              "agent_run",
+              "interface_contract",
+              "budget",
+              "policy",
+              "secret",
+              "network",
+              "repository"
+            ]
+          },
+          "targetId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requestedBy": {
+            "type": "string"
+          },
+          "requestedReason": {
+            "type": "string"
+          },
+          "riskLevel": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "approvedBy": {
+            "type": "string"
+          },
+          "deniedBy": {
+            "type": "string"
+          },
+          "decisionReason": {
+            "type": "string"
+          },
+          "decidedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "requirementId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "AuditEvent": {
         "type": "object",
         "additionalProperties": true,
@@ -2414,6 +2725,7 @@
           "reviewRecords",
           "auditEvents",
           "acceptances",
+          "approvals",
           "bugs",
           "agents"
         ],
@@ -2488,6 +2800,12 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AcceptanceDecision"
+            }
+          },
+          "approvals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApprovalRecord"
             }
           },
           "bugs": {

@@ -10,6 +10,30 @@ import { z } from "zod";
 
 export const contractVersion = "patchpilot.mvp.v1";
 
+export const approvalKinds = [
+  "prd_approval",
+  "budget_exceeded",
+  "dangerous_operation",
+  "breaking_contract",
+  "network_allowlist_change",
+  "secret_grant",
+  "production_data_access"
+] as const;
+
+export const approvalTargetTypes = [
+  "prd",
+  "work_item",
+  "agent_run",
+  "interface_contract",
+  "budget",
+  "policy",
+  "secret",
+  "network",
+  "repository"
+] as const;
+
+export const approvalRiskLevels = ["low", "medium", "high", "critical"] as const;
+
 export const requirementInputSchema = z.object({
   rawInput: z.string().trim().min(3),
   template: z.enum(["feature", "bug", "ui", "document"])
@@ -59,6 +83,25 @@ export const startRunSchema = z.object({
 export const releaseWorkItemSchema = z.object({
   claimToken: z.string().trim().min(1).optional()
 }).default({});
+
+export const createApprovalSchema = z.object({
+  kind: z.enum(approvalKinds),
+  targetType: z.enum(approvalTargetTypes),
+  targetId: z.string().trim().min(1),
+  requestedBy: z.string().trim().min(1),
+  requestedReason: z.string().trim().min(1),
+  riskLevel: z.enum(approvalRiskLevels),
+  expiresAt: z.string().datetime(),
+  requirementId: z.string().trim().min(1).optional(),
+  prdId: z.string().trim().min(1).optional(),
+  workItemId: z.string().trim().min(1).optional(),
+  runId: z.string().trim().min(1).optional()
+});
+
+export const approvalDecisionSchema = z.object({
+  decidedBy: z.string().trim().min(1),
+  decisionReason: z.string().trim().min(1)
+});
 
 export const httpApiContract = {
   artifactId: "control-api",
@@ -133,6 +176,24 @@ export const httpApiContract = {
       path: "/api/prds/:id/acceptance",
       request: "AcceptanceRequest",
       response: "TeamAcceptanceResponse"
+    },
+    createApproval: {
+      method: "POST",
+      path: "/api/approvals",
+      request: "CreateApprovalRequest",
+      response: "ApprovalRecord"
+    },
+    approveApproval: {
+      method: "POST",
+      path: "/api/approvals/:id/approve",
+      request: "ApprovalDecisionRequest",
+      response: "ApprovalRecord"
+    },
+    denyApproval: {
+      method: "POST",
+      path: "/api/approvals/:id/deny",
+      request: "ApprovalDecisionRequest",
+      response: "ApprovalRecord"
     },
     startWorkItem: {
       method: "POST",
@@ -232,6 +293,7 @@ export const sharedStateContract = {
     "TestRun",
     "PullRequestRecord",
     "ReviewRecord",
+    "ApprovalRecord",
     "AuditEvent",
     "BugReport",
     "AcceptanceDecision"
@@ -409,7 +471,11 @@ function hasRequestSchema(operation: (typeof httpApiContract.operations)[ApiOper
 }
 
 function responseStatusFor(operationId: ApiOperationId) {
-  return operationId === "createRequirement" || operationId === "createBug" || operationId === "startTeam" || operationId === "startWorkItem"
+  return operationId === "createRequirement" ||
+    operationId === "createBug" ||
+    operationId === "createApproval" ||
+    operationId === "startTeam" ||
+    operationId === "startWorkItem"
     ? "201"
     : "200";
 }
@@ -489,6 +555,10 @@ const runnerKind = enumSchema(["simulated", "codex"]);
 const agentRole = enumSchema(["product", "frontend", "backend", "test", "ops", "reviewer"]);
 const runStatus = enumSchema(["queued", "running", "needs_approval", "succeeded", "failed", "cancelled"]);
 const workItemStatus = enumSchema(["proposed", "ready", "claimed", "running", "review", "blocked", "done", "cancelled"]);
+const approvalKind = enumSchema(approvalKinds);
+const approvalStatus = enumSchema(["pending", "approved", "denied", "expired"]);
+const approvalTargetType = enumSchema(approvalTargetTypes);
+const approvalRiskLevel = enumSchema(approvalRiskLevels);
 
 export const openApiSchemas = {
   HealthResponse: objectSchema({
@@ -527,6 +597,23 @@ export const openApiSchemas = {
   ReleaseWorkItemRequest: objectSchema({
     claimToken: { type: "string", minLength: 1 }
   }, []),
+  CreateApprovalRequest: objectSchema({
+    kind: approvalKind,
+    targetType: approvalTargetType,
+    targetId: id,
+    requestedBy: { type: "string", minLength: 1 },
+    requestedReason: { type: "string", minLength: 1 },
+    riskLevel: approvalRiskLevel,
+    expiresAt: isoDate,
+    requirementId: id,
+    prdId: id,
+    workItemId: id,
+    runId: id
+  }, ["kind", "targetType", "targetId", "requestedBy", "requestedReason", "riskLevel", "expiresAt"]),
+  ApprovalDecisionRequest: objectSchema({
+    decidedBy: { type: "string", minLength: 1 },
+    decisionReason: { type: "string", minLength: 1 }
+  }),
   CreateBugRequest: objectSchema({
     title: { type: "string", minLength: 3 },
     description: { type: "string", minLength: 3 },
@@ -796,6 +883,27 @@ export const openApiSchemas = {
     linkedPullRequestId: id,
     summary: { type: "string" }
   }),
+  ApprovalRecord: objectSchema({
+    id,
+    kind: approvalKind,
+    status: approvalStatus,
+    targetType: approvalTargetType,
+    targetId: id,
+    requestedBy: { type: "string" },
+    requestedReason: { type: "string" },
+    riskLevel: approvalRiskLevel,
+    expiresAt: isoDate,
+    approvedBy: { type: "string" },
+    deniedBy: { type: "string" },
+    decisionReason: { type: "string" },
+    decidedAt: isoDate,
+    requirementId: id,
+    prdId: id,
+    workItemId: id,
+    runId: id,
+    createdAt: isoDate,
+    updatedAt: isoDate
+  }, ["id", "kind", "status", "targetType", "targetId", "requestedBy", "requestedReason", "riskLevel", "expiresAt", "createdAt", "updatedAt"]),
   AuditEvent: looseObjectSchema({
     id,
     traceId: id,
@@ -889,6 +997,7 @@ export const openApiSchemas = {
     reviewRecords: arrayOf(schemaRef("ReviewRecord")),
     auditEvents: arrayOf(schemaRef("AuditEvent")),
     acceptances: arrayOf(schemaRef("AcceptanceDecision")),
+    approvals: arrayOf(schemaRef("ApprovalRecord")),
     bugs: arrayOf(schemaRef("BugReport")),
     agents: arrayOf(schemaRef("AgentProfile"))
   })

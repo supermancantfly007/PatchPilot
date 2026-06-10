@@ -79,6 +79,113 @@ describe("PatchPilot API", () => {
     await app.close();
   });
 
+  it("creates, approves, denies, and expires approval records", async () => {
+    const app = await buildServer();
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const past = new Date(Date.now() - 1000).toISOString();
+    const kinds = [
+      "budget_exceeded",
+      "dangerous_operation",
+      "breaking_contract",
+      "secret_grant",
+      "network_allowlist_change"
+    ];
+    const approvals: Array<{ id: string }> = [];
+
+    for (const kind of kinds) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/approvals",
+        payload: {
+          kind,
+          targetType: kind === "secret_grant" ? "secret" : kind === "network_allowlist_change" ? "network" : "policy",
+          targetId: `target_${kind}`,
+          requestedBy: "policy-engine",
+          requestedReason: `${kind} needs a human decision`,
+          riskLevel: kind === "dangerous_operation" ? "critical" : "high",
+          expiresAt: future
+        }
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toMatchObject({
+        kind,
+        status: "pending",
+        requestedBy: "policy-engine",
+        requestedReason: `${kind} needs a human decision`
+      });
+      approvals.push(response.json());
+    }
+    const approvalToApprove = approvals[0];
+    const approvalToDeny = approvals[1];
+    expect(approvalToApprove).toBeDefined();
+    expect(approvalToDeny).toBeDefined();
+    if (!approvalToApprove || !approvalToDeny) throw new Error("Approval fixtures were not created");
+
+    const approved = await app.inject({
+      method: "POST",
+      url: `/api/approvals/${approvalToApprove.id}/approve`,
+      payload: { decidedBy: "maintainer", decisionReason: "Budget increase is acceptable for this PRD" }
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json()).toMatchObject({
+      status: "approved",
+      approvedBy: "maintainer",
+      decisionReason: "Budget increase is acceptable for this PRD"
+    });
+
+    const denied = await app.inject({
+      method: "POST",
+      url: `/api/approvals/${approvalToDeny.id}/deny`,
+      payload: { decidedBy: "security-reviewer", decisionReason: "Operation is too risky for the current sandbox" }
+    });
+    expect(denied.statusCode).toBe(200);
+    expect(denied.json()).toMatchObject({
+      status: "denied",
+      deniedBy: "security-reviewer",
+      decisionReason: "Operation is too risky for the current sandbox"
+    });
+
+    const expired = await app.inject({
+      method: "POST",
+      url: "/api/approvals",
+      payload: {
+        kind: "network_allowlist_change",
+        targetType: "network",
+        targetId: "expired-network-change",
+        requestedBy: "policy-engine",
+        requestedReason: "Temporary network exception expired before review",
+        riskLevel: "medium",
+        expiresAt: past
+      }
+    });
+    expect(expired.statusCode).toBe(201);
+    expect(expired.json()).toMatchObject({
+      status: "expired",
+      decisionReason: "Approval expired before a decision was recorded."
+    });
+
+    const approveExpired = await app.inject({
+      method: "POST",
+      url: `/api/approvals/${expired.json().id}/approve`,
+      payload: { decidedBy: "maintainer", decisionReason: "Too late" }
+    });
+    expect(approveExpired.statusCode).toBe(409);
+
+    const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const approvalStatuses = new Map(
+      snapshot.json().approvals.map((approval: { id: string; status: string }) => [approval.id, approval.status])
+    );
+    expect(approvalStatuses.get(approvalToApprove.id)).toBe("approved");
+    expect(approvalStatuses.get(approvalToDeny.id)).toBe("denied");
+    expect(approvalStatuses.get(expired.json().id)).toBe("expired");
+    expect(snapshot.json().auditEvents.map((event: { action: string }) => event.action)).toEqual(
+      expect.arrayContaining(["approval.requested", "approval.approved", "approval.denied", "approval.expired"])
+    );
+
+    await app.close();
+  });
+
   it("returns test command and preview URL overrides from .patchpilot/config.yaml", async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), "patchpilot-api-config-"));
     const configDir = join(fixtureRoot, ".patchpilot");

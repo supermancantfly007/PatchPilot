@@ -1,11 +1,13 @@
 import cors from "@fastify/cors";
 import {
   acceptanceSchema,
+  approvalDecisionSchema,
   apiRoute,
   bugInputSchema,
   claimSchema,
   clarificationSchema,
   clarificationTurnSchema,
+  createApprovalSchema,
   releaseWorkItemSchema,
   requirementInputSchema,
   startRunSchema
@@ -71,6 +73,24 @@ export async function buildServer(options: { store?: PatchPilotStore } = {}) {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = acceptanceSchema.parse(request.body);
     return store.acceptPrdRuns(id, input.status, input.reason);
+  });
+
+  app.post(apiRoute("createApproval"), async (request, reply) => {
+    const input = createApprovalSchema.parse(request.body);
+    const approval = await store.createApproval(input);
+    return reply.code(201).send(approval);
+  });
+
+  app.post(apiRoute("approveApproval"), async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = approvalDecisionSchema.parse(request.body);
+    return store.approveApproval(id, input);
+  });
+
+  app.post(apiRoute("denyApproval"), async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = approvalDecisionSchema.parse(request.body);
+    return store.denyApproval(id, input);
   });
 
   app.post(apiRoute("startWorkItem"), async (request, reply) => {

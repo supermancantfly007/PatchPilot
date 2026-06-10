@@ -305,6 +305,7 @@ function snapshot(input: {
     reviewRecords: [],
     auditEvents: [],
     acceptances: [],
+    approvals: [],
     bugs: [],
     agents: input.agents
   };

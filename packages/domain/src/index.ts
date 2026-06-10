@@ -55,6 +55,30 @@ export type InterfaceContractKind = "http" | "event" | "schema";
 
 export type InterfaceContractStatus = "draft" | "approved" | "breaking_change_pending" | "deprecated";
 
+export type ApprovalKind =
+  | "prd_approval"
+  | "budget_exceeded"
+  | "dangerous_operation"
+  | "breaking_contract"
+  | "network_allowlist_change"
+  | "secret_grant"
+  | "production_data_access";
+
+export type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
+
+export type ApprovalRiskLevel = "low" | "medium" | "high" | "critical";
+
+export type ApprovalTargetType =
+  | "prd"
+  | "work_item"
+  | "agent_run"
+  | "interface_contract"
+  | "budget"
+  | "policy"
+  | "secret"
+  | "network"
+  | "repository";
+
 export interface TimelineStep {
   key: TimelineStepKey;
   label: string;
@@ -349,7 +373,8 @@ export interface AuditEvent {
     | "pull_request"
     | "review_record"
     | "bug"
-    | "acceptance";
+    | "acceptance"
+    | "approval";
   targetId: string;
   message: string;
   requirementId?: string;
@@ -357,6 +382,28 @@ export interface AuditEvent {
   workItemId?: string;
   runId?: string;
   createdAt: string;
+}
+
+export interface ApprovalRecord {
+  id: string;
+  kind: ApprovalKind;
+  status: ApprovalStatus;
+  targetType: ApprovalTargetType;
+  targetId: string;
+  requestedBy: string;
+  requestedReason: string;
+  riskLevel: ApprovalRiskLevel;
+  expiresAt: string;
+  approvedBy?: string;
+  deniedBy?: string;
+  decisionReason?: string;
+  decidedAt?: string;
+  requirementId?: string;
+  prdId?: string;
+  workItemId?: string;
+  runId?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface PullRequestRecord {
@@ -417,6 +464,7 @@ export interface PatchPilotSnapshot {
   reviewRecords: ReviewRecord[];
   auditEvents: AuditEvent[];
   acceptances: AcceptanceDecision[];
+  approvals: ApprovalRecord[];
   bugs: BugReport[];
   agents: AgentProfile[];
 }
@@ -434,6 +482,7 @@ export const emptySnapshot = (): PatchPilotSnapshot => ({
   reviewRecords: [],
   auditEvents: [],
   acceptances: [],
+  approvals: [],
   bugs: [],
   agents: createDefaultAgents(new Date().toISOString())
 });
