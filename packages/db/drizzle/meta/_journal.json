@@ -15,6 +15,13 @@
       "when": 1781108216684,
       "tag": "0001_short_the_enforcers",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1781111112536,
+      "tag": "0002_regular_misty_knight",
+      "breakpoints": true
     }
   ]
 }

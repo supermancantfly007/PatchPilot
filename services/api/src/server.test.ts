@@ -184,6 +184,54 @@ describe("PatchPilot API", () => {
     await app.close();
   });
 
+  it("runs API state through the Postgres repository and imports JSON fixtures", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "patchpilot-json-import-"));
+    const dataFilePath = join(dataDir, "patchpilot-store.json");
+    const fixture = emptySnapshot();
+    fixture.agents = [];
+    fixture.requirements = [
+      {
+        id: "req_json_fixture",
+        title: "JSON fixture requirement",
+        rawInput: "Import this JSON fixture into the repository",
+        template: "feature",
+        status: "clarifying",
+        simpleSummary: "Feature: JSON fixture requirement",
+        clarificationQuestions: [],
+        clarificationTurns: [],
+        createdAt: "2026-06-10T00:00:00.000Z",
+        updatedAt: "2026-06-10T00:00:00.000Z"
+      }
+    ];
+    await writeFile(dataFilePath, JSON.stringify(fixture, null, 2));
+    const store = new PatchPilotStore({ dataFilePath });
+    const app = await buildServer({ store });
+
+    try {
+      await expect(store.getPersistenceInfo()).resolves.toMatchObject({ kind: "postgres", engine: "pglite" });
+      const imported = await app.inject({ method: "GET", url: "/api/snapshot" });
+      expect(imported.statusCode).toBe(200);
+      expect(imported.json().requirements.map((requirement: { id: string }) => requirement.id)).toContain(
+        "req_json_fixture"
+      );
+
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/requirements",
+        payload: { rawInput: "Persist a new requirement after JSON import", template: "feature" }
+      });
+      expect(created.statusCode).toBe(201);
+
+      const exported = JSON.parse(await readFile(dataFilePath, "utf8")) as PatchPilotSnapshot;
+      expect(exported.requirements.map((requirement) => requirement.id)).toEqual(
+        expect.arrayContaining(["req_json_fixture", created.json().id])
+      );
+    } finally {
+      await app.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("returns 404 for unknown resources", async () => {
     const app = await buildServer();
     const response = await app.inject({ method: "GET", url: "/api/runs/missing" });

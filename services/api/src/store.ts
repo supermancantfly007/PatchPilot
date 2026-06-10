@@ -6,6 +6,12 @@ import {
   type ArtifactStore
 } from "@patchpilot/artifacts";
 import {
+  createPglitePatchPilotRepository,
+  createPostgresPatchPilotRepository,
+  type PatchPilotRepository,
+  type PatchPilotRepositoryInfo
+} from "@patchpilot/db";
+import {
   type AcceptanceDecision,
   type ApprovalRecord,
   type AgentProfile,
@@ -62,6 +68,10 @@ import { getTelemetry, type PatchPilotTelemetry } from "@patchpilot/telemetry";
 import { readPatchPilotConfig } from "./config";
 
 const defaultDataFile = join(process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"), "patchpilot-store.json");
+const defaultPgliteDataDir = join(
+  process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"),
+  "patchpilot-pglite"
+);
 
 const defaultClaimLeaseMs = 5 * 60 * 1000;
 const defaultRunCostEstimateUsd = 0.42;
@@ -130,7 +140,9 @@ export class PatchPilotStore {
   private readonly artifactStore?: ArtifactStore;
   private readonly telemetry: PatchPilotTelemetry;
   private readonly dataFilePath: string | undefined;
+  private readonly repositoryPromise: Promise<PatchPilotRepository> | undefined;
   private mutationQueue: Promise<void> = Promise.resolve();
+  private readonly activeExecutions = new Set<Promise<void>>();
 
   constructor(
     options: {
@@ -138,6 +150,7 @@ export class PatchPilotStore {
       dataFilePath?: string | false;
       artifactStore?: ArtifactStore;
       telemetry?: PatchPilotTelemetry;
+      repository?: PatchPilotRepository | Promise<PatchPilotRepository> | false;
     } = {}
   ) {
     this.codexRunner = options.codexRunner ?? new LocalCodexRunner();
@@ -147,27 +160,77 @@ export class PatchPilotStore {
       options.dataFilePath === false
         ? undefined
         : options.dataFilePath ?? (process.env.NODE_ENV === "test" ? undefined : defaultDataFile);
+    this.repositoryPromise =
+      options.repository === false
+        ? undefined
+        : Promise.resolve(options.repository ?? createDefaultRepository());
   }
 
   async load() {
     if (this.loaded) return;
+    const repository = await this.repositoryPromise;
+    if (repository) {
+      const databaseSnapshot = await repository.loadSnapshot();
+      if (isProductSnapshotEmpty(databaseSnapshot)) {
+        const importedSnapshot = await this.readLegacyJsonSnapshotIfPresent();
+        this.snapshot = importedSnapshot ?? databaseSnapshot;
+        this.normalizeSnapshot();
+        if (importedSnapshot) await this.save();
+      } else {
+        this.snapshot = databaseSnapshot;
+        this.normalizeSnapshot();
+      }
+      this.loaded = true;
+      return;
+    }
     if (!this.dataFilePath) {
       this.normalizeSnapshot();
       this.loaded = true;
       return;
     }
+    const snapshot = await this.readLegacyJsonSnapshotIfPresent();
+    if (snapshot) this.snapshot = snapshot;
+    else this.snapshot = emptySnapshot();
+    this.normalizeSnapshot();
+    if (!snapshot) await this.save();
+    this.loaded = true;
+  }
+
+  async close() {
+    await Promise.allSettled([...this.activeExecutions]);
+    const repository = await this.repositoryPromise;
+    await repository?.close();
+  }
+
+  async getPersistenceInfo(): Promise<PatchPilotRepositoryInfo | { kind: "memory" | "json"; path?: string }> {
+    const repository = await this.repositoryPromise;
+    if (repository) return repository.info;
+    if (this.dataFilePath) return { kind: "json", path: this.dataFilePath };
+    return { kind: "memory" };
+  }
+
+  async exportJsonSnapshot() {
+    return this.getSnapshot();
+  }
+
+  async importJsonSnapshot(snapshot: PatchPilotSnapshot) {
+    this.snapshot = structuredClone(snapshot);
+    this.normalizeSnapshot();
+    this.loaded = true;
+    await this.save();
+    return structuredClone(this.snapshot);
+  }
+
+  async importJsonFile(filePath: string) {
     try {
-      const raw = await readFile(this.dataFilePath, "utf8");
-      this.snapshot = JSON.parse(raw) as PatchPilotSnapshot;
-      this.normalizeSnapshot();
+      const raw = await readFile(filePath, "utf8");
+      return this.importJsonSnapshot(JSON.parse(raw) as PatchPilotSnapshot);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw new DomainError("STORE_CORRUPT", "Store file could not be read or parsed");
       }
-      this.snapshot = emptySnapshot();
-      await this.save();
+      throw new DomainError("NOT_FOUND", `JSON fixture not found: ${filePath}`);
     }
-    this.loaded = true;
   }
 
   async getSnapshot() {
@@ -792,7 +855,7 @@ export class PatchPilotStore {
       });
       await this.save();
 
-      void this.executeRun(run.id);
+      this.scheduleRunExecution(run.id);
       return run;
     });
   }
@@ -1001,10 +1064,10 @@ export class PatchPilotStore {
     completedRun.endedAt = new Date().toISOString();
     completedWorkItem.status = "review";
     completedWorkItem.updatedAt = completedRun.endedAt;
+    this.completeAgentAssignment(completedWorkItem.id, completedRun.endedAt);
     await this.recordCompletedRunEvidence(completedRun, completedWorkItem, result.tests, completedRun.endedAt, "succeeded");
     completedRun.status = "succeeded";
     this.telemetry.endAgentRun(completedRun, "succeeded");
-    this.completeAgentAssignment(completedWorkItem.id, completedRun.endedAt);
     this.completeBugIfNeeded(completedWorkItem, completedRun.endedAt);
     await this.save();
   }
@@ -1089,10 +1152,10 @@ export class PatchPilotStore {
       run.endedAt = new Date().toISOString();
       workItem.status = "review";
       workItem.updatedAt = run.endedAt;
+      this.completeAgentAssignment(workItem.id, run.endedAt);
       await this.recordCompletedRunEvidence(run, workItem, tests, run.endedAt, "succeeded");
       run.status = "succeeded";
       this.telemetry.endAgentRun(run, "succeeded");
-      this.completeAgentAssignment(workItem.id, run.endedAt);
       this.completeBugIfNeeded(workItem, run.endedAt);
       await this.save();
     } catch (error) {
@@ -1334,9 +1397,16 @@ export class PatchPilotStore {
           : this.recordBudgetApprovalDenied(approval, input.decidedBy, now);
       const output = structuredClone(approval);
       await this.save();
-      if (resumeRunId) void this.executeRun(resumeRunId);
+      if (resumeRunId) this.scheduleRunExecution(resumeRunId);
       return output;
     });
+  }
+
+  private scheduleRunExecution(runId: string) {
+    const execution = this.executeRun(runId).finally(() => {
+      this.activeExecutions.delete(execution);
+    });
+    this.activeExecutions.add(execution);
   }
 
   private resumeBudgetGatedRun(approval: ApprovalRecord, actor: string, now: string) {
@@ -1666,11 +1736,24 @@ export class PatchPilotStore {
   }
 
   private async save() {
+    const repository = await this.repositoryPromise;
+    await repository?.replaceSnapshot(this.snapshot);
     if (!this.dataFilePath) return;
     await mkdir(dirname(this.dataFilePath), { recursive: true });
     const tempFile = `${this.dataFilePath}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(tempFile, JSON.stringify(this.snapshot, null, 2));
     await rename(tempFile, this.dataFilePath);
+  }
+
+  private async readLegacyJsonSnapshotIfPresent() {
+    if (!this.dataFilePath) return undefined;
+    try {
+      const raw = await readFile(this.dataFilePath, "utf8");
+      return JSON.parse(raw) as PatchPilotSnapshot;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw new DomainError("STORE_CORRUPT", "Store file could not be read or parsed");
+    }
   }
 
   private normalizeSnapshot() {
@@ -2995,6 +3078,40 @@ function normalizeBugStatus(status: string): BugStatus {
   const statuses = ["reported", "needs_repro", "reproduced", "unreproducible", "fixing", "verifying", "closed"];
   if (statuses.includes(status)) return status as BugStatus;
   return "reported";
+}
+
+function createDefaultRepository() {
+  const databaseUrl =
+    process.env.NODE_ENV === "test"
+      ? process.env.PATCHPILOT_TEST_DATABASE_URL
+      : process.env.PATCHPILOT_DATABASE_URL;
+  if (databaseUrl) {
+    return createPostgresPatchPilotRepository({ connectionString: databaseUrl });
+  }
+  if (process.env.NODE_ENV === "test") {
+    return createPglitePatchPilotRepository();
+  }
+  return createPglitePatchPilotRepository({ dataDir: defaultPgliteDataDir });
+}
+
+function isProductSnapshotEmpty(snapshot: PatchPilotSnapshot) {
+  return (
+    snapshot.requirements.length === 0 &&
+    snapshot.prds.length === 0 &&
+    snapshot.workItems.length === 0 &&
+    snapshot.interfaceContracts.length === 0 &&
+    snapshot.agentRuns.length === 0 &&
+    snapshot.workspaceRuns.length === 0 &&
+    snapshot.testCases.length === 0 &&
+    snapshot.testRuns.length === 0 &&
+    snapshot.artifacts.length === 0 &&
+    snapshot.pullRequests.length === 0 &&
+    snapshot.reviewRecords.length === 0 &&
+    snapshot.auditEvents.length === 0 &&
+    snapshot.acceptances.length === 0 &&
+    snapshot.approvals.length === 0 &&
+    snapshot.bugs.length === 0
+  );
 }
 
 export class DomainError extends Error {

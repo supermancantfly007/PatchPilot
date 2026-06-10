@@ -14,10 +14,12 @@
     "db:generate": "drizzle-kit generate --config drizzle.config.ts"
   },
   "dependencies": {
-    "drizzle-orm": "^0.45.1"
+    "@electric-sql/pglite": "^0.3.14",
+    "@patchpilot/domain": "workspace:*",
+    "drizzle-orm": "^0.45.1",
+    "postgres": "^3.4.7"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.3.14",
     "@types/node": "^24.10.1",
     "drizzle-kit": "^0.31.8",
     "typescript": "^5.9.3",

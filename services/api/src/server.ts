@@ -29,6 +29,7 @@ export async function buildServer(options: { store?: PatchPilotStore; telemetry?
   const store = options.store ?? new PatchPilotStore({ telemetry });
   await app.register(cors, { origin: true });
   app.addHook("onClose", async () => {
+    await store.close();
     if (options.telemetry) await telemetry.shutdown();
     else await shutdownTelemetry();
   });
@@ -152,11 +153,13 @@ export async function buildServer(options: { store?: PatchPilotStore; telemetry?
     });
 
     let lastEventCount = -1;
+    let lastStatus: string | undefined;
     const send = async () => {
       try {
         const run = await store.getRun(id);
-        if (run.events.length !== lastEventCount) {
+        if (run.events.length !== lastEventCount || run.status !== lastStatus) {
           lastEventCount = run.events.length;
+          lastStatus = run.status;
           reply.raw.write(`data: ${JSON.stringify(run)}\n\n`);
         }
         if (["succeeded", "failed", "cancelled"].includes(run.status)) {

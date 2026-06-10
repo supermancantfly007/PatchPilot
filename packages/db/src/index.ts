@@ -1,5 +1,6 @@
 export * from "./schema";
 export {
+  acceptanceDecisions,
   agentRuns,
   agents,
   approvals,
@@ -14,14 +15,17 @@ export {
   projects,
   pullRequests,
   repositories,
+  reviewRecords,
   requirements,
   testCases,
   testRuns,
   workItems,
   workspaceRuns
 } from "./schema";
+export * from "./repository";
 
 import {
+  acceptanceDecisions,
   agentRuns,
   agents,
   approvals,
@@ -36,6 +40,7 @@ import {
   projects,
   pullRequests,
   repositories,
+  reviewRecords,
   requirements,
   testCases,
   testRuns,
@@ -44,6 +49,7 @@ import {
 } from "./schema";
 
 export const patchPilotTables = {
+  acceptanceDecisions,
   agentRuns,
   agents,
   approvals,
@@ -58,6 +64,7 @@ export const patchPilotTables = {
   projects,
   pullRequests,
   repositories,
+  reviewRecords,
   requirements,
   testCases,
   testRuns,
@@ -66,6 +73,7 @@ export const patchPilotTables = {
 } as const;
 
 export const patchPilotTableNames = [
+  "acceptance_decisions",
   "agent_runs",
   "agents",
   "approvals",
@@ -80,6 +88,7 @@ export const patchPilotTableNames = [
   "projects",
   "pull_requests",
   "repositories",
+  "review_records",
   "requirements",
   "test_cases",
   "test_runs",
