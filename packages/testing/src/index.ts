@@ -19,6 +19,7 @@ export interface CommandExecutorOptions {
   cwd: string;
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
+  inheritEnv?: boolean;
   maxOutputBytes?: number;
 }
 
@@ -46,6 +47,7 @@ export interface TestRunnerOptions {
   environmentImage?: string;
   workspacePath?: string;
   env?: NodeJS.ProcessEnv;
+  inheritEnv?: boolean;
   collectGitMetadata?: boolean;
   maxOutputBytes?: number;
   executor?: CommandExecutor;
@@ -87,6 +89,7 @@ export async function runTestCommand(options: TestRunnerOptions): Promise<TestRu
       cwd: options.cwd,
       timeoutMs: options.timeoutMs,
       env: options.env,
+      inheritEnv: options.inheritEnv,
       maxOutputBytes: options.maxOutputBytes
     });
     const commandAttempt = { attempt, ...result };
@@ -148,6 +151,7 @@ function executeTestCommand(
   if (executor) return executor(options);
   return runShellCommand(options.command, options.cwd, options.timeoutMs, {
     env: options.env,
+    inheritEnv: options.inheritEnv,
     maxOutputBytes: options.maxOutputBytes
   });
 }
@@ -283,13 +287,13 @@ function runShellCommand(
   command: string,
   cwd: string,
   timeoutMs: number,
-  options: { env?: NodeJS.ProcessEnv; maxOutputBytes?: number } = {}
+  options: { env?: NodeJS.ProcessEnv; inheritEnv?: boolean; maxOutputBytes?: number } = {}
 ): Promise<Omit<CommandAttempt, "attempt">> {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const child = spawn("sh", ["-lc", command], {
       cwd,
-      env: { ...process.env, ...options.env },
+      env: options.inheritEnv === false ? options.env ?? {} : { ...process.env, ...options.env },
       stdio: ["ignore", "pipe", "pipe"]
     });
 

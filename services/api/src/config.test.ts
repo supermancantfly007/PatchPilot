@@ -50,6 +50,14 @@ security:
     proxyImage: patchpilot/egress-proxy:test
     proxyPort: 43128
     auditLogPath: .patchpilot/custom-egress-audit.jsonl
+  secretBroker:
+    enabled: true
+    allowedSecrets:
+      - id: npm-read-token
+        envVar: NPM_TOKEN
+        sourceEnv: PATCHPILOT_DEV_NPM_TOKEN
+        environment: ci
+        description: Fixture npm read-only token
 budget:
   codexTimeoutMs: 123000
   maxCostUsd: 4.5
@@ -111,6 +119,19 @@ artifacts:
           auditLogPath: ".patchpilot/custom-egress-audit.jsonl",
           denyPrivateNetworks: true,
           denyMetadataEndpoints: true
+        },
+        secretBroker: {
+          enabled: true,
+          allowedSecrets: [
+            {
+              id: "npm-read-token",
+              envVar: "NPM_TOKEN",
+              sourceEnv: "PATCHPILOT_DEV_NPM_TOKEN",
+              environment: "ci",
+              description: "Fixture npm read-only token"
+            }
+          ],
+          allowProductionSecrets: false
         }
       });
       expect(config.budget).toEqual({
@@ -197,6 +218,15 @@ security:
           PATCHPILOT_EGRESS_PROXY_IMAGE: "patchpilot/egress-proxy:env",
           PATCHPILOT_EGRESS_PROXY_PORT: "43129",
           PATCHPILOT_EGRESS_AUDIT_LOG_PATH: ".patchpilot/env-egress-audit.jsonl",
+          PATCHPILOT_SECRET_BROKER_ENABLED: "true",
+          PATCHPILOT_SECRET_BROKER_ALLOWED_SECRETS: JSON.stringify([
+            {
+              id: "github-ci-token",
+              envVar: "GITHUB_TOKEN",
+              sourceEnv: "PATCHPILOT_CI_GITHUB_TOKEN",
+              environment: "ci"
+            }
+          ]),
           PATCHPILOT_BUDGET_MAX_COST_USD: "6",
           PATCHPILOT_BUDGET_WORK_ITEM_USD: "3.25",
           PATCHPILOT_BUDGET_RUN_USD: "1.5",
@@ -238,6 +268,18 @@ security:
         auditLogPath: ".patchpilot/env-egress-audit.jsonl",
         denyPrivateNetworks: true,
         denyMetadataEndpoints: true
+      });
+      expect(config.security.secretBroker).toEqual({
+        enabled: true,
+        allowedSecrets: [
+          {
+            id: "github-ci-token",
+            envVar: "GITHUB_TOKEN",
+            sourceEnv: "PATCHPILOT_CI_GITHUB_TOKEN",
+            environment: "ci"
+          }
+        ],
+        allowProductionSecrets: false
       });
       expect(config.test.timeoutMs).toBe(120000);
       expect(config.budget.codexTimeoutMs).toBe(600000);

@@ -65,6 +65,34 @@ describe("TestRunner", () => {
     expect(run.environmentImage).toBe("sandbox:test");
   });
 
+  it("can run commands without inheriting the host process environment", async () => {
+    const previous = process.env.PATCHPILOT_TEST_HOST_SECRET;
+    process.env.PATCHPILOT_TEST_HOST_SECRET = "host-secret";
+    try {
+      const run = await runTestCommand({
+        command: nodeCommand(`
+          if (process.env.PATCHPILOT_TEST_HOST_SECRET) process.exit(2);
+          if (process.env.EXPLICIT_TEST_TOKEN !== 'allowed-token') process.exit(3);
+          console.log('explicit env only');
+        `),
+        cwd: process.cwd(),
+        timeoutMs: 5000,
+        collectGitMetadata: false,
+        inheritEnv: false,
+        env: {
+          PATH: process.env.PATH,
+          EXPLICIT_TEST_TOKEN: "allowed-token"
+        }
+      });
+
+      expect(run.status).toBe("passed");
+      expect(run.summary).toContain("explicit env only");
+    } finally {
+      if (previous === undefined) delete process.env.PATCHPILOT_TEST_HOST_SECRET;
+      else process.env.PATCHPILOT_TEST_HOST_SECRET = previous;
+    }
+  });
+
   it("fails timed out commands", async () => {
     const run = await runTestCommand({
       command: nodeCommand("setTimeout(() => {}, 1000)"),

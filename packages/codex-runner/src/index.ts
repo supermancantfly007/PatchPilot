@@ -19,6 +19,8 @@ import type {
   FailureType,
   Prd,
   Requirement,
+  SecretBrokerEvidence,
+  SecretBrokerRuntimeConfig,
   TestRun,
   TimelineStepKey,
   WorkItem
@@ -54,6 +56,8 @@ export interface CodexRunnerConfig {
     codexBypass: boolean;
     containerSandbox: ContainerSandboxConfig;
     egressPolicy: EgressPolicyRuntimeConfig;
+    secretBroker: SecretBrokerRuntimeConfig;
+    secretEnv?: Record<string, string>;
   };
   budget: {
     codexTimeoutMs: number;
@@ -71,7 +75,8 @@ export class CodexRunError extends Error {
     message: string,
     public readonly failureType: FailureType,
     public readonly testRun?: TestRun,
-    public readonly egressPolicyEvidence?: EgressPolicyEvidence
+    public readonly egressPolicyEvidence?: EgressPolicyEvidence,
+    public readonly secretBrokerEvidence?: SecretBrokerEvidence
   ) {
     super(message);
     this.name = "CodexRunError";
@@ -112,6 +117,12 @@ export {
   type ContainerSandboxConfig,
   type RootlessContainerSandboxConfig
 } from "./containerSandbox";
+export {
+  requestedSecretIdsForWorkItem,
+  resolveSecretBrokerGrants,
+  secretCapabilityPrefix,
+  type SecretBrokerResolution
+} from "./secretBroker";
 
 export class LocalCodexRunner implements CodexRunner {
   constructor(private readonly workspaceManager: WorkspaceManager = new GitWorkspaceManager()) {}
@@ -281,6 +292,8 @@ async function runConfiguredTests(
     prdId: context.prd.id,
     workItemId: context.workItem.id,
     workspacePath,
+    env: buildCommandEnv(config.security.secretEnv),
+    inheritEnv: false,
     ...(containerSandbox
       ? {
           runner: "patchpilot-container-test-runner",
@@ -290,7 +303,7 @@ async function runConfiguredTests(
               workspacePath: options.cwd,
               command: options.command,
               timeoutMs: options.timeoutMs,
-              env: { ...options.env, CI: "1" },
+              env: options.env,
               maxOutputBytes: options.maxOutputBytes
             });
             egressPolicyEvidence = result.egressPolicyEvidence;
@@ -336,12 +349,12 @@ async function runCodexExec(
         workspacePath,
         command: shellJoin(["codex", ...args]),
         timeoutMs: config.budget.codexTimeoutMs,
-        env: { CI: "1" }
+        env: buildCommandEnv(config.security.secretEnv)
       })
     : undefined;
   const child = sandboxedProcess?.child ?? spawn("codex", args, {
     cwd: workspacePath,
-    env: { ...process.env, CI: "1" },
+    env: buildCommandEnv(config.security.secretEnv),
     stdio: ["pipe", "pipe", "pipe"]
   });
 
@@ -788,11 +801,37 @@ function summarizeTestOutput(tests: TestRun[]) {
   );
 }
 
+function buildCommandEnv(secretEnv: Record<string, string> = {}) {
+  return compactEnv({
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    USER: process.env.USER,
+    LOGNAME: process.env.LOGNAME,
+    SHELL: process.env.SHELL,
+    TMPDIR: process.env.TMPDIR,
+    TEMP: process.env.TEMP,
+    TMP: process.env.TMP,
+    LANG: process.env.LANG,
+    LC_ALL: process.env.LC_ALL,
+    CI: "1",
+    ...secretEnv
+  });
+}
+
+function compactEnv(env: Record<string, string | undefined>) {
+  const compacted: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (!value || !/^[A-Z_][A-Z0-9_]*$/u.test(key)) continue;
+    compacted[key] = value;
+  }
+  return compacted;
+}
+
 function runShell(command: string, cwd: string, timeoutMs: number) {
   return new Promise<{ exitCode: number | null; output: string }>((resolve) => {
     const child = spawn("sh", ["-lc", command], {
       cwd,
-      env: process.env,
+      env: buildCommandEnv(),
       stdio: ["ignore", "pipe", "pipe"]
     });
     let output = "";

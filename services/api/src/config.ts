@@ -5,7 +5,8 @@ import {
   defaultEgressAuditLogPath,
   type AgentRunnerKind,
   type ArtifactStorageProvider,
-  type ContainerRuntimeKind
+  type ContainerRuntimeKind,
+  type SecretBrokerSecretConfig
 } from "@patchpilot/domain";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
@@ -46,6 +47,8 @@ export interface PatchPilotConfigEnv extends NodeJS.ProcessEnv {
   PATCHPILOT_EGRESS_PROXY_IMAGE?: string;
   PATCHPILOT_EGRESS_PROXY_PORT?: string;
   PATCHPILOT_EGRESS_AUDIT_LOG_PATH?: string;
+  PATCHPILOT_SECRET_BROKER_ENABLED?: string;
+  PATCHPILOT_SECRET_BROKER_ALLOWED_SECRETS?: string;
   PATCHPILOT_PREVIEW_URL?: string;
   PATCHPILOT_ARTIFACT_STORE?: string;
   PATCHPILOT_ARTIFACT_ROOT?: string;
@@ -110,6 +113,11 @@ export interface ResolvedPatchPilotConfig {
       denyPrivateNetworks: true;
       denyMetadataEndpoints: true;
     };
+    secretBroker: {
+      enabled: boolean;
+      allowedSecrets: SecretBrokerSecretConfig[];
+      allowProductionSecrets: false;
+    };
   };
   budget: {
     codexTimeoutMs: number;
@@ -143,10 +151,20 @@ interface ReadConfigOptions {
 const configuredRunnerSchema = z.enum(["auto", "simulated", "codex"]);
 const artifactProviderSchema = z.enum(["local_fs", "s3"]);
 const containerRuntimeSchema = z.enum(["auto", "docker", "podman"]);
+const secretTokenEnvironmentSchema = z.enum(["dev", "ci"]);
+const envVarNameSchema = z.string().regex(/^[A-Z_][A-Z0-9_]*$/u);
+const secretIdSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u);
 const stringArraySchema = z.preprocess(
   (value) => (typeof value === "string" ? [value] : value),
   z.array(z.string())
 );
+const secretConfigSchema = z.object({
+  id: secretIdSchema,
+  envVar: envVarNameSchema,
+  sourceEnv: envVarNameSchema,
+  environment: secretTokenEnvironmentSchema,
+  description: z.string().optional()
+});
 
 const rawConfigSchema = z.object({
   setup: z.object({
@@ -195,6 +213,10 @@ const rawConfigSchema = z.object({
       proxyImage: z.string().optional(),
       proxyPort: z.number().int().positive().optional(),
       auditLogPath: z.string().optional()
+    }).optional(),
+    secretBroker: z.object({
+      enabled: z.boolean().optional(),
+      allowedSecrets: z.array(secretConfigSchema).optional()
     }).optional()
   }).optional(),
   budget: z.object({
@@ -353,6 +375,14 @@ export function readPatchPilotConfig(options: ReadConfigOptions = {}): ResolvedP
         ),
         denyPrivateNetworks: true,
         denyMetadataEndpoints: true
+      },
+      secretBroker: {
+        enabled: pickBoolean(env.PATCHPILOT_SECRET_BROKER_ENABLED, raw.security?.secretBroker?.enabled, true),
+        allowedSecrets: pickSecretBrokerSecrets(
+          env.PATCHPILOT_SECRET_BROKER_ALLOWED_SECRETS,
+          raw.security?.secretBroker?.allowedSecrets
+        ),
+        allowProductionSecrets: false
       }
     },
     budget: {
@@ -438,6 +468,35 @@ function pickStringList(envValue: string | undefined, configValue: string[] | un
   const normalizedConfig = configValue?.map((value) => value.trim()).filter(Boolean);
   if (normalizedConfig && normalizedConfig.length > 0) return normalizedConfig;
   return defaultValue;
+}
+
+function pickSecretBrokerSecrets(
+  envValue: string | undefined,
+  configValue: SecretBrokerSecretConfig[] | undefined
+) {
+  const normalizedEnv = envValue?.trim();
+  const secrets = normalizedEnv
+    ? secretConfigSchema.array().parse(JSON.parse(normalizedEnv))
+    : configValue ?? [];
+  return normalizeSecretBrokerSecrets(secrets);
+}
+
+function normalizeSecretBrokerSecrets(secrets: SecretBrokerSecretConfig[]) {
+  const byId = new Set<string>();
+  const byEnvVar = new Set<string>();
+  return secrets.map((secret) => {
+    if (byId.has(secret.id)) throw new Error(`Duplicate secret broker id: ${secret.id}`);
+    if (byEnvVar.has(secret.envVar)) throw new Error(`Duplicate secret broker env var: ${secret.envVar}`);
+    byId.add(secret.id);
+    byEnvVar.add(secret.envVar);
+    return {
+      id: secret.id,
+      envVar: secret.envVar,
+      sourceEnv: secret.sourceEnv,
+      environment: secret.environment,
+      ...(secret.description?.trim() ? { description: secret.description.trim() } : {})
+    };
+  });
 }
 
 function splitList(value: string) {

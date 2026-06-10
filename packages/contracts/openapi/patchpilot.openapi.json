@@ -1183,7 +1183,8 @@
           "codexSandbox",
           "codexBypass",
           "containerSandbox",
-          "egressPolicy"
+          "egressPolicy",
+          "secretBroker"
         ],
         "properties": {
           "codexSandbox": {
@@ -1197,6 +1198,9 @@
           },
           "egressPolicy": {
             "$ref": "#/components/schemas/RuntimeEgressPolicyConfig"
+          },
+          "secretBroker": {
+            "$ref": "#/components/schemas/RuntimeSecretBrokerConfig"
           }
         }
       },
@@ -1293,6 +1297,60 @@
           },
           "denyMetadataEndpoints": {
             "const": true
+          }
+        }
+      },
+      "RuntimeSecretBrokerConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled",
+          "allowedSecrets",
+          "allowProductionSecrets"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "allowedSecrets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuntimeSecretBrokerSecretConfig"
+            }
+          },
+          "allowProductionSecrets": {
+            "const": false
+          }
+        }
+      },
+      "RuntimeSecretBrokerSecretConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "envVar",
+          "sourceEnv",
+          "environment"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "envVar": {
+            "type": "string"
+          },
+          "sourceEnv": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "dev",
+              "ci"
+            ]
+          },
+          "description": {
+            "type": "string"
           }
         }
       },
@@ -2330,6 +2388,9 @@
           },
           "egressPolicyEvidence": {
             "$ref": "#/components/schemas/EgressPolicyEvidence"
+          },
+          "secretBrokerEvidence": {
+            "$ref": "#/components/schemas/SecretBrokerEvidence"
           }
         }
       },
@@ -2430,6 +2491,96 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "SecretBrokerEvidence": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "enabled",
+          "mode",
+          "requestedSecretIds",
+          "injected",
+          "denied"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "env"
+            ]
+          },
+          "requestedSecretIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "injected": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecretBrokerInjectedSecretEvidence"
+            }
+          },
+          "denied": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecretBrokerDeniedSecretEvidence"
+            }
+          }
+        }
+      },
+      "SecretBrokerInjectedSecretEvidence": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "envVar",
+          "sourceEnv",
+          "environment"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "envVar": {
+            "type": "string"
+          },
+          "sourceEnv": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "dev",
+              "ci"
+            ]
+          }
+        }
+      },
+      "SecretBrokerDeniedSecretEvidence": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "broker_disabled",
+              "not_configured",
+              "source_env_missing",
+              "production_secret_denied"
+            ]
           }
         }
       },
