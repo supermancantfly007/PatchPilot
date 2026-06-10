@@ -38,6 +38,33 @@ describe("TestRunner", () => {
     expect(run.failureSummary).toContain("expected failure");
   });
 
+  it("can execute commands through an injected executor", async () => {
+    const calls: string[] = [];
+    const run = await runTestCommand({
+      command: "pnpm test",
+      cwd: process.cwd(),
+      timeoutMs: 5000,
+      runner: "custom-executor",
+      environmentImage: "sandbox:test",
+      collectGitMetadata: false,
+      executor: async (options) => {
+        calls.push(`${options.cwd}:${options.command}:${options.timeoutMs}`);
+        return {
+          exitCode: 0,
+          output: "sandboxed ok",
+          timedOut: false,
+          durationMs: 12
+        };
+      }
+    });
+
+    expect(calls).toEqual([`${process.cwd()}:pnpm test:5000`]);
+    expect(run.status).toBe("passed");
+    expect(run.summary).toContain("sandboxed ok");
+    expect(run.runner).toBe("custom-executor");
+    expect(run.environmentImage).toBe("sandbox:test");
+  });
+
   it("fails timed out commands", async () => {
     const run = await runTestCommand({
       command: nodeCommand("setTimeout(() => {}, 1000)"),

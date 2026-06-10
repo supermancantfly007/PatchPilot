@@ -81,6 +81,21 @@ export type IntakeArtifactKind = "file" | "screenshot" | "recording" | "link";
 
 export type ArtifactStorageProvider = "local_fs" | "s3";
 
+export type ContainerRuntimeKind = "auto" | "docker" | "podman";
+
+export interface ContainerSandboxRuntimeConfig {
+  enabled: boolean;
+  runtime: ContainerRuntimeKind;
+  image: string;
+  cpus: number;
+  memoryMb: number;
+  workspaceDiskMb: number;
+  tmpfsMb: number;
+  pidsLimit: number;
+  uid: number;
+  gid: number;
+}
+
 export type AuditJsonValue =
   | string
   | number
@@ -380,6 +395,7 @@ export interface RuntimeConfig {
   security: {
     codexSandbox: string;
     codexBypass: boolean;
+    containerSandbox: ContainerSandboxRuntimeConfig;
   };
   budget: {
     codexTimeoutMs: number;

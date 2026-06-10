@@ -14,6 +14,23 @@ export interface ParsedTestOutput {
   skipped?: number;
 }
 
+export interface CommandExecutorOptions {
+  command: string;
+  cwd: string;
+  timeoutMs: number;
+  env?: NodeJS.ProcessEnv;
+  maxOutputBytes?: number;
+}
+
+export interface CommandExecutorResult {
+  exitCode: number | null;
+  output: string;
+  timedOut: boolean;
+  durationMs: number;
+}
+
+export type CommandExecutor = (options: CommandExecutorOptions) => Promise<CommandExecutorResult>;
+
 export interface TestRunnerOptions {
   command: string;
   cwd: string;
@@ -31,6 +48,7 @@ export interface TestRunnerOptions {
   env?: NodeJS.ProcessEnv;
   collectGitMetadata?: boolean;
   maxOutputBytes?: number;
+  executor?: CommandExecutor;
 }
 
 interface CommandAttempt {
@@ -64,7 +82,10 @@ export async function runTestCommand(options: TestRunnerOptions): Promise<TestRu
   let passedAttempt: CommandAttempt | undefined;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const result = await runShellCommand(command, options.cwd, options.timeoutMs, {
+    const result = await executeTestCommand(options.executor, {
+      command,
+      cwd: options.cwd,
+      timeoutMs: options.timeoutMs,
       env: options.env,
       maxOutputBytes: options.maxOutputBytes
     });
@@ -118,6 +139,17 @@ export async function runTestCommand(options: TestRunnerOptions): Promise<TestRu
     logArtifactId,
     artifactIds: [logArtifactId]
   };
+}
+
+function executeTestCommand(
+  executor: CommandExecutor | undefined,
+  options: CommandExecutorOptions
+) {
+  if (executor) return executor(options);
+  return runShellCommand(options.command, options.cwd, options.timeoutMs, {
+    env: options.env,
+    maxOutputBytes: options.maxOutputBytes
+  });
 }
 
 export function parseTestOutput(output: string, format: TestOutputFormat = "auto"): ParsedTestOutput {

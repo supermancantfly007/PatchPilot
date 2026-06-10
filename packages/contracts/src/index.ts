@@ -778,7 +778,20 @@ export const openApiSchemas = {
   }),
   RuntimeSecurityConfig: objectSchema({
     codexSandbox: { type: "string" },
-    codexBypass: { type: "boolean" }
+    codexBypass: { type: "boolean" },
+    containerSandbox: schemaRef("RuntimeContainerSandboxConfig")
+  }),
+  RuntimeContainerSandboxConfig: objectSchema({
+    enabled: { type: "boolean" },
+    runtime: enumSchema(["auto", "docker", "podman"]),
+    image: { type: "string" },
+    cpus: { type: "number" },
+    memoryMb: { type: "number" },
+    workspaceDiskMb: { type: "number" },
+    tmpfsMb: { type: "number" },
+    pidsLimit: { type: "number" },
+    uid: { type: "number" },
+    gid: { type: "number" }
   }),
   RuntimeBudgetConfig: objectSchema({
     codexTimeoutMs: { type: "number" },
