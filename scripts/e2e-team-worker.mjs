@@ -27,6 +27,8 @@ const completed = await poll(async () => {
   const workspaceRuns = snapshot.workspaceRuns.filter((workspace) => workspace.prdId === prd.id);
   const testCases = snapshot.testCases.filter((testCase) => testCase.prdId === prd.id);
   const testRuns = snapshot.testRuns.filter((test) => test.prdId === prd.id);
+  const contractDiffTestRuns = testRuns.filter((test) => test.runner === "patchpilot-contract-registry");
+  const executionTestRuns = testRuns.filter((test) => test.runner !== "patchpilot-contract-registry");
   const artifacts = snapshot.artifacts.filter((artifact) => artifact.prdId === prd.id);
   const pullRequests = snapshot.pullRequests.filter((pullRequest) => pullRequest.prdId === prd.id);
   const reviewRecords = snapshot.reviewRecords.filter((review) => review.prdId === prd.id);
@@ -44,10 +46,11 @@ const completed = await poll(async () => {
   if (!testCases.every((testCase) => testCase.status === "passed")) return undefined;
   if (!testCases.every((testCase) => testCase.lastRunId && testCase.lastTestRunId)) return undefined;
   if (!testCases.every((testCase) => testCase.flaky === false)) return undefined;
-  if (testRuns.length < expectedRoles.length) return undefined;
+  if (contractDiffTestRuns.length < 3) return undefined;
+  if (executionTestRuns.length < expectedRoles.length) return undefined;
   if (!testRuns.every((test) => test.status === "passed")) return undefined;
   if (!testRuns.every((test) => test.testCaseId)) return undefined;
-  if (!testRuns.every((test) =>
+  if (!executionTestRuns.every((test) =>
     test.artifactIds?.length >= 2 && test.artifactIds.every((artifactId) => artifactIds.has(artifactId))
   )) return undefined;
   if (artifacts.filter((artifact) => artifact.kind === "log").length < expectedRoles.length) return undefined;
@@ -62,7 +65,19 @@ const completed = await poll(async () => {
   if (!auditEvents.some((event) => event.action === "agent_run.succeeded")) return undefined;
   if (!auditEvents.some((event) => event.action === "pull_request.ready_for_review")) return undefined;
   if (!auditEvents.some((event) => event.action === "review.approved")) return undefined;
-  return { runs, workItems, workspaceRuns, testCases, testRuns, artifacts, pullRequests, reviewRecords, auditEvents };
+  return {
+    runs,
+    workItems,
+    workspaceRuns,
+    testCases,
+    testRuns,
+    contractDiffTestRuns,
+    executionTestRuns,
+    artifacts,
+    pullRequests,
+    reviewRecords,
+    auditEvents
+  };
 }, 15000);
 
 assertEqual(completed.runs.length, expectedRoles.length, "worker should start one run per team work item");
@@ -73,8 +88,9 @@ assertEqual(
 );
 assertEqual(completed.workspaceRuns.length, expectedRoles.length, "worker should archive workspace evidence per run");
 assertEqual(completed.testCases.length, expectedRoles.length, "worker should create one test case per work item");
-assertEqual(completed.testRuns.length, expectedRoles.length, "worker should record test evidence per run");
-assertEqual(completed.artifacts.length, expectedRoles.length * 5, "worker should record five artifacts per run");
+assertEqual(completed.executionTestRuns.length, expectedRoles.length, "worker should record test evidence per run");
+assertEqual(completed.contractDiffTestRuns.length, 3, "contract registry should record one diff TestRun per artifact");
+assertEqual(completed.artifacts.length, expectedRoles.length * 5 + 3, "worker plus registry should record run and contract artifacts");
 assertEqual(completed.pullRequests.length, expectedRoles.length, "worker should create one PR record per run");
 assertEqual(completed.reviewRecords.length, expectedRoles.length, "worker should create one review record per run");
 assertEqual(
@@ -126,7 +142,7 @@ const reworked = await poll(async () => {
   if (latestRuns.some((run) => firstRunIds.has(run.id))) return undefined;
   if (!workItems.every((item) => item.status === "review")) return undefined;
   if (!workItems.every((item) => item.reworkCount === 1)) return undefined;
-  if (testRuns.length < expectedRoles.length * 2) return undefined;
+  if (testRuns.length < expectedRoles.length * 2 + 3) return undefined;
   if (!testRuns.every((test) => test.status === "passed")) return undefined;
   if (pullRequests.length < expectedRoles.length * 2) return undefined;
   if (reviewRecords.length < expectedRoles.length * 2) return undefined;

@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   apiPath,
   apiRoute,
+  buildContractRegistryArtifacts,
   contractArtifacts,
   contractVersion,
+  createContractRegistryMetadata,
   createInterfaceContracts,
+  diffContractRegistryArtifacts,
+  hashNormalizedContent,
   httpApiContract,
   renderContractMarkdown,
   runEventStreamContract,
@@ -62,6 +66,122 @@ describe("contract artifacts", () => {
     expect(renderContractMarkdown(runEventStreamContract)).toContain("data: AgentRun");
     expect(renderContractMarkdown(sharedStateContract)).toContain("PatchPilotSnapshot");
   });
+
+  it("builds registry artifacts with normalized hashes and provider-consumer ownership", () => {
+    const registryArtifacts = buildContractRegistryArtifacts();
+
+    expect(registryArtifacts).toHaveLength(3);
+    expect(registryArtifacts[0]).toMatchObject({
+      artifactId: "control-api",
+      kind: "http",
+      providerRole: "backend",
+      consumerRoles: ["frontend", "test", "ops"],
+      generatorVersion: contractVersion
+    });
+    expect(registryArtifacts.every((artifact) => /^[a-f0-9]{64}$/.test(artifact.contentHash))).toBe(true);
+  });
+
+  it("classifies removed HTTP operations as breaking contract diffs", () => {
+    const artifact = buildContractRegistryArtifacts().find((candidate) => candidate.kind === "http");
+    if (!artifact) throw new Error("Expected HTTP registry artifact");
+    const baseline = createContractRegistryMetadata({
+      proposed: artifact,
+      proposedRevisionId: "cr_control-api_r1",
+      revision: 1,
+      now: "2026-06-10T00:00:00.000Z"
+    });
+    const proposedContent = cloneRecord(artifact.normalizedContent);
+    delete (proposedContent.paths as Record<string, unknown>)["/api/requirements"];
+    const diff = diffContractRegistryArtifacts({
+      baseline,
+      proposed: {
+        ...artifact,
+        normalizedContent: proposedContent,
+        contentHash: hashNormalizedContent(proposedContent)
+      },
+      proposedRevisionId: "cr_control-api_r2",
+      now: "2026-06-10T00:01:00.000Z"
+    });
+
+    expect(diff.status).toBe("breaking");
+    expect(diff.changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          severity: "breaking",
+          changeType: "http.operation_removed",
+          path: "paths./api/requirements.post"
+        })
+      ])
+    );
+  });
+
+  it("classifies event required field removals as breaking contract diffs", () => {
+    const artifact = buildContractRegistryArtifacts().find((candidate) => candidate.kind === "event");
+    if (!artifact) throw new Error("Expected event registry artifact");
+    const baseline = createContractRegistryMetadata({
+      proposed: artifact,
+      proposedRevisionId: "cr_run-events_r1",
+      revision: 1,
+      now: "2026-06-10T00:00:00.000Z"
+    });
+    const proposedContent = cloneRecord(artifact.normalizedContent);
+    const message = ((proposedContent.envelope as Record<string, unknown>).message ?? {}) as Record<string, unknown>;
+    message.requiredFields = (message.requiredFields as string[]).filter((field) => field !== "events");
+    const diff = diffContractRegistryArtifacts({
+      baseline,
+      proposed: {
+        ...artifact,
+        normalizedContent: proposedContent,
+        contentHash: hashNormalizedContent(proposedContent)
+      },
+      proposedRevisionId: "cr_run-events_r2"
+    });
+
+    expect(diff.status).toBe("breaking");
+    expect(diff.changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          severity: "breaking",
+          changeType: "event.required_field_removed",
+          path: "event.requiredFields.events"
+        })
+      ])
+    );
+  });
+
+  it("classifies removed shared schemas as breaking contract diffs", () => {
+    const artifact = buildContractRegistryArtifacts().find((candidate) => candidate.kind === "schema");
+    if (!artifact) throw new Error("Expected shared schema registry artifact");
+    const baseline = createContractRegistryMetadata({
+      proposed: artifact,
+      proposedRevisionId: "cr_delivery-state_r1",
+      revision: 1,
+      now: "2026-06-10T00:00:00.000Z"
+    });
+    const proposedContent = cloneRecord(artifact.normalizedContent);
+    const components = proposedContent.components as { schemas: Record<string, unknown> };
+    delete components.schemas.AgentRun;
+    const diff = diffContractRegistryArtifacts({
+      baseline,
+      proposed: {
+        ...artifact,
+        normalizedContent: proposedContent,
+        contentHash: hashNormalizedContent(proposedContent)
+      },
+      proposedRevisionId: "cr_delivery-state_r2"
+    });
+
+    expect(diff.status).toBe("breaking");
+    expect(diff.changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          severity: "breaking",
+          changeType: "schema.removed",
+          path: "shared.components.schemas.AgentRun"
+        })
+      ])
+    );
+  });
 });
 
 const prd: Prd = {
@@ -74,3 +194,7 @@ const prd: Prd = {
   acceptanceCriteria: ["Contracts are versioned"],
   approvedAt: "2026-06-10T00:00:00.000Z"
 };
+
+function cloneRecord<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}

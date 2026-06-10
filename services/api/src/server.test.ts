@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CodexRunError, type CodexRunner } from "@patchpilot/codex-runner";
-import { contractVersion } from "@patchpilot/contracts";
+import { contractVersion, hashNormalizedContent } from "@patchpilot/contracts";
 import { createInMemoryTelemetry, prometheusMetricNames } from "@patchpilot/telemetry";
 import {
   emptySnapshot,
@@ -390,6 +390,135 @@ describe("PatchPilot API", () => {
     );
 
     await app.close();
+  });
+
+  it("routes breaking contract registry diffs through Approval before promotion", async () => {
+    const store = new PatchPilotStore();
+    const app = await buildServer({ store });
+
+    try {
+      const baselinePrd = await createApprovedPrd(app, "建立一个旧版 API 契约基线");
+      const mutableSnapshot = (store as unknown as { snapshot: PatchPilotSnapshot }).snapshot;
+      const baselineHttpContract = mutableSnapshot.interfaceContracts.find(
+        (contract) => contract.prdId === baselinePrd.id && contract.registry?.artifactId === "control-api"
+      );
+      if (!baselineHttpContract?.registry) throw new Error("Expected approved HTTP baseline registry metadata");
+      const baselineContent = baselineHttpContract.registry.normalizedContent as {
+        paths: Record<string, Record<string, unknown>>;
+      };
+      baselineContent.paths["/api/legacy-contract"] = {
+        get: {
+          operationId: "legacyContract",
+          responses: {
+            "200": {
+              description: "Legacy contract response",
+              content: {
+                "application/json": {
+                  schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] }
+                }
+              }
+            }
+          }
+        }
+      };
+      baselineHttpContract.registry.contentHash = hashNormalizedContent(baselineHttpContract.registry.normalizedContent);
+
+      const candidateCreate = await app.inject({
+        method: "POST",
+        url: "/api/requirements",
+        payload: { rawInput: "审批一个移除旧版 API route 的契约变更", template: "feature" }
+      });
+      const candidatePrd = (await app.inject({
+        method: "POST",
+        url: `/api/requirements/${candidateCreate.json().id}/prd`
+      })).json().prd;
+      const approveCandidate = await app.inject({ method: "POST", url: `/api/prds/${candidatePrd.id}/approve` });
+      expect(approveCandidate.statusCode).toBe(200);
+
+      const pendingHttpContract = approveCandidate
+        .json()
+        .interfaceContracts.find((contract: { registry?: { artifactId?: string } }) =>
+          contract.registry?.artifactId === "control-api"
+        );
+      expect(pendingHttpContract).toMatchObject({
+        status: "breaking_change_pending",
+        registry: {
+          artifactId: "control-api",
+          diff: {
+            status: "breaking",
+            hasBreakingChanges: true
+          },
+          approvalId: expect.any(String)
+        }
+      });
+      expect(pendingHttpContract.registry.diff.changes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            severity: "breaking",
+            changeType: "http.operation_removed",
+            path: "paths./api/legacy-contract.get"
+          })
+        ])
+      );
+
+      const snapshotWithApproval = await app.inject({ method: "GET", url: "/api/snapshot" });
+      const approval = snapshotWithApproval
+        .json()
+        .approvals.find((item: { id: string }) => item.id === pendingHttpContract.registry.approvalId);
+      const blockedTestRun = snapshotWithApproval
+        .json()
+        .testRuns.find((test: { id: string }) => test.id === pendingHttpContract.registry.testRunIds[0]);
+      const auditActions = snapshotWithApproval.json().auditEvents.map((event: { action: string }) => event.action);
+      expect(approval).toMatchObject({
+        kind: "breaking_contract",
+        status: "pending",
+        targetType: "interface_contract",
+        targetId: pendingHttpContract.id,
+        riskLevel: "critical"
+      });
+      expect(blockedTestRun).toMatchObject({
+        status: "blocked",
+        command: "patchpilot contract-registry diff --artifact control-api",
+        runner: "patchpilot-contract-registry"
+      });
+      expect(auditActions).toEqual(
+        expect.arrayContaining([
+          "contract.revision_proposed",
+          "contract.diff_completed",
+          "contract.breaking_approval_requested",
+          "approval.requested"
+        ])
+      );
+
+      const approved = await app.inject({
+        method: "POST",
+        url: `/api/approvals/${approval.id}/approve`,
+        payload: { decidedBy: "contract-owner", decisionReason: "Migration plan accepted for legacy route removal." }
+      });
+      expect(approved.statusCode).toBe(200);
+
+      const promotedSnapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      const promotedContract = promotedSnapshot
+        .json()
+        .interfaceContracts.find((contract: { id: string }) => contract.id === pendingHttpContract.id);
+      const promotedTestRun = promotedSnapshot
+        .json()
+        .testRuns.find((test: { id: string }) => test.id === blockedTestRun.id);
+      expect(promotedContract).toMatchObject({
+        status: "approved",
+        registry: {
+          status: "approved",
+          approvalId: approval.id,
+          approvedRevisionId: pendingHttpContract.registry.revisionId
+        }
+      });
+      expect(promotedTestRun).toMatchObject({ status: "passed", exitCode: 0 });
+      expect(promotedSnapshot.json().auditEvents.map((event: { action: string }) => event.action)).toEqual(
+        expect.arrayContaining(["approval.approved", "contract.baseline_promoted"])
+      );
+    } finally {
+      await app.close();
+    }
   });
 
   it("writes formal audit events and verifies the hash chain", async () => {
@@ -1679,6 +1808,12 @@ artifacts:
     const prdTestRuns = evidenceSnapshot
       .json()
       .testRuns.filter((test: { prdId: string }) => test.prdId === prd.id);
+    const prdContractDiffTestRuns = prdTestRuns.filter((test: { runner?: string }) =>
+      test.runner === "patchpilot-contract-registry"
+    );
+    const prdExecutionTestRuns = prdTestRuns.filter((test: { runner?: string }) =>
+      test.runner !== "patchpilot-contract-registry"
+    );
     const prdTestCases = evidenceSnapshot
       .json()
       .testCases.filter((testCase: { prdId: string }) => testCase.prdId === prd.id);
@@ -1704,11 +1839,13 @@ artifacts:
     expect(prdTestCases.map((testCase: { workItemId: string }) => testCase.workItemId).sort()).toEqual(
       startTeam.json().workItems.map((item: { id: string }) => item.id).sort()
     );
-    expect(prdTestRuns).toHaveLength(4);
-    expect(prdTestRuns.every((test: { status: string }) => test.status === "passed")).toBe(true);
+    expect(prdContractDiffTestRuns).toHaveLength(3);
+    expect(prdContractDiffTestRuns.every((test: { status: string }) => test.status === "passed")).toBe(true);
+    expect(prdExecutionTestRuns).toHaveLength(4);
+    expect(prdExecutionTestRuns.every((test: { status: string }) => test.status === "passed")).toBe(true);
     expect(prdTestRuns.every((test: { testCaseId?: string }) => test.testCaseId)).toBe(true);
     expect(
-      prdTestRuns.every((test: {
+      prdExecutionTestRuns.every((test: {
         runner?: string;
         environmentImage?: string;
         workspacePath?: string;
@@ -1731,7 +1868,7 @@ artifacts:
     expect(prdArtifacts.filter((artifact: ArtifactRecord) => artifact.kind === "log")).toHaveLength(4);
     expect(prdArtifacts.filter((artifact: ArtifactRecord) => artifact.kind === "test_report")).toHaveLength(4);
     expect(prdArtifacts.filter((artifact: ArtifactRecord) => artifact.kind === "trace")).toHaveLength(4);
-    expect(prdArtifacts.filter((artifact: ArtifactRecord) => artifact.kind === "diff")).toHaveLength(4);
+    expect(prdArtifacts.filter((artifact: ArtifactRecord) => artifact.kind === "diff")).toHaveLength(7);
     expect(prdArtifacts.filter((artifact: ArtifactRecord) => artifact.kind === "preview_metadata")).toHaveLength(4);
     expect(
       prdArtifacts.every((artifact: ArtifactRecord) =>
@@ -1742,7 +1879,7 @@ artifacts:
       )
     ).toBe(true);
     expect(
-      prdTestRuns.every((test: { id: string; artifactIds?: string[]; logArtifactId?: string }) => {
+      prdExecutionTestRuns.every((test: { id: string; artifactIds?: string[]; logArtifactId?: string }) => {
         const artifactIds = test.artifactIds ?? [];
         const linkedArtifactKinds = prdArtifacts
           .filter((artifact: ArtifactRecord) => artifact.testRunId === test.id)
@@ -2133,7 +2270,7 @@ function setArtifactEnv(values: Partial<Record<(typeof artifactEnvKeys)[number],
   };
 }
 
-async function createApprovedWorkItem(app: Awaited<ReturnType<typeof buildServer>>, rawInput: string) {
+async function createApprovedPrd(app: Awaited<ReturnType<typeof buildServer>>, rawInput: string) {
   const create = await app.inject({
     method: "POST",
     url: "/api/requirements",
@@ -2146,7 +2283,15 @@ async function createApprovedWorkItem(app: Awaited<ReturnType<typeof buildServer
   const prd = prdResponse.json().prd;
   const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
   expect(approval.statusCode).toBe(200);
-  const workItem = approval.json().workItems[0] as { id: string };
+  return prd as { id: string };
+}
+
+async function createApprovedWorkItem(app: Awaited<ReturnType<typeof buildServer>>, rawInput: string) {
+  const prd = await createApprovedPrd(app, rawInput);
+  const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+  const workItem = snapshot.json().workItems.find((item: { prdId: string }) => item.prdId === prd.id) as
+    | { id: string }
+    | undefined;
   if (!workItem) throw new Error("Expected approved PRD to create at least one work item");
   return workItem;
 }

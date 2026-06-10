@@ -411,7 +411,7 @@ function prepareRows(snapshot: PatchPilotSnapshot) {
         providerRole: contract.providerRole,
         consumerRoles: contract.consumerRoles,
         specMarkdown: contract.specMarkdown,
-        specJson: {},
+        specJson: contract.registry ?? {},
         testSuggestions: contract.testSuggestions,
         createdAt: toDate(contract.createdAt) ?? now,
         updatedAt: toDate(contract.updatedAt) ?? now
@@ -748,6 +748,7 @@ function mapWorkItemRow(row: any): WorkItem {
 }
 
 function mapInterfaceContractRow(row: any): InterfaceContract {
+  const registry = jsonOptional<InterfaceContract["registry"]>(row.specJson);
   return {
     id: row.id,
     prdId: row.prdVersionId,
@@ -760,6 +761,7 @@ function mapInterfaceContractRow(row: any): InterfaceContract {
     consumerRoles: jsonArray(row.consumerRoles),
     specMarkdown: row.specMarkdown,
     testSuggestions: jsonArray(row.testSuggestions),
+    ...(registry?.artifactId ? { registry } : {}),
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt)
   };
