@@ -10,10 +10,19 @@ import {
 } from "@temporalio/client";
 import {
   approveTemporalCanarySignal,
+  answerRequirementClarificationSignal,
+  confirmRequirementPrdSignal,
+  requirementIntakeProgressQuery,
+  requirementIntakeWorkflow,
   temporalCanaryProgressQuery,
   temporalCanaryWorkflow
 } from "./workflows";
 import {
+  type RequirementClarificationAnswerSignalInput,
+  type RequirementIntakeProgress,
+  type RequirementIntakeWorkflowInput,
+  type RequirementIntakeWorkflowResult,
+  type RequirementPrdConfirmationSignalInput,
   defaultTemporalAddress,
   defaultTemporalNamespace,
   defaultTemporalTaskQueue,
@@ -26,6 +35,7 @@ import {
 } from "./types";
 
 export type TemporalCanaryWorkflowHandle = WorkflowHandle<typeof temporalCanaryWorkflow>;
+export type RequirementIntakeWorkflowHandle = WorkflowHandle<typeof requirementIntakeWorkflow>;
 
 export function readTemporalConfig(env: TemporalEnv = process.env): TemporalConnectionConfig {
   return {
@@ -41,13 +51,11 @@ export async function createTemporalClient(config = readTemporalConfig()): Promi
 }
 
 export function temporalCanaryWorkflowId(idempotencyKey: string): string {
-  const normalized = idempotencyKey
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 120);
-  const digest = createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 12);
-  return `patchpilot-canary-${normalized || "key"}-${digest}`;
+  return temporalWorkflowId("patchpilot-canary", idempotencyKey);
+}
+
+export function requirementIntakeWorkflowId(idempotencyKey: string): string {
+  return temporalWorkflowId("patchpilot-requirement-intake", idempotencyKey);
 }
 
 export function temporalCanaryWorkflowStartOptions(
@@ -57,6 +65,19 @@ export function temporalCanaryWorkflowStartOptions(
   return {
     taskQueue: config.taskQueue,
     workflowId: temporalCanaryWorkflowId(input.idempotencyKey),
+    workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
+    workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
+    args: [input]
+  };
+}
+
+export function requirementIntakeWorkflowStartOptions(
+  input: RequirementIntakeWorkflowInput,
+  config = readTemporalConfig()
+): WorkflowStartOptions<typeof requirementIntakeWorkflow> {
+  return {
+    taskQueue: config.taskQueue,
+    workflowId: requirementIntakeWorkflowId(input.idempotencyKey),
     workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
     workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
     args: [input]
@@ -80,6 +101,23 @@ export async function startTemporalCanaryWorkflow(
   }
 }
 
+export async function startRequirementIntakeWorkflow(
+  client: Client,
+  input: RequirementIntakeWorkflowInput,
+  config = readTemporalConfig()
+): Promise<RequirementIntakeWorkflowHandle> {
+  const startOptions = requirementIntakeWorkflowStartOptions(input, config);
+
+  try {
+    return await client.workflow.start(requirementIntakeWorkflow, startOptions);
+  } catch (error) {
+    if (error instanceof WorkflowExecutionAlreadyStartedError) {
+      return client.workflow.getHandle(startOptions.workflowId) as RequirementIntakeWorkflowHandle;
+    }
+    throw error;
+  }
+}
+
 export function queryTemporalCanaryProgress(handle: TemporalCanaryWorkflowHandle): Promise<TemporalCanaryProgress> {
   return handle.query(temporalCanaryProgressQuery);
 }
@@ -91,6 +129,26 @@ export function signalTemporalCanary(
   return handle.signal(approveTemporalCanarySignal, signal);
 }
 
+export function queryRequirementIntakeProgress(
+  handle: RequirementIntakeWorkflowHandle
+): Promise<RequirementIntakeProgress> {
+  return handle.query(requirementIntakeProgressQuery);
+}
+
+export function signalRequirementClarificationAnswer(
+  handle: RequirementIntakeWorkflowHandle,
+  signal: RequirementClarificationAnswerSignalInput
+): Promise<void> {
+  return handle.signal(answerRequirementClarificationSignal, signal);
+}
+
+export function signalRequirementPrdConfirmation(
+  handle: RequirementIntakeWorkflowHandle,
+  signal: RequirementPrdConfirmationSignalInput
+): Promise<void> {
+  return handle.signal(confirmRequirementPrdSignal, signal);
+}
+
 export async function runTemporalCanaryWorkflow(
   client: Client,
   input: TemporalCanaryWorkflowInput,
@@ -100,4 +158,27 @@ export async function runTemporalCanaryWorkflow(
   const handle = await startTemporalCanaryWorkflow(client, input, config);
   await signalTemporalCanary(handle, signal);
   return handle.result();
+}
+
+export async function runRequirementIntakeWorkflow(
+  client: Client,
+  input: RequirementIntakeWorkflowInput,
+  answer: RequirementClarificationAnswerSignalInput,
+  confirmation: RequirementPrdConfirmationSignalInput,
+  config = readTemporalConfig()
+): Promise<RequirementIntakeWorkflowResult> {
+  const handle = await startRequirementIntakeWorkflow(client, input, config);
+  await signalRequirementClarificationAnswer(handle, answer);
+  await signalRequirementPrdConfirmation(handle, confirmation);
+  return handle.result();
+}
+
+function temporalWorkflowId(prefix: string, idempotencyKey: string): string {
+  const normalized = idempotencyKey
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
+  const digest = createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 12);
+  return `${prefix}-${normalized || "key"}-${digest}`;
 }
