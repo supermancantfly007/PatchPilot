@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: patchpilot-worker-pool
+  labels:
+    app.kubernetes.io/name: patchpilot-worker-pool
+    app.kubernetes.io/component: quota
+    app.kubernetes.io/part-of: patchpilot
+spec:
+  hard:
+    pods: "24"
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    requests.ephemeral-storage: 80Gi
+    limits.cpu: "16"
+    limits.memory: 32Gi
+    limits.ephemeral-storage: 160Gi
+    count/jobs.batch: "20"
+    count/serviceaccounts: "60"
