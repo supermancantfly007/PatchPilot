@@ -711,6 +711,119 @@ a {
   gap: 12px;
 }
 
+.metrics-section {
+  display: grid;
+  gap: 14px;
+}
+
+.metrics-title {
+  align-items: end;
+}
+
+.metrics-title h2 {
+  margin: 8px 0 0;
+  font-size: 26px;
+  line-height: 1.15;
+}
+
+.product-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.product-metric-card {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  min-height: 136px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.04);
+}
+
+.product-metric-card.green {
+  border-color: rgba(22, 163, 74, 0.22);
+}
+
+.product-metric-card.blue {
+  border-color: rgba(37, 99, 235, 0.2);
+}
+
+.product-metric-card.amber {
+  border-color: rgba(217, 119, 6, 0.24);
+}
+
+.product-metric-card.red {
+  border-color: rgba(220, 38, 38, 0.24);
+}
+
+.product-metric-wide {
+  grid-column: span 2;
+}
+
+.product-metric-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--subtle);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.product-metric-label svg {
+  flex: 0 0 auto;
+}
+
+.product-metric-card strong {
+  overflow-wrap: anywhere;
+  font-size: 28px;
+  line-height: 1.05;
+}
+
+.product-metric-card small {
+  color: var(--subtle);
+  line-height: 1.4;
+}
+
+.failure-reason-list {
+  display: grid;
+  gap: 8px;
+}
+
+.failure-reason-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--muted);
+}
+
+.failure-reason-row strong,
+.failure-reason-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.failure-reason-row small {
+  margin-top: 3px;
+  color: var(--subtle);
+}
+
+.compact-empty {
+  padding: 10px;
+}
+
 .summary-stat {
   padding: 14px;
   border: 1px solid var(--border);
@@ -1122,11 +1235,21 @@ a.dashboard-row:hover {
   .template-grid,
   .two-col,
   .summary-strip,
+  .product-metric-grid,
   .team-summary-grid,
   .agent-team-list,
   .dashboard-grid,
   .evidence-grid {
     grid-template-columns: 1fr;
+  }
+
+  .metrics-title {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .product-metric-wide {
+    grid-column: auto;
   }
 
   .team-run-row,
