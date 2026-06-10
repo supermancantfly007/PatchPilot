@@ -468,6 +468,9 @@ describe("PatchPilot API", () => {
       const blockedTestRun = snapshotWithApproval
         .json()
         .testRuns.find((test: { id: string }) => test.id === pendingHttpContract.registry.testRunIds[0]);
+      const pendingContractTestRuns = pendingHttpContract.registry.testRunIds.map((testRunId: string) =>
+        snapshotWithApproval.json().testRuns.find((test: { id: string }) => test.id === testRunId)
+      );
       const auditActions = snapshotWithApproval.json().auditEvents.map((event: { action: string }) => event.action);
       expect(approval).toMatchObject({
         kind: "breaking_contract",
@@ -481,6 +484,24 @@ describe("PatchPilot API", () => {
         command: "patchpilot contract-registry diff --artifact control-api",
         runner: "patchpilot-contract-registry"
       });
+      expect(pendingContractTestRuns).toHaveLength(5);
+      expect(pendingContractTestRuns.filter((test: { runner?: string }) => test.runner === "patchpilot-contract-tests")).toHaveLength(4);
+      expect(pendingContractTestRuns).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            status: "passed",
+            command: "pnpm openapi:check && pnpm --filter @patchpilot/api test -- server.test.ts"
+          }),
+          expect.objectContaining({
+            status: "passed",
+            summary: expect.stringContaining("frontend consumer")
+          }),
+          expect.objectContaining({
+            status: "passed",
+            summary: expect.stringContaining("worker consumer")
+          })
+        ])
+      );
       expect(auditActions).toEqual(
         expect.arrayContaining([
           "contract.revision_proposed",
@@ -516,6 +537,61 @@ describe("PatchPilot API", () => {
       expect(promotedSnapshot.json().auditEvents.map((event: { action: string }) => event.action)).toEqual(
         expect.arrayContaining(["approval.approved", "contract.baseline_promoted"])
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("upgrades approved PRDs from registry-only contract evidence to provider and consumer TestRuns", async () => {
+    const store = new PatchPilotStore();
+    const app = await buildServer({ store });
+
+    try {
+      const prd = await createApprovedPrd(app, "升级已有 PRD 的契约测试证据");
+      const previousSnapshot = await store.exportJsonSnapshot();
+      const downgradedSnapshot: PatchPilotSnapshot = structuredClone(previousSnapshot);
+      const prdContracts = downgradedSnapshot.interfaceContracts.filter((contract) => contract.prdId === prd.id);
+
+      for (const contract of prdContracts) {
+        const registryRunId = (contract.registry?.testRunIds ?? []).find((testRunId) =>
+          downgradedSnapshot.testRuns.find((testRun) =>
+            testRun.id === testRunId && testRun.runner === "patchpilot-contract-registry"
+          )
+        );
+        if (!contract.registry || !registryRunId) throw new Error(`Expected registry TestRun for ${contract.name}`);
+        contract.registry.testRunIds = [registryRunId];
+      }
+      downgradedSnapshot.testRuns = downgradedSnapshot.testRuns.filter(
+        (testRun) => testRun.prdId !== prd.id || testRun.runner !== "patchpilot-contract-tests"
+      );
+      downgradedSnapshot.testCases = downgradedSnapshot.testCases.filter(
+        (testCase) => testCase.prdId !== prd.id || !testCase.id.startsWith("tc_contract_")
+      );
+      await store.importJsonSnapshot(downgradedSnapshot);
+
+      const upgraded = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
+      expect(upgraded.statusCode).toBe(200);
+      const upgradedContractTestRunIds = upgraded
+        .json()
+        .interfaceContracts.flatMap((contract: { registry?: { testRunIds?: string[] } }) =>
+          contract.registry?.testRunIds ?? []
+        );
+      expect(upgradedContractTestRunIds).toHaveLength(16);
+
+      const upgradedSnapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      const upgradedContractTestRuns = upgradedContractTestRunIds.map((testRunId: string) =>
+        upgradedSnapshot.json().testRuns.find((testRun: { id: string }) => testRun.id === testRunId)
+      );
+      const generatedContractTestCases = upgradedSnapshot
+        .json()
+        .testCases.filter((testCase: { id: string; prdId: string }) =>
+          testCase.prdId === prd.id && testCase.id.startsWith("tc_contract_")
+        );
+      expect(upgradedContractTestRuns.filter((testRun: { runner?: string }) =>
+        testRun.runner === "patchpilot-contract-tests"
+      )).toHaveLength(13);
+      expect(upgradedContractTestRuns.every((testRun: { status: string }) => testRun.status === "passed")).toBe(true);
+      expect(generatedContractTestCases).toHaveLength(16);
     } finally {
       await app.close();
     }
@@ -960,7 +1036,9 @@ artifacts:
     const snapshotAfterRun = await app.inject({ method: "GET", url: "/api/snapshot" });
     const completedTestCase = snapshotAfterRun
       .json()
-      .testCases.find((item: { workItemId: string }) => item.workItemId === workItem.id);
+      .testCases.find((item: { id: string; workItemId: string }) =>
+        item.workItemId === workItem.id && !item.id.startsWith("tc_contract_")
+      );
     expect(completedTestCase.status).toBe("passed");
     expect(completedTestCase.lastRunId).toBe(run.id);
     expect(completedTestCase.lastTestRunId).toBe(completedRun.result.tests[0].id);
@@ -1612,7 +1690,9 @@ artifacts:
     const defect = snapshot.json().bugs.find((bug: { sourceRunId?: string }) => bug.sourceRunId === failedRun.id);
     const testCase = snapshot
       .json()
-      .testCases.find((candidate: { workItemId: string }) => candidate.workItemId === workItem.id);
+      .testCases.find((candidate: { id: string; workItemId: string }) =>
+        candidate.workItemId === workItem.id && !candidate.id.startsWith("tc_contract_")
+      );
     const workspace = snapshot
       .json()
       .workspaceRuns.find((candidate: { runId: string }) => candidate.runId === failedRun.id);
@@ -1811,12 +1891,21 @@ artifacts:
     const prdContractDiffTestRuns = prdTestRuns.filter((test: { runner?: string }) =>
       test.runner === "patchpilot-contract-registry"
     );
+    const prdContractValidationTestRuns = prdTestRuns.filter((test: { runner?: string }) =>
+      test.runner === "patchpilot-contract-tests"
+    );
     const prdExecutionTestRuns = prdTestRuns.filter((test: { runner?: string }) =>
-      test.runner !== "patchpilot-contract-registry"
+      test.runner === "simulated-test-runner"
     );
     const prdTestCases = evidenceSnapshot
       .json()
       .testCases.filter((testCase: { prdId: string }) => testCase.prdId === prd.id);
+    const prdGeneratedContractTestCases = prdTestCases.filter((testCase: { id: string }) =>
+      testCase.id.startsWith("tc_contract_")
+    );
+    const prdExecutionTestCases = prdTestCases.filter((testCase: { id: string }) =>
+      !testCase.id.startsWith("tc_contract_")
+    );
     const prdArtifacts = evidence.artifacts.filter((artifact: ArtifactRecord) => artifact.prdId === prd.id);
     const prdArtifactIds = new Set(prdArtifacts.map((artifact: ArtifactRecord) => artifact.id));
     const prdAgentRuns = evidence.agentRuns.filter((run: { prdId: string }) => run.prdId === prd.id);
@@ -1832,15 +1921,26 @@ artifacts:
       .map((event: { action: string }) => event.action);
     expect(prdWorkspaceRuns).toHaveLength(4);
     expect(prdWorkspaceRuns.every((workspace: { status: string }) => workspace.status === "archived")).toBe(true);
-    expect(prdTestCases).toHaveLength(4);
+    expect(prdTestCases).toHaveLength(20);
+    expect(prdGeneratedContractTestCases).toHaveLength(16);
+    expect(prdExecutionTestCases).toHaveLength(4);
     expect(prdTestCases.every((testCase: { status: string }) => testCase.status === "passed")).toBe(true);
-    expect(prdTestCases.every((testCase: { lastRunId?: string; lastTestRunId?: string }) => testCase.lastRunId && testCase.lastTestRunId)).toBe(true);
+    expect(prdExecutionTestCases.every((testCase: { lastRunId?: string; lastTestRunId?: string }) => testCase.lastRunId && testCase.lastTestRunId)).toBe(true);
+    expect(prdGeneratedContractTestCases.every((testCase: { lastRunId?: string; lastTestRunId?: string }) => !testCase.lastRunId && testCase.lastTestRunId)).toBe(true);
     expect(prdTestCases.every((testCase: { flaky?: boolean }) => testCase.flaky === false)).toBe(true);
-    expect(prdTestCases.map((testCase: { workItemId: string }) => testCase.workItemId).sort()).toEqual(
+    expect(prdExecutionTestCases.map((testCase: { workItemId: string }) => testCase.workItemId).sort()).toEqual(
       startTeam.json().workItems.map((item: { id: string }) => item.id).sort()
     );
     expect(prdContractDiffTestRuns).toHaveLength(3);
     expect(prdContractDiffTestRuns.every((test: { status: string }) => test.status === "passed")).toBe(true);
+    expect(prdContractValidationTestRuns).toHaveLength(13);
+    expect(prdContractValidationTestRuns.every((test: { status: string }) => test.status === "passed")).toBe(true);
+    expect(prdContractValidationTestRuns.map((test: { summary: string }) => test.summary)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("frontend consumer"),
+        expect.stringContaining("worker consumer")
+      ])
+    );
     expect(prdExecutionTestRuns).toHaveLength(4);
     expect(prdExecutionTestRuns.every((test: { status: string }) => test.status === "passed")).toBe(true);
     expect(prdTestRuns.every((test: { testCaseId?: string }) => test.testCaseId)).toBe(true);
@@ -2185,12 +2285,19 @@ artifacts:
     const bugTestRuns = snapshotAfterFix
       .json()
       .testRuns.filter((test: { prdId: string }) => test.prdId === bug.prdId);
+    const bugExecutionTestRuns = bugTestRuns.filter((test: { runner?: string }) =>
+      test.runner !== "patchpilot-contract-registry" && test.runner !== "patchpilot-contract-tests"
+    );
+    const bugContractTestRuns = bugTestRuns.filter((test: { runner?: string }) =>
+      test.runner === "patchpilot-contract-registry" || test.runner === "patchpilot-contract-tests"
+    );
     const bugAuditActions = snapshotAfterFix
       .json()
       .auditEvents.filter((event: { prdId?: string }) => event.prdId === bug.prdId)
       .map((event: { action: string }) => event.action);
     expect(closedBug.status).toBe("closed");
-    expect(bugTestRuns).toHaveLength(2);
+    expect(bugExecutionTestRuns).toHaveLength(2);
+    expect(bugContractTestRuns).toHaveLength(16);
     expect(bugTestRuns.every((test: { status: string }) => test.status === "passed")).toBe(true);
     expect(bugAuditActions).toContain("bug.reproduced");
     expect(bugAuditActions).toContain("bug.verifying");
