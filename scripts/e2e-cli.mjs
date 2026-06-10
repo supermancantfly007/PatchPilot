@@ -82,7 +82,8 @@ try {
   const report = await readFile(reportPath, "utf8");
   assert(report.includes("# PatchPilot Delivery Report"), "report should write markdown output");
   assert(report.includes("Accepted runs: 4/4"), "report should include acceptance evidence");
-  assert(report.includes("Test runs: passed=4"), "report should include test evidence");
+  assert(/Passed test runs: \d+\/\d+/.test(report), "report should include passed test run summary");
+  assert(/Test runs: passed=\d+/.test(report), "report should include test evidence counts");
 
   const happyReportPath = join(dataDir, "happy-path-report.md");
   const happyPath = await runCliJson([

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CodexRunError, type CodexRunner } from "@patchpilot/codex-runner";
 import { contractVersion, hashNormalizedContent } from "@patchpilot/contracts";
+import type { PullRequestAdapter, UpsertPullRequestInput, WriteReviewerCommentInput } from "@patchpilot/pull-request-adapter";
 import { createInMemoryTelemetry, prometheusMetricNames } from "@patchpilot/telemetry";
 import {
   emptySnapshot,
@@ -1293,6 +1294,149 @@ artifacts:
       changedFiles: ["packages/codex-runner/src/index.ts"],
       hasChanges: true
     });
+    await app.close();
+  });
+
+  it("uses an injected GitHub PullRequest adapter while keeping PullRequestRecord compatibility", async () => {
+    const upserts: UpsertPullRequestInput[] = [];
+    const comments: WriteReviewerCommentInput[] = [];
+    const fakePullRequestAdapter: PullRequestAdapter = {
+      provider: "github",
+      upsertPullRequest: async (input) => {
+        upserts.push(input);
+        return {
+          ...input.draft,
+          id: "github://patchpilot-fixtures/delivery/pull/42",
+          provider: "github",
+          status: "ready_for_review",
+          url: "https://github.com/patchpilot-fixtures/delivery/pull/42",
+          createdAt: input.existing?.createdAt ?? input.draft.createdAt
+        };
+      },
+      readChecks: async () => ({
+        status: "passed",
+        totalCount: 1,
+        runs: [
+          {
+            name: "ci/test",
+            status: "completed",
+            conclusion: "success",
+            url: "https://github.com/patchpilot-fixtures/delivery/actions/runs/1"
+          }
+        ]
+      }),
+      writeReviewerComment: async (input) => {
+        comments.push(input);
+        return {
+          id: "9001",
+          url: "https://github.com/patchpilot-fixtures/delivery/pull/42#issuecomment-9001"
+        };
+      }
+    };
+    const fakeCodexRunner: CodexRunner = {
+      isAvailable: async () => true,
+      isGitWorkspaceAvailable: async () => true,
+      run: async () => ({
+        summary: "Fake Codex runner completed the GitHub PR task.",
+        previewUrl: "http://fake-preview.local",
+        riskLevel: "low",
+        changedFiles: ["services/api/src/store.ts"],
+        tests: [
+          {
+            id: "test_fake_github_pr_adapter",
+            status: "passed",
+            command: "fake adapter e2e",
+            summary: "fake adapter e2e passed",
+            durationMs: 8
+          }
+        ],
+        reviewerSummary: "Fake reviewer approved the GitHub PR adapter result.",
+        runner: "codex",
+        agentMessages: ["Fake Codex agent reported GitHub PR readiness."],
+        reasoningSummaries: ["Fake Codex inspected PR adapter evidence."],
+        toolCalls: [
+          {
+            id: "tool_fake_adapter_test",
+            name: "exec_command",
+            status: "completed",
+            summary: "Ran fake adapter e2e",
+            command: "fake adapter e2e",
+            exitCode: 0,
+            durationMs: 8
+          }
+        ],
+        diffSummary: {
+          changedFileCount: 1,
+          changedFiles: ["services/api/src/store.ts"],
+          hasChanges: true,
+          branchName: "patchpilot/wi_fake-github-pr-adapter",
+          baseBranch: "main",
+          baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          headCommit: "cccccccccccccccccccccccccccccccccccccccc"
+        },
+        testOutputSummary: "passed: fake adapter e2e (8ms). fake adapter e2e passed",
+        workspacePath: "/tmp/patchpilot/fake-github-worktree",
+        branchName: "patchpilot/wi_fake-github-pr-adapter",
+        baseBranch: "main",
+        baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        headCommit: "cccccccccccccccccccccccccccccccccccccccc",
+        codexSessionId: "fake-github-session"
+      })
+    };
+    const app = await buildServer({
+      store: new PatchPilotStore({
+        codexRunner: fakeCodexRunner,
+        pullRequestAdapter: fakePullRequestAdapter
+      })
+    });
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/requirements",
+      payload: { rawInput: "验证 GitHub PR adapter 可以被 API 注入替换", template: "feature" }
+    });
+    const requirement = create.json();
+    const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
+    const prd = prdResponse.json().prd;
+    const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
+    const workItem = approval.json().workItems[0];
+
+    const start = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/start`,
+      payload: { runner: "codex" }
+    });
+    const completedRun = await pollRun(app, start.json().id);
+    expect(completedRun.status).toBe("succeeded");
+
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0]?.workspacePath).toBe("/tmp/patchpilot/fake-github-worktree");
+    expect(upserts[0]?.draft).toMatchObject({
+      branchName: "patchpilot/wi_fake-github-pr-adapter",
+      baseBranch: "main",
+      baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      headCommit: "cccccccccccccccccccccccccccccccccccccccc"
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Fake reviewer approved the GitHub PR adapter result.");
+
+    const snapshot = (await app.inject({ method: "GET", url: "/api/snapshot" })).json();
+    const pullRequest = snapshot.pullRequests.find((item: { runId: string }) => item.runId === start.json().id);
+    expect(pullRequest).toMatchObject({
+      id: "github://patchpilot-fixtures/delivery/pull/42",
+      provider: "github",
+      status: "ready_for_review",
+      url: "https://github.com/patchpilot-fixtures/delivery/pull/42",
+      branchName: "patchpilot/wi_fake-github-pr-adapter",
+      headCommit: "cccccccccccccccccccccccccccccccccccccccc"
+    });
+    const reviewRecord = snapshot.reviewRecords.find((item: { runId: string }) => item.runId === start.json().id);
+    expect(reviewRecord.linkedPullRequestId).toBe(pullRequest.id);
+    const auditActions = snapshot.auditEvents
+      .filter((event: { runId?: string }) => event.runId === start.json().id)
+      .map((event: { action: string }) => event.action);
+    expect(auditActions).toContain("pull_request.ready_for_review");
+    expect(auditActions).toContain("pull_request.checks_read");
+    expect(auditActions).toContain("pull_request.reviewer_comment_written");
     await app.close();
   });
 

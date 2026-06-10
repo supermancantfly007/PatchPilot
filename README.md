@@ -102,6 +102,16 @@ artifacts:
     secretAccessKey: patchpilot123
     forcePathStyle: true
     prefix: patchpilot
+pullRequest:
+  provider: local # local or github
+  github:
+    owner: ""
+    repo: ""
+    remote: origin
+    headOwner: "" # optional fork owner for source branches; blank uses owner
+    tokenEnv: PATCHPILOT_GITHUB_TOKEN
+    apiBaseUrl: "" # optional GitHub Enterprise REST API base URL
+    pushTimeoutMs: 30000
 ```
 
 ## Local Processes
@@ -307,6 +317,45 @@ security:
 The token value lives only in the API process environment named by `sourceEnv`; config, snapshots, artifacts, and audit events store only redacted ids/env var names. Production secret providers are intentionally out of scope for this MVP.
 
 Codex prompts are intentionally short. PatchPilot sends the task title, task file path, required skill (`/tdd` or `/diagnose`), and safety boundary; detailed context lives in `PATCHPILOT_TASK.md`, `AGENTS.md`, and the repo tests.
+
+## Pull Request Adapter
+
+PatchPilot defaults to local pull request records. Local mode keeps the existing `local://pull-requests/:runId` URL shape and does not push branches or call GitHub:
+
+```bash
+PATCHPILOT_PR_PROVIDER=local
+```
+
+Set the provider to `github` when the API should push the completed run branch and create or update a real GitHub PR. The API process reads the token from the env var named by `PATCHPILOT_GITHUB_TOKEN_ENV`, which defaults to `PATCHPILOT_GITHUB_TOKEN`.
+
+```bash
+PATCHPILOT_PR_PROVIDER=github
+PATCHPILOT_GITHUB_OWNER=your-org
+PATCHPILOT_GITHUB_REPO=your-repo
+PATCHPILOT_GITHUB_REMOTE=origin
+PATCHPILOT_GITHUB_HEAD_OWNER=
+PATCHPILOT_GITHUB_TOKEN_ENV=PATCHPILOT_GITHUB_TOKEN
+PATCHPILOT_GITHUB_TOKEN=ghp_or_fine_grained_token
+PATCHPILOT_GITHUB_API_BASE_URL=
+PATCHPILOT_GITHUB_PUSH_TIMEOUT_MS=30000
+```
+
+`PATCHPILOT_GITHUB_HEAD_OWNER` is only needed when PR source branches live in a fork. `PATCHPILOT_GITHUB_API_BASE_URL` is only needed for GitHub Enterprise, for example `https://github.example.com/api/v3`.
+
+The adapter unit suite includes a real fixture integration that is skipped by default. It creates a branch in the fixture workspace, pushes it, opens a PR, writes a reviewer comment, reads checks, then closes the PR and deletes the fixture branch:
+
+```bash
+PATCHPILOT_GITHUB_FIXTURE=1 \
+PATCHPILOT_GITHUB_OWNER=your-org \
+PATCHPILOT_GITHUB_REPO=fixture-repo \
+PATCHPILOT_GITHUB_TOKEN=ghp_or_fine_grained_token \
+PATCHPILOT_GITHUB_FIXTURE_WORKSPACE=/absolute/path/to/fixture-clone \
+PATCHPILOT_GITHUB_REMOTE=origin \
+PATCHPILOT_GITHUB_BASE_BRANCH=main \
+pnpm --filter @patchpilot/pull-request-adapter test
+```
+
+Use a disposable fixture repository or branch namespace for that integration; regular CI and local test runs use the deterministic fake adapter path and do not require GitHub credentials.
 
 ## Artifact Store
 
