@@ -13,6 +13,7 @@ import { z } from "zod";
 
 type ConfiguredRunner = "auto" | AgentRunnerKind;
 type ConfigSource = "defaults" | "file";
+type PullRequestProvider = "local" | "github";
 
 export interface PatchPilotConfigEnv extends NodeJS.ProcessEnv {
   INIT_CWD?: string;
@@ -59,6 +60,14 @@ export interface PatchPilotConfigEnv extends NodeJS.ProcessEnv {
   PATCHPILOT_ARTIFACT_S3_SECRET_ACCESS_KEY?: string;
   PATCHPILOT_ARTIFACT_S3_FORCE_PATH_STYLE?: string;
   PATCHPILOT_ARTIFACT_S3_PREFIX?: string;
+  PATCHPILOT_PR_PROVIDER?: string;
+  PATCHPILOT_GITHUB_OWNER?: string;
+  PATCHPILOT_GITHUB_REPO?: string;
+  PATCHPILOT_GITHUB_REMOTE?: string;
+  PATCHPILOT_GITHUB_HEAD_OWNER?: string;
+  PATCHPILOT_GITHUB_TOKEN_ENV?: string;
+  PATCHPILOT_GITHUB_API_BASE_URL?: string;
+  PATCHPILOT_GITHUB_PUSH_TIMEOUT_MS?: string;
 }
 
 export interface ResolvedPatchPilotConfig {
@@ -140,6 +149,18 @@ export interface ResolvedPatchPilotConfig {
       prefix: string;
     };
   };
+  pullRequest: {
+    provider: PullRequestProvider;
+    github: {
+      owner: string;
+      repo: string;
+      remote: string;
+      headOwner: string;
+      tokenEnv: string;
+      apiBaseUrl?: string;
+      pushTimeoutMs: number;
+    };
+  };
 }
 
 interface ReadConfigOptions {
@@ -151,6 +172,7 @@ interface ReadConfigOptions {
 const configuredRunnerSchema = z.enum(["auto", "simulated", "codex"]);
 const artifactProviderSchema = z.enum(["local_fs", "s3"]);
 const containerRuntimeSchema = z.enum(["auto", "docker", "podman"]);
+const pullRequestProviderSchema = z.enum(["local", "github"]);
 const secretTokenEnvironmentSchema = z.enum(["dev", "ci"]);
 const envVarNameSchema = z.string().regex(/^[A-Z_][A-Z0-9_]*$/u);
 const secretIdSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u);
@@ -238,6 +260,18 @@ const rawConfigSchema = z.object({
       secretAccessKey: z.string().optional(),
       forcePathStyle: z.boolean().optional(),
       prefix: z.string().optional()
+    }).optional()
+  }).optional(),
+  pullRequest: z.object({
+    provider: pullRequestProviderSchema.optional(),
+    github: z.object({
+      owner: z.string().optional(),
+      repo: z.string().optional(),
+      remote: z.string().optional(),
+      headOwner: z.string().optional(),
+      tokenEnv: envVarNameSchema.optional(),
+      apiBaseUrl: z.string().optional(),
+      pushTimeoutMs: z.number().positive().optional()
     }).optional()
   }).optional()
 }).partial();
@@ -413,6 +447,24 @@ export function readPatchPilotConfig(options: ReadConfigOptions = {}): ResolvedP
         ),
         prefix: pickString(env.PATCHPILOT_ARTIFACT_S3_PREFIX, raw.artifacts?.s3?.prefix, "patchpilot")
       }
+    },
+    pullRequest: {
+      provider: pickPullRequestProvider(env.PATCHPILOT_PR_PROVIDER, raw.pullRequest?.provider, "local"),
+      github: {
+        owner: pickString(env.PATCHPILOT_GITHUB_OWNER, raw.pullRequest?.github?.owner, ""),
+        repo: pickString(env.PATCHPILOT_GITHUB_REPO, raw.pullRequest?.github?.repo, ""),
+        remote: pickString(env.PATCHPILOT_GITHUB_REMOTE, raw.pullRequest?.github?.remote, "origin"),
+        headOwner: pickString(env.PATCHPILOT_GITHUB_HEAD_OWNER, raw.pullRequest?.github?.headOwner, ""),
+        tokenEnv: pickString(env.PATCHPILOT_GITHUB_TOKEN_ENV, raw.pullRequest?.github?.tokenEnv, "PATCHPILOT_GITHUB_TOKEN"),
+        ...(pickString(env.PATCHPILOT_GITHUB_API_BASE_URL, raw.pullRequest?.github?.apiBaseUrl, "")
+          ? { apiBaseUrl: pickString(env.PATCHPILOT_GITHUB_API_BASE_URL, raw.pullRequest?.github?.apiBaseUrl, "") }
+          : {}),
+        pushTimeoutMs: pickNumber(
+          env.PATCHPILOT_GITHUB_PUSH_TIMEOUT_MS,
+          raw.pullRequest?.github?.pushTimeoutMs,
+          30000
+        )
+      }
     }
   };
 }
@@ -548,5 +600,14 @@ function pickArtifactProvider(
   defaultValue: ArtifactStorageProvider
 ): ArtifactStorageProvider {
   if (envValue === "local_fs" || envValue === "s3") return envValue;
+  return configValue ?? defaultValue;
+}
+
+function pickPullRequestProvider(
+  envValue: string | undefined,
+  configValue: PullRequestProvider | undefined,
+  defaultValue: PullRequestProvider
+): PullRequestProvider {
+  if (envValue === "local" || envValue === "github") return envValue;
   return configValue ?? defaultValue;
 }

@@ -78,6 +78,7 @@ import {
   type CodexRunner,
   type CodexRunnerEvent
 } from "@patchpilot/codex-runner";
+import type { PullRequestAdapter, PullRequestCheckSummary, PullRequestDraft } from "@patchpilot/pull-request-adapter";
 import {
   generateCapabilityManifest,
   summarizeCapabilityManifest,
@@ -86,6 +87,7 @@ import {
 import { redactJsonValue, redactRecordValues, redactSecrets, type SecretRedactionOptions } from "@patchpilot/security";
 import { getTelemetry, type PatchPilotTelemetry } from "@patchpilot/telemetry";
 import { readPatchPilotConfig } from "./config";
+import { createConfiguredPullRequestAdapter } from "./pullRequestAdapter";
 
 const defaultDataFile = join(process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"), "patchpilot-store.json");
 const defaultPgliteDataDir = join(
@@ -162,6 +164,7 @@ export class PatchPilotStore {
   private readonly codexRunner: CodexRunner;
   private readonly artifactStore?: ArtifactStore;
   private readonly telemetry: PatchPilotTelemetry;
+  private readonly pullRequestAdapter?: PullRequestAdapter;
   private readonly dataFilePath: string | undefined;
   private readonly repositoryPromise: Promise<PatchPilotRepository> | undefined;
   private mutationQueue: Promise<void> = Promise.resolve();
@@ -173,12 +176,14 @@ export class PatchPilotStore {
       dataFilePath?: string | false;
       artifactStore?: ArtifactStore;
       telemetry?: PatchPilotTelemetry;
+      pullRequestAdapter?: PullRequestAdapter;
       repository?: PatchPilotRepository | Promise<PatchPilotRepository> | false;
     } = {}
   ) {
     this.codexRunner = options.codexRunner ?? new LocalCodexRunner();
     this.artifactStore = options.artifactStore;
     this.telemetry = options.telemetry ?? getTelemetry({ serviceName: "patchpilot-api" });
+    this.pullRequestAdapter = options.pullRequestAdapter;
     this.dataFilePath =
       options.dataFilePath === false
         ? undefined
@@ -2870,7 +2875,7 @@ export class PatchPilotStore {
     });
     this.recordEgressPolicyAudit(run, workItem, run.result?.egressPolicyEvidence, endedAt);
 
-    const pullRequest = this.recordPullRequest(run, workItem, endedAt, redactionOptions);
+    const { pullRequest, checkSummary } = await this.recordPullRequest(run, workItem, endedAt, redactionOptions);
     this.addAuditEvent({
       actor: "pr_adapter",
       action: "pull_request.ready_for_review",
@@ -2893,6 +2898,33 @@ export class PatchPilotStore {
         }
       }
     });
+    if (checkSummary) {
+      this.addAuditEvent({
+        actor: "pr_adapter",
+        action: "pull_request.checks_read",
+        targetType: "pull_request",
+        targetId: pullRequest.id,
+        message: `GitHub checks 已读取：${checkSummary.status} (${checkSummary.totalCount})。`,
+        requirementId: run.requirementId,
+        prdId: run.prdId,
+        workItemId: workItem.id,
+        runId: run.id,
+        createdAt: endedAt,
+        beforeJson: null,
+        afterJson: {
+          checks: {
+            status: checkSummary.status,
+            totalCount: checkSummary.totalCount,
+            runs: checkSummary.runs.map((check) => ({
+              name: check.name,
+              status: check.status,
+              conclusion: check.conclusion ?? null,
+              url: check.url ?? null
+            }))
+          }
+        }
+      });
+    }
 
     const reviewRecord = this.recordReview(run, workItem, pullRequest, endedAt, redactionOptions);
     this.addAuditEvent({
@@ -2916,6 +2948,28 @@ export class PatchPilotStore {
         }
       }
     });
+    const reviewerComment = await this.writeReviewerComment(pullRequest, reviewRecord, endedAt);
+    if (reviewerComment) {
+      this.addAuditEvent({
+        actor: "pr_adapter",
+        action: "pull_request.reviewer_comment_written",
+        targetType: "pull_request",
+        targetId: pullRequest.id,
+        message: "Reviewer agent 摘要已写入 GitHub PR comment。",
+        requirementId: run.requirementId,
+        prdId: run.prdId,
+        workItemId: workItem.id,
+        runId: run.id,
+        createdAt: endedAt,
+        beforeJson: null,
+        afterJson: {
+          comment: {
+            id: reviewerComment.id,
+            url: reviewerComment.url
+          }
+        }
+      });
+    }
 
     this.addAuditEvent({
       actor: "reviewer_agent",
@@ -3147,12 +3201,12 @@ export class PatchPilotStore {
     return defect;
   }
 
-  private recordPullRequest(
+  private async recordPullRequest(
     run: AgentRun,
     workItem: WorkItem,
     now: string,
     redactionOptions: SecretRedactionOptions = {}
-  ): PullRequestRecord {
+  ): Promise<{ pullRequest: PullRequestRecord; checkSummary?: PullRequestCheckSummary }> {
     const existing = this.snapshot.pullRequests.find((item) => item.runId === run.id);
     const result = run.result;
     const tests = result?.tests ?? [];
@@ -3168,9 +3222,8 @@ export class PatchPilotStore {
     const baseBranch = result?.baseBranch || existing?.baseBranch || "main";
     const baseCommit = result?.baseCommit || existing?.baseCommit;
     const headCommit = result?.headCommit || existing?.headCommit;
-    const pullRequest: PullRequestRecord = {
+    const draft: PullRequestDraft = {
       id: existing?.id || `pr_${run.id}`,
-      provider: "local",
       status: "ready_for_review",
       title: redactSecrets(`[PatchPilot] ${workItem.title}`, redactionOptions).redacted,
       requirementId: run.requirementId,
@@ -3181,7 +3234,6 @@ export class PatchPilotStore {
       baseBranch,
       ...(baseCommit ? { baseCommit } : {}),
       ...(headCommit ? { headCommit } : {}),
-      url: existing?.url || `local://pull-requests/${run.id}`,
       bodyMarkdown: redactSecrets(this.buildPullRequestBody(run, workItem, testSummary, reviewerSummary, {
         branchName,
         baseBranch,
@@ -3193,10 +3245,52 @@ export class PatchPilotStore {
       createdAt: existing?.createdAt || now,
       updatedAt: now
     };
+    const adapter = this.resolvePullRequestAdapter();
+    const pullRequest = await adapter.upsertPullRequest({
+      draft,
+      ...(existing ? { existing } : {}),
+      ...(result?.workspacePath ? { workspacePath: result.workspacePath } : {})
+    });
 
     if (existing) Object.assign(existing, pullRequest);
     else this.snapshot.pullRequests.unshift(pullRequest);
-    return pullRequest;
+    const checkSummary = pullRequest.provider === "github"
+      ? await adapter.readChecks({ pullRequest })
+      : undefined;
+    return {
+      pullRequest,
+      ...(checkSummary ? { checkSummary } : {})
+    };
+  }
+
+  private async writeReviewerComment(
+    pullRequest: PullRequestRecord,
+    reviewRecord: ReviewRecord,
+    now: string
+  ) {
+    if (pullRequest.provider !== "github") return undefined;
+    return this.resolvePullRequestAdapter().writeReviewerComment({
+      pullRequest,
+      body: [
+        "## PatchPilot Reviewer Agent",
+        reviewRecord.summary,
+        "",
+        `Status: ${reviewRecord.status}`,
+        `Risk: ${reviewRecord.riskLevel}`,
+        "",
+        "## Findings",
+        ...reviewRecord.findings.map((finding) => `- ${finding}`),
+        "",
+        "## Tests",
+        reviewRecord.testSummary,
+        "",
+        `Recorded at: ${now}`
+      ].join("\n")
+    });
+  }
+
+  private resolvePullRequestAdapter() {
+    return this.pullRequestAdapter ?? createConfiguredPullRequestAdapter();
   }
 
   private recordReview(

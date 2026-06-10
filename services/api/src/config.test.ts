@@ -75,6 +75,16 @@ artifacts:
     secretAccessKey: fixture-secret
     forcePathStyle: false
     prefix: fixture-prefix
+pullRequest:
+  provider: github
+  github:
+    owner: patchpilot-fixtures
+    repo: delivery
+    remote: upstream
+    headOwner: patchpilot-fork
+    tokenEnv: PATCHPILOT_FIXTURE_GITHUB_TOKEN
+    apiBaseUrl: https://github.fixture/api/v3
+    pushTimeoutMs: 45000
 `);
 
     try {
@@ -153,6 +163,18 @@ artifacts:
           secretAccessKey: "fixture-secret",
           forcePathStyle: false,
           prefix: "fixture-prefix"
+        }
+      });
+      expect(config.pullRequest).toEqual({
+        provider: "github",
+        github: {
+          owner: "patchpilot-fixtures",
+          repo: "delivery",
+          remote: "upstream",
+          headOwner: "patchpilot-fork",
+          tokenEnv: "PATCHPILOT_FIXTURE_GITHUB_TOKEN",
+          apiBaseUrl: "https://github.fixture/api/v3",
+          pushTimeoutMs: 45000
         }
       });
     } finally {
@@ -239,7 +261,15 @@ security:
           PATCHPILOT_ARTIFACT_S3_ACCESS_KEY_ID: "env-access",
           PATCHPILOT_ARTIFACT_S3_SECRET_ACCESS_KEY: "env-secret",
           PATCHPILOT_ARTIFACT_S3_FORCE_PATH_STYLE: "false",
-          PATCHPILOT_ARTIFACT_S3_PREFIX: "env-prefix"
+          PATCHPILOT_ARTIFACT_S3_PREFIX: "env-prefix",
+          PATCHPILOT_PR_PROVIDER: "github",
+          PATCHPILOT_GITHUB_OWNER: "env-owner",
+          PATCHPILOT_GITHUB_REPO: "env-repo",
+          PATCHPILOT_GITHUB_REMOTE: "env-remote",
+          PATCHPILOT_GITHUB_HEAD_OWNER: "env-head-owner",
+          PATCHPILOT_GITHUB_TOKEN_ENV: "PATCHPILOT_ENV_GITHUB_TOKEN",
+          PATCHPILOT_GITHUB_API_BASE_URL: "https://github.env/api/v3",
+          PATCHPILOT_GITHUB_PUSH_TIMEOUT_MS: "65000"
         }
       });
 
@@ -299,6 +329,18 @@ security:
           secretAccessKey: "env-secret",
           forcePathStyle: false,
           prefix: "env-prefix"
+        }
+      });
+      expect(config.pullRequest).toEqual({
+        provider: "github",
+        github: {
+          owner: "env-owner",
+          repo: "env-repo",
+          remote: "env-remote",
+          headOwner: "env-head-owner",
+          tokenEnv: "PATCHPILOT_ENV_GITHUB_TOKEN",
+          apiBaseUrl: "https://github.env/api/v3",
+          pushTimeoutMs: 65000
         }
       });
     } finally {

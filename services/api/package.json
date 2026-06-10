@@ -19,6 +19,7 @@
     "@patchpilot/db": "workspace:*",
     "@patchpilot/domain": "workspace:*",
     "@patchpilot/policy": "workspace:*",
+    "@patchpilot/pull-request-adapter": "workspace:*",
     "@patchpilot/security": "workspace:*",
     "@patchpilot/telemetry": "workspace:*",
     "fastify": "^5.8.5",
