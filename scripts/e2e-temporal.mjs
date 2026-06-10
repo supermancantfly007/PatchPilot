@@ -3,13 +3,16 @@ import {
   createPatchPilotTemporalWorker,
   createTemporalClient,
   InMemoryWorkItemExecutionActivityStore,
+  queryApprovalProgress,
   queryWorkItemExecutionProgress,
   queryRequirementIntakeProgress,
   queryTemporalCanaryProgress,
   readTemporalConfig,
+  signalApprovalApprove,
   signalRequirementClarificationAnswer,
   signalRequirementPrdConfirmation,
   signalTemporalCanary,
+  startApprovalWorkflow,
   startWorkItemExecutionWorkflow,
   startRequirementIntakeWorkflow,
   startTemporalCanaryWorkflow,
@@ -21,6 +24,7 @@ const canaryIdempotencyKey = `td-204-${randomUUID()}`;
 const intakeIdempotencyKey = `td-205-${randomUUID()}`;
 const planningIdempotencyKey = `td-206-${randomUUID()}`;
 const executionIdempotencyKey = `td-207-${randomUUID()}`;
+const approvalIdempotencyKey = `td-208-${randomUUID()}`;
 
 const workItemExecutionStore = new InMemoryWorkItemExecutionActivityStore();
 workItemExecutionStore.failNext("runCodex");
@@ -292,6 +296,97 @@ await worker.runUntil(async () => {
       2
     )
   );
+
+  const pausedRun = {
+    id: `run_td_208_${randomUUID()}`,
+    requirementId: intakeResult.requirement.id,
+    prdId: intakeResult.prd.id,
+    workItemId: executionWorkItem.id,
+    runner: "codex",
+    status: "needs_approval",
+    currentStep: "developing",
+    timeline: executionResult.agentRun.timeline,
+    events: executionResult.agentRun.events.slice(0, 3),
+    costEstimateUsd: 1.25,
+    startedAt: new Date().toISOString()
+  };
+  const approvalHandle = await startApprovalWorkflow(
+    client,
+    {
+      idempotencyKey: approvalIdempotencyKey,
+      kind: "budget_exceeded",
+      targetType: "agent_run",
+      targetId: pausedRun.id,
+      requestedBy: "budget-governor",
+      requestedReason: "Temporal approval workflow acceptance gate.",
+      riskLevel: "high",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      requirementId: pausedRun.requirementId,
+      prdId: pausedRun.prdId,
+      workItemId: pausedRun.workItemId,
+      runId: pausedRun.id,
+      pausedRun
+    },
+    config
+  );
+  const waitingApproval = await waitForApprovalProgress(approvalHandle, "waiting_for_decision");
+  assertEqual(waitingApproval.status, "waiting_for_decision", "approval workflow should wait for a decision signal");
+  assertEqual(waitingApproval.approval?.status, "pending", "approval should be pending before signal");
+  assertEqual(waitingApproval.run?.status, "needs_approval", "linked run should remain paused before approval");
+
+  await signalApprovalApprove(approvalHandle, {
+    decidedBy: "td-208-e2e",
+    decisionReason: "Approve the paused run for Temporal acceptance."
+  });
+  const approvalResult = await approvalHandle.result();
+  assertEqual(approvalResult.status, "approved", "approval workflow should complete as approved");
+  assertEqual(approvalResult.approval.status, "approved", "approval record should be approved");
+  assertEqual(approvalResult.approval.approvedBy, "td-208-e2e", "approval record should keep the approver");
+  assertEqual(approvalResult.run?.status, "running", "approval signal should resume the paused run");
+  if (!approvalResult.auditEvents.some((event) => event.action === "agent_run.resumed")) {
+    throw new Error("approval workflow did not record agent_run.resumed audit evidence");
+  }
+
+  const approvalDescription = await approvalHandle.describe();
+  const duplicateApprovalHandle = await startApprovalWorkflow(
+    client,
+    {
+      idempotencyKey: approvalIdempotencyKey,
+      kind: "budget_exceeded",
+      targetType: "agent_run",
+      targetId: pausedRun.id,
+      requestedBy: "duplicate-requester",
+      requestedReason: "Duplicate approval start should reuse the existing workflow.",
+      riskLevel: "critical",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      pausedRun
+    },
+    config
+  );
+  const duplicateApprovalDescription = await duplicateApprovalHandle.describe();
+  assertEqual(
+    duplicateApprovalDescription.runId,
+    approvalDescription.runId,
+    "duplicate approval idempotency key should not create a second Temporal run"
+  );
+
+  console.log(
+    JSON.stringify(
+      {
+        workflowId: approvalHandle.workflowId,
+        runId: approvalDescription.runId,
+        duplicateRunId: duplicateApprovalDescription.runId,
+        status: approvalResult.status,
+        idempotencyKey: approvalResult.idempotencyKey,
+        approvalId: approvalResult.approval.id,
+        resumedRunId: approvalResult.run?.id,
+        resumedRunStatus: approvalResult.run?.status,
+        auditEventCount: approvalResult.auditEvents.length
+      },
+      null,
+      2
+    )
+  );
 });
 
 function assertEqual(actual, expected, message) {
@@ -355,4 +450,21 @@ async function waitForExecutionProgress(handle, expectedStatus) {
   }
 
   throw lastError ?? new Error(`work item execution workflow did not reach query status ${expectedStatus}`);
+}
+
+async function waitForApprovalProgress(handle, expectedStatus) {
+  const deadline = Date.now() + 10_000;
+  let lastError;
+
+  while (Date.now() < deadline) {
+    try {
+      const progress = await queryApprovalProgress(handle);
+      if (progress.status === expectedStatus) return progress;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  throw lastError ?? new Error(`approval workflow did not reach query status ${expectedStatus}`);
 }

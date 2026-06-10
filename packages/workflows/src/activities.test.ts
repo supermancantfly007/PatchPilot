@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  createApprovalActivities,
   createWorkItemExecutionActivities,
+  InMemoryApprovalActivityStore,
   createRequirementIntakeActivities,
   InMemoryRequirementIntakeActivityStore,
   InMemoryTemporalCanaryActivityStore,
   InMemoryWorkItemExecutionActivityStore,
   InMemoryWorkItemPlanningActivityStore
 } from "./activities";
-import type { Prd, TestCase, WorkItem } from "@patchpilot/domain";
+import { createTimeline, type AgentRun, type Prd, type TestCase, type WorkItem } from "@patchpilot/domain";
 
 describe("Temporal canary activities", () => {
   it("deduplicates activity completion by idempotency key", async () => {
@@ -174,6 +176,126 @@ describe("Work item planning activities", () => {
   });
 });
 
+describe("Approval activities", () => {
+  it("requests approval idempotently and resumes a paused run when approved", async () => {
+    const store = new InMemoryApprovalActivityStore();
+    const activities = createApprovalActivities(store);
+    const pausedRun = approvalPausedRun();
+
+    const requested = await activities.requestApprovalActivity({
+      workflowId: "workflow-td-208",
+      idempotencyKey: "td-208:approval:request",
+      kind: "budget_exceeded",
+      targetType: "agent_run",
+      targetId: pausedRun.id,
+      requestedBy: "budget-governor",
+      requestedReason: "Run cost exceeds the configured budget.",
+      riskLevel: "high",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      requirementId: pausedRun.requirementId,
+      prdId: pausedRun.prdId,
+      workItemId: pausedRun.workItemId,
+      runId: pausedRun.id,
+      pausedRun
+    });
+    const duplicate = await activities.requestApprovalActivity({
+      workflowId: "workflow-td-208",
+      idempotencyKey: "td-208:approval:request",
+      kind: "budget_exceeded",
+      targetType: "agent_run",
+      targetId: pausedRun.id,
+      requestedBy: "other-requester",
+      requestedReason: "Duplicate request should not replace the first one.",
+      riskLevel: "critical",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      pausedRun
+    });
+
+    expect(duplicate).toEqual(requested);
+    expect(requested.approval.status).toBe("pending");
+    expect(requested.run?.status).toBe("needs_approval");
+    expect(requested.run?.budgetApprovalId).toBe(requested.approval.id);
+    expect(requested.auditEvents.map((event) => event.action)).toEqual(["approval.requested"]);
+
+    const approved = await activities.recordApprovalDecisionActivity({
+      workflowId: "workflow-td-208",
+      idempotencyKey: "td-208:approval:decision",
+      approval: requested.approval,
+      decision: {
+        status: "approved",
+        decidedBy: "human-reviewer",
+        decisionReason: "Approved for the Temporal workflow acceptance test."
+      },
+      pausedRun: requested.run
+    });
+
+    expect(approved.approval.status).toBe("approved");
+    expect(approved.approval.approvedBy).toBe("human-reviewer");
+    expect(approved.run?.status).toBe("running");
+    expect(approved.run?.events.at(-1)?.message).toContain("run resumed");
+    expect(approved.auditEvents.map((event) => event.action)).toEqual(["approval.approved", "agent_run.resumed"]);
+  });
+
+  it("records deny and expire decisions without resuming the paused run", async () => {
+    const store = new InMemoryApprovalActivityStore();
+    const activities = createApprovalActivities(store);
+    const pausedRun = approvalPausedRun();
+    const deniedRequest = await activities.requestApprovalActivity({
+      workflowId: "workflow-td-208-deny",
+      idempotencyKey: "td-208:deny:request",
+      kind: "dangerous_operation",
+      targetType: "agent_run",
+      targetId: pausedRun.id,
+      requestedBy: "policy",
+      requestedReason: "Dangerous operation requires a human decision.",
+      riskLevel: "critical",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      pausedRun
+    });
+    const denied = await activities.recordApprovalDecisionActivity({
+      workflowId: "workflow-td-208-deny",
+      idempotencyKey: "td-208:deny:decision",
+      approval: deniedRequest.approval,
+      decision: {
+        status: "denied",
+        decidedBy: "human-reviewer",
+        decisionReason: "The operation is not acceptable."
+      },
+      pausedRun: deniedRequest.run
+    });
+    expect(denied.approval.status).toBe("denied");
+    expect(denied.run?.status).toBe("needs_approval");
+    expect(denied.auditEvents.map((event) => event.action)).toEqual(["approval.denied"]);
+
+    const expiredRequest = await activities.requestApprovalActivity({
+      workflowId: "workflow-td-208-expire",
+      idempotencyKey: "td-208:expire:request",
+      kind: "network_allowlist_change",
+      targetType: "network",
+      targetId: "network-prod-egress",
+      requestedBy: "policy",
+      requestedReason: "Network allowlist change timed out.",
+      riskLevel: "high",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      pausedRun
+    });
+    const expired = await activities.recordApprovalDecisionActivity({
+      workflowId: "workflow-td-208-expire",
+      idempotencyKey: "td-208:expire:decision",
+      approval: expiredRequest.approval,
+      decision: {
+        status: "expired",
+        decidedBy: "workflow",
+        decisionReason: "Approval timed out before a decision."
+      },
+      pausedRun: expiredRequest.run
+    });
+    expect(expired.approval.status).toBe("expired");
+    expect(expired.run?.status).toBe("needs_approval");
+    expect(expired.auditEvents.map((event) => event.action)).toEqual(["approval.expired"]);
+  });
+});
+
 describe("Work item execution activities", () => {
   it("claims, executes, reviews, archives, and completes with a terminal evidence chain", async () => {
     const store = new InMemoryWorkItemExecutionActivityStore();
@@ -326,6 +448,22 @@ describe("Work item execution activities", () => {
     )).toBe(true);
   });
 });
+
+function approvalPausedRun(): AgentRun {
+  return {
+    id: "run_td_208",
+    requirementId: "req_td_208",
+    prdId: "prd_req_td_208",
+    workItemId: "wi_td_208_backend",
+    runner: "codex",
+    status: "needs_approval",
+    currentStep: "developing",
+    timeline: createTimeline(),
+    events: [],
+    costEstimateUsd: 1.25,
+    startedAt: "2026-06-10T00:00:00.000Z"
+  };
+}
 
 function planningPrd(acceptanceCriteria = ["Submit requirement", "Generate PRD", "Plan work items"]): Prd {
   return {
