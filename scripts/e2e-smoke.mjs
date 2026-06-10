@@ -41,6 +41,9 @@ try {
   await page.waitForURL(/\/acceptance\/.+/);
   await page.getByText("这次 agent 交付完成了").waitFor();
   await page.getByText(/4\/4 可验收/).waitFor();
+  await page.getByText("4 个 agent 已完成交付").waitFor();
+  await page.getByText("12 组文件").waitFor();
+  await page.getByText("团队审查摘要").waitFor();
   await page.getByRole("heading", { name: "测试用例" }).waitFor();
   await page.getByRole("heading", { name: "测试证据" }).waitFor();
   await page.getByRole("heading", { name: "审查证据" }).waitFor();
@@ -65,6 +68,9 @@ try {
   await page.waitForURL(/\/acceptance\/.+/);
   await page.getByText("这次 agent 交付完成了").waitFor();
   await page.getByText(/4\/4 可验收/).waitFor();
+  await page.getByText("4 个 agent 已完成交付").waitFor();
+  await page.getByText("12 组文件").waitFor();
+  await page.getByText("团队审查摘要").waitFor();
   await page.getByText(/返工第 1 轮/).first().waitFor();
   await page.getByRole("button", { name: /接受结果/ }).click();
 

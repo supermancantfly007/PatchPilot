@@ -16,6 +16,13 @@ import { AppShell } from "@/components/AppShell";
 import { StatusNotice } from "@/components/StatusNotice";
 import { api } from "@/lib/api";
 
+type AgentRunResult = NonNullable<AgentRun["result"]>;
+type DeliveryRun = {
+  item?: WorkItem;
+  run: AgentRun;
+  result: AgentRunResult;
+};
+
 function runnerLabel(runner: AgentRun["runner"]) {
   return runner === "codex" ? "本地 Codex runner" : "本地 MVP 模拟执行";
 }
@@ -125,6 +132,22 @@ function latestRunByWorkItem(runs: AgentRun[]) {
     if (!current || candidate.startedAt > current.startedAt) byWorkItem.set(candidate.workItemId, candidate);
   }
   return byWorkItem;
+}
+
+function riskLabel(riskLevel?: AgentRunResult["riskLevel"]) {
+  const labels: Record<AgentRunResult["riskLevel"], string> = {
+    low: "低",
+    medium: "中",
+    high: "高"
+  };
+  return riskLevel ? labels[riskLevel] : "未知";
+}
+
+function aggregateRiskLevel(results: AgentRunResult[]) {
+  if (results.some((result) => result.riskLevel === "high")) return "high";
+  if (results.some((result) => result.riskLevel === "medium")) return "medium";
+  if (results.some((result) => result.riskLevel === "low")) return "low";
+  return undefined;
 }
 
 export default function AcceptancePage() {
@@ -262,6 +285,28 @@ export default function AcceptancePage() {
       ? (snapshot?.auditEvents.filter((event) => event.prdId === run.prdId) ?? [])
       : (snapshot?.auditEvents.filter((event) => event.runId === run.id) ?? [])
   ).slice(0, 6);
+  const deliveryRuns: DeliveryRun[] = (() => {
+    if (isTeamAcceptance) {
+      return teamWorkItems.reduce<DeliveryRun[]>((items, item) => {
+        const itemRun = runsByWorkItem.get(item.id);
+        if (itemRun?.result) items.push({ item, run: itemRun, result: itemRun.result });
+        return items;
+      }, []);
+    }
+
+    return result
+      ? [{ item: teamWorkItems.find((item) => item.id === run.workItemId), run, result }]
+      : [];
+  })();
+  const changedFileEntries = deliveryRuns.flatMap(({ item, result: itemResult }) =>
+    itemResult.changedFiles.map((file) => ({
+      key: `${item?.id ?? run.id}:${file}`,
+      file,
+      role: item ? roleLabels[item.role] : "执行"
+    }))
+  );
+  const aggregateResultCount = deliveryRuns.length;
+  const aggregateRisk = aggregateRiskLevel(deliveryRuns.map((item) => item.result));
 
   return (
     <AppShell>
@@ -300,7 +345,25 @@ export default function AcceptancePage() {
               ) : null}
               <div className="question-card" style={{ background: "white" }}>
                 <strong>改了什么</strong>
-                <p style={{ margin: 0 }}>{result?.summary ?? "已完成执行，暂无摘要。"}</p>
+                {isTeamAcceptance ? (
+                  <div className="grid" style={{ gap: 10, marginTop: 10 }}>
+                    <p style={{ margin: 0 }}>
+                      {aggregateResultCount > 0
+                        ? `${aggregateResultCount} 个 agent 已完成交付，下面是按角色汇总的交付摘要。`
+                        : "团队执行已完成，暂无可展示的交付摘要。"}
+                    </p>
+                    {deliveryRuns.map(({ item, run: itemRun, result: itemResult }) => (
+                      <p className="muted" key={`${item?.id ?? itemRun.id}:${itemResult.summary}`} style={{ margin: 0 }}>
+                        <strong className="agent-role">
+                          {item ? roleLabels[item.role] : "执行"} agent
+                        </strong>{" "}
+                        {itemResult.summary}
+                      </p>
+                    ))}
+                  </div>
+                ) : (
+                  <p style={{ margin: 0 }}>{result?.summary ?? "已完成执行，暂无摘要。"}</p>
+                )}
               </div>
               {isTeamAcceptance ? (
                 <div className="team-run-list">
@@ -354,7 +417,7 @@ export default function AcceptancePage() {
                 <div className="metric">
                   <FileCode2 size={18} />
                   <span className="muted">变更范围</span>
-                  <strong>{result?.changedFiles.length ?? 0} 组文件</strong>
+                  <strong>{changedFileEntries.length} 组文件</strong>
                 </div>
                 <div className="metric">
                   <TestTube2 size={18} />
@@ -375,7 +438,7 @@ export default function AcceptancePage() {
                 <div className="metric">
                   <ShieldCheck size={18} />
                   <span className="muted">风险等级</span>
-                  <strong>{result?.riskLevel === "low" ? "低" : result?.riskLevel ?? "未知"}</strong>
+                  <strong>{riskLabel(aggregateRisk)}</strong>
                 </div>
                 <div className="metric">
                   <GitPullRequest size={18} />
@@ -389,8 +452,31 @@ export default function AcceptancePage() {
                 </div>
               </div>
               <div className="question-card" style={{ background: "white" }}>
-                <strong>Reviewer agent 摘要</strong>
-                <p style={{ margin: 0 }}>{result?.reviewerSummary ?? "暂无审查摘要。"}</p>
+                <strong>{isTeamAcceptance ? "团队审查摘要" : "Reviewer agent 摘要"}</strong>
+                {isTeamAcceptance ? (
+                  <div className="grid" style={{ gap: 10, marginTop: 10 }}>
+                    {visibleReviewRecords.length > 0 ? (
+                      visibleReviewRecords.map((review) => (
+                        <p className="muted" key={review.id} style={{ margin: 0 }}>
+                          {review.summary}
+                        </p>
+                      ))
+                    ) : deliveryRuns.length > 0 ? (
+                      deliveryRuns.map(({ item, run: itemRun, result: itemResult }) => (
+                        <p className="muted" key={`${item?.id ?? itemRun.id}:review`} style={{ margin: 0 }}>
+                          <strong className="agent-role">
+                            {item ? roleLabels[item.role] : "执行"} agent
+                          </strong>{" "}
+                          {itemResult.reviewerSummary}
+                        </p>
+                      ))
+                    ) : (
+                      <p style={{ margin: 0 }}>暂无审查摘要。</p>
+                    )}
+                  </div>
+                ) : (
+                  <p style={{ margin: 0 }}>{result?.reviewerSummary ?? "暂无审查摘要。"}</p>
+                )}
               </div>
               <textarea
                 className="input"
@@ -539,10 +625,13 @@ export default function AcceptancePage() {
                   <strong>{result.workspacePath}</strong>
                 </div>
               ) : null}
-              {result?.changedFiles.length ? (
+              {changedFileEntries.length ? (
                 <ul className="compact-list">
-                  {result.changedFiles.map((file) => (
-                    <li key={file}>{file}</li>
+                  {changedFileEntries.map((entry) => (
+                    <li key={entry.key}>
+                      {isTeamAcceptance ? `${entry.role} agent · ` : ""}
+                      {entry.file}
+                    </li>
                   ))}
                 </ul>
               ) : (
