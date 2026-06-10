@@ -14,6 +14,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { ArtifactReferenceList } from "@/components/ArtifactReferenceList";
 import { StatusNotice } from "@/components/StatusNotice";
 import { api } from "@/lib/api";
 
@@ -278,6 +279,8 @@ export default function RunPage() {
   const runPullRequest = snapshot?.pullRequests.find((pullRequest) => pullRequest.runId === run.id);
   const runReview = snapshot?.reviewRecords.find((review) => review.runId === run.id);
   const runAuditEvents = (snapshot?.auditEvents.filter((event) => event.runId === run.id) ?? []).slice(0, 5);
+  const requirementArtifactReferences =
+    snapshot?.requirements.find((requirement) => requirement.id === run.requirementId)?.artifactReferences ?? [];
   const diffSummary = run.result?.diffSummary;
   const resultChangedFiles = run.result?.changedFiles ?? [];
   const diffChangedFiles = diffSummary?.changedFiles ?? resultChangedFiles;
@@ -610,6 +613,14 @@ export default function RunPage() {
               <span className="status-pill">{runAuditEvents.length} 条审计</span>
             </div>
             <div className="card-body event-list">
+              {requirementArtifactReferences.length > 0 ? (
+                <div className="event">
+                  <strong>输入资料</strong>
+                  <div style={{ marginTop: 10 }}>
+                    <ArtifactReferenceList references={requirementArtifactReferences} />
+                  </div>
+                </div>
+              ) : null}
               {runWorkspace ? (
                 <div className="event">
                   <strong>WorkspaceRun · {runWorkspace.status}</strong>

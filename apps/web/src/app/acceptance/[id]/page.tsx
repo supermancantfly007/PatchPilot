@@ -13,6 +13,7 @@ import { CheckCircle2, FileCode2, GitPullRequest, ShieldCheck, TestTube2, XCircl
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { ArtifactReferenceList } from "@/components/ArtifactReferenceList";
 import { StatusNotice } from "@/components/StatusNotice";
 import { api } from "@/lib/api";
 
@@ -285,6 +286,8 @@ export default function AcceptancePage() {
       ? (snapshot?.auditEvents.filter((event) => event.prdId === run.prdId) ?? [])
       : (snapshot?.auditEvents.filter((event) => event.runId === run.id) ?? [])
   ).slice(0, 6);
+  const requirementArtifactReferences =
+    snapshot?.requirements.find((requirement) => requirement.id === run.requirementId)?.artifactReferences ?? [];
   const deliveryRuns: DeliveryRun[] = (() => {
     if (isTeamAcceptance) {
       return teamWorkItems.reduce<DeliveryRun[]>((items, item) => {
@@ -461,6 +464,11 @@ export default function AcceptancePage() {
                   <span className="muted">审查记录</span>
                   <strong>{visibleReviewRecords.length} 条</strong>
                 </div>
+                <div className="metric">
+                  <FileCode2 size={18} />
+                  <span className="muted">输入资料</span>
+                  <strong>{requirementArtifactReferences.length} 个</strong>
+                </div>
               </div>
               <div className="question-card" style={{ background: "white" }}>
                 <strong>{isTeamAcceptance ? "团队审查摘要" : "Reviewer agent 摘要"}</strong>
@@ -521,6 +529,15 @@ export default function AcceptancePage() {
         </section>
 
         <aside className="grid">
+          <div className="card">
+            <div className="card-header">
+              <h3>输入资料</h3>
+              <span className="status-pill">{requirementArtifactReferences.length} 个</span>
+            </div>
+            <div className="card-body">
+              <ArtifactReferenceList references={requirementArtifactReferences} />
+            </div>
+          </div>
           <div className="card">
             <div className="card-header">
               <h3>测试用例</h3>

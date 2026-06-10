@@ -19,6 +19,7 @@ import {
   type BugSeverity,
   type BugStatus,
   type FailureType,
+  type IntakeArtifactReference,
   type PatchPilotSnapshot,
   type PullRequestRecord,
   type Requirement,
@@ -117,6 +118,9 @@ type AddAuditEventInput = Pick<AuditEvent, "action" | "targetType" | "targetId" 
     metadataJson?: AuditJsonValue | null;
   };
 
+type IntakeArtifactReferenceInput = Omit<IntakeArtifactReference, "id" | "createdAt"> &
+  Partial<Pick<IntakeArtifactReference, "id" | "createdAt">>;
+
 export class PatchPilotStore {
   private snapshot: PatchPilotSnapshot = emptySnapshot();
   private loaded = false;
@@ -208,10 +212,12 @@ export class PatchPilotStore {
   async createRequirement(input: {
     rawInput: string;
     template: Requirement["template"];
+    artifactReferences?: IntakeArtifactReferenceInput[];
   }) {
     await this.load();
     const now = new Date().toISOString();
     const id = `req_${randomUUID()}`;
+    const artifactReferences = this.prepareIntakeArtifactReferences(input.artifactReferences ?? [], id, now);
     const requirement: Requirement = {
       id,
       title: makeSimpleSummary(input.rawInput, input.template),
@@ -219,6 +225,7 @@ export class PatchPilotStore {
       template: input.template,
       status: "clarifying",
       simpleSummary: makeSimpleSummary(input.rawInput, input.template),
+      artifactReferences,
       clarificationQuestions: generateClarificationQuestions(input.rawInput, input.template),
       clarificationTurns: [createInitialClarificationTurn(input.rawInput, input.template, now)],
       createdAt: now,
@@ -226,6 +233,7 @@ export class PatchPilotStore {
     };
 
     this.snapshot.requirements.unshift(requirement);
+    await this.recordIntakeArtifactReferenceArtifacts(requirement, artifactReferences, now);
     await this.save();
     return requirement;
   }
@@ -412,11 +420,13 @@ export class PatchPilotStore {
     actualBehavior: string;
     severity: BugSeverity;
     reporter?: string;
+    artifactReferences?: IntakeArtifactReferenceInput[];
   }) {
     await this.load();
     const now = new Date().toISOString();
     const bugId = `bug_${randomUUID()}`;
     const requirementId = `req_${bugId}`;
+    const artifactReferences = this.prepareIntakeArtifactReferences(input.artifactReferences ?? [], requirementId, now);
     const requirement = createBugRequirement({
       id: requirementId,
       title: input.title,
@@ -424,6 +434,7 @@ export class PatchPilotStore {
       reproductionSteps: input.reproductionSteps,
       expectedBehavior: input.expectedBehavior,
       actualBehavior: input.actualBehavior,
+      artifactReferences,
       now
     });
     const prd = createBugPrd(requirement, now);
@@ -448,6 +459,7 @@ export class PatchPilotStore {
       requirementId,
       prdId: prd.id,
       workItemId: workItem.id,
+      artifactReferences,
       createdAt: now,
       updatedAt: now
     };
@@ -458,6 +470,7 @@ export class PatchPilotStore {
     this.snapshot.interfaceContracts.unshift(...createInterfaceContracts(prd));
     this.snapshot.testCases.unshift(...createTestCasesForWorkItems(prd, [workItem], now));
     this.snapshot.bugs.unshift(bug);
+    await this.recordIntakeArtifactReferenceArtifacts(requirement, artifactReferences, now);
     this.addAuditEvent({
       actor: bug.reporter,
       action: "bug.reported",
@@ -1645,6 +1658,7 @@ export class PatchPilotStore {
     this.snapshot.bugs = this.snapshot.bugs.map((item) => ({
       ...item,
       status: normalizeBugStatus(item.status),
+      artifactReferences: this.normalizeStoredIntakeArtifactReferences(item.artifactReferences, item.requirementId, item.createdAt || now),
       createdAt: item.createdAt || now,
       updatedAt: item.updatedAt || item.createdAt || now
     }));
@@ -1655,6 +1669,7 @@ export class PatchPilotStore {
     }));
     this.snapshot.requirements = this.snapshot.requirements.map((item) => ({
       ...item,
+      artifactReferences: this.normalizeStoredIntakeArtifactReferences(item.artifactReferences, item.id, item.createdAt || now),
       clarificationTurns:
         item.clarificationTurns && item.clarificationTurns.length > 0
           ? item.clarificationTurns
@@ -2096,6 +2111,93 @@ export class PatchPilotStore {
       run.result.artifactIds = uniqueStrings([...(run.result.artifactIds ?? []), ...runArtifactIds]);
       run.result.tests = tests;
     }
+  }
+
+  private prepareIntakeArtifactReferences(
+    references: IntakeArtifactReferenceInput[],
+    ownerId: string,
+    now: string
+  ): IntakeArtifactReference[] {
+    return references
+      .filter((reference) => reference.label?.trim())
+      .slice(0, 12)
+      .map((reference, index) => {
+        const id = safeReferenceSegment(reference.id || `input_${ownerId}_${index + 1}`);
+        const metadata = sanitizeReferenceMetadata(reference.metadata);
+        return {
+          id,
+          kind: reference.kind,
+          label: reference.label.trim(),
+          ...(reference.uri?.trim() ? { uri: reference.uri.trim() } : {}),
+          ...(reference.contentType?.trim() ? { contentType: reference.contentType.trim() } : {}),
+          ...(typeof reference.sizeBytes === "number" ? { sizeBytes: reference.sizeBytes } : {}),
+          artifactId: reference.artifactId?.trim() || `artifact_intake_${id}`,
+          ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+          createdAt: reference.createdAt || now
+        };
+      });
+  }
+
+  private normalizeStoredIntakeArtifactReferences(
+    references: IntakeArtifactReference[] | undefined,
+    ownerId: string,
+    fallbackCreatedAt: string
+  ): IntakeArtifactReference[] {
+    return (references ?? [])
+      .filter((reference) => reference.label?.trim())
+      .slice(0, 12)
+      .map((reference, index) => {
+        const id = safeReferenceSegment(reference.id || `input_${ownerId}_${index + 1}`);
+        const metadata = sanitizeReferenceMetadata(reference.metadata);
+        return {
+          id,
+          kind: normalizeIntakeArtifactKind(reference.kind),
+          label: reference.label.trim(),
+          ...(reference.uri?.trim() ? { uri: reference.uri.trim() } : {}),
+          ...(reference.contentType?.trim() ? { contentType: reference.contentType.trim() } : {}),
+          ...(typeof reference.sizeBytes === "number" ? { sizeBytes: reference.sizeBytes } : {}),
+          artifactId: reference.artifactId?.trim() || `artifact_intake_${id}`,
+          ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+          createdAt: reference.createdAt || fallbackCreatedAt
+        };
+      });
+  }
+
+  private async recordIntakeArtifactReferenceArtifacts(
+    requirement: Requirement,
+    references: IntakeArtifactReference[],
+    now: string
+  ) {
+    if (references.length === 0) return;
+    const artifactStore = this.getArtifactStore();
+    const records: ArtifactRecord[] = [];
+    for (const reference of references) {
+      const record = await artifactStore.putArtifact({
+        id: reference.artifactId,
+        kind: "intake_attachment",
+        content: JSON.stringify({
+          requirementId: requirement.id,
+          kind: reference.kind,
+          label: reference.label,
+          uri: reference.uri,
+          contentType: reference.contentType,
+          sizeBytes: reference.sizeBytes,
+          metadata: reference.metadata ?? {}
+        }, null, 2),
+        contentType: "application/json",
+        extension: ".json",
+        metadata: {
+          intakeKind: reference.kind,
+          label: reference.label,
+          ...(reference.uri ? { uri: reference.uri } : {}),
+          ...(reference.contentType ? { contentType: reference.contentType } : {})
+        },
+        requirementId: requirement.id,
+        createdAt: now
+      });
+      records.push(record);
+    }
+    this.upsertArtifactRecords(records);
   }
 
   private async recordCompletedRunEvidence(
@@ -2666,6 +2768,26 @@ function auditBudgetScope(scope: BudgetScopeCheck): Record<string, AuditJsonValu
     spentUsd: scope.spentUsd,
     nextSpendUsd: scope.nextSpendUsd
   };
+}
+
+function safeReferenceSegment(value: string) {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || `input_${randomUUID()}`;
+}
+
+function sanitizeReferenceMetadata(metadata: Record<string, string> | undefined) {
+  const output: Record<string, string> = {};
+  for (const [key, value] of Object.entries(metadata ?? {})) {
+    const normalizedKey = key.trim();
+    const normalizedValue = value.trim();
+    if (!normalizedKey || !normalizedValue) continue;
+    output[normalizedKey] = normalizedValue;
+  }
+  return output;
+}
+
+function normalizeIntakeArtifactKind(kind: string): IntakeArtifactReference["kind"] {
+  if (kind === "screenshot" || kind === "recording" || kind === "link") return kind;
+  return "file";
 }
 
 function buildRunDiffSummary(

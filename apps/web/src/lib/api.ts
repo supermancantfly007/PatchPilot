@@ -3,6 +3,7 @@ import type {
   AgentRun,
   BugReport,
   ClarificationQuestion,
+  IntakeArtifactReference,
   InterfaceContract,
   PatchPilotSnapshot,
   Prd,
@@ -41,10 +42,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  createRequirement(rawInput: string, template: RequirementTemplate) {
+  createRequirement(rawInput: string, template: RequirementTemplate, artifactReferences: IntakeArtifactReference[] = []) {
     return request<Requirement>(apiPath("createRequirement"), {
       method: "POST",
-      body: JSON.stringify({ rawInput, template })
+      body: JSON.stringify({ rawInput, template, artifactReferences })
     });
   },
   createBug(input: {
@@ -55,6 +56,7 @@ export const api = {
     actualBehavior: string;
     severity?: BugReport["severity"];
     reporter?: string;
+    artifactReferences?: IntakeArtifactReference[];
   }) {
     return request<{ bug: BugReport; requirement: Requirement; prd: Prd; workItem: WorkItem }>(apiPath("createBug"), {
       method: "POST",

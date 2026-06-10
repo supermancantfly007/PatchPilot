@@ -51,10 +51,43 @@ export const bugStatuses = [
   "verifying",
   "closed"
 ] as const;
+export const intakeArtifactKinds = ["file", "screenshot", "recording", "link"] as const;
+
+export const intakeArtifactReferenceSchema = z.object({
+  id: z.string().trim().min(1).optional(),
+  kind: z.enum(intakeArtifactKinds),
+  label: z.string().trim().min(1).max(160),
+  uri: z.string().trim().min(1).max(2000).optional(),
+  contentType: z.string().trim().min(1).max(160).optional(),
+  sizeBytes: z.number().int().nonnegative().optional(),
+  artifactId: z.string().trim().min(1).optional(),
+  metadata: z.record(z.string(), z.string()).optional(),
+  createdAt: z.string().datetime().optional()
+}).superRefine((reference, ctx) => {
+  if (reference.kind !== "link") return;
+  if (!reference.uri) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Link references require a URL",
+      path: ["uri"]
+    });
+    return;
+  }
+  try {
+    new URL(reference.uri);
+  } catch {
+    ctx.addIssue({
+      code: "custom",
+      message: "Link references require a valid URL",
+      path: ["uri"]
+    });
+  }
+});
 
 export const requirementInputSchema = z.object({
   rawInput: z.string().trim().min(3),
-  template: z.enum(["feature", "bug", "ui", "document"])
+  template: z.enum(["feature", "bug", "ui", "document"]),
+  artifactReferences: z.array(intakeArtifactReferenceSchema).max(12).default([])
 });
 
 export const clarificationSchema = z.object({
@@ -85,7 +118,8 @@ export const bugInputSchema = z.object({
   expectedBehavior: z.string().trim().min(3),
   actualBehavior: z.string().trim().min(3),
   severity: z.enum(["low", "medium", "high", "critical"]).default("medium"),
-  reporter: z.string().trim().optional()
+  reporter: z.string().trim().optional(),
+  artifactReferences: z.array(intakeArtifactReferenceSchema).max(12).default([])
 });
 
 export const claimSchema = z.object({
@@ -323,6 +357,7 @@ export const sharedStateContract = {
     "WorkspaceRun",
     "TestCase",
     "TestRun",
+    "IntakeArtifactReference",
     "ArtifactRecord",
     "PullRequestRecord",
     "ReviewRecord",
@@ -603,6 +638,7 @@ const jsonValue = {
     { type: "null" }
   ]
 };
+const intakeArtifactKind = enumSchema(intakeArtifactKinds);
 
 export const openApiSchemas = {
   HealthResponse: objectSchema({
@@ -625,8 +661,9 @@ export const openApiSchemas = {
   }),
   CreateRequirementRequest: objectSchema({
     rawInput: { type: "string", minLength: 3 },
-    template: requirementTemplate
-  }),
+    template: requirementTemplate,
+    artifactReferences: arrayOf(schemaRef("IntakeArtifactReferenceInput"))
+  }, ["rawInput", "template"]),
   ClarificationAnswerRequest: objectSchema({
     answers: {
       type: "object",
@@ -676,7 +713,8 @@ export const openApiSchemas = {
     expectedBehavior: { type: "string", minLength: 3 },
     actualBehavior: { type: "string", minLength: 3 },
     severity: enumSchema(["low", "medium", "high", "critical"]),
-    reporter: { type: "string" }
+    reporter: { type: "string" },
+    artifactReferences: arrayOf(schemaRef("IntakeArtifactReferenceInput"))
   }, ["title", "description", "reproductionSteps", "expectedBehavior", "actualBehavior"]),
   RuntimeConfig: objectSchema({
     configuredRunner: enumSchema(["auto", "simulated", "codex"]),
@@ -752,11 +790,34 @@ export const openApiSchemas = {
     template: requirementTemplate,
     status: enumSchema(["submitted", "clarifying", "prd_draft", "approved", "rejected"]),
     simpleSummary: { type: "string" },
+    artifactReferences: arrayOf(schemaRef("IntakeArtifactReference")),
     clarificationQuestions: arrayOf(schemaRef("ClarificationQuestion")),
     clarificationTurns: arrayOf(schemaRef("ClarificationTurn")),
     createdAt: isoDate,
     updatedAt: isoDate
   }),
+  IntakeArtifactReferenceInput: objectSchema({
+    id,
+    kind: intakeArtifactKind,
+    label: { type: "string", minLength: 1, maxLength: 160 },
+    uri: { type: "string", minLength: 1, maxLength: 2000 },
+    contentType: { type: "string", minLength: 1, maxLength: 160 },
+    sizeBytes: { type: "integer", minimum: 0 },
+    artifactId: id,
+    metadata: { type: "object", additionalProperties: { type: "string" } },
+    createdAt: isoDate
+  }, ["kind", "label"]),
+  IntakeArtifactReference: objectSchema({
+    id,
+    kind: intakeArtifactKind,
+    label: { type: "string" },
+    uri: { type: "string" },
+    contentType: { type: "string" },
+    sizeBytes: { type: "number" },
+    artifactId: id,
+    metadata: { type: "object", additionalProperties: { type: "string" } },
+    createdAt: isoDate
+  }, ["id", "kind", "label", "createdAt"]),
   ClarificationQuestion: objectSchema({
     id,
     question: { type: "string" },
@@ -963,7 +1024,7 @@ export const openApiSchemas = {
   }, ["id", "status", "command", "summary", "durationMs"]),
   ArtifactRecord: objectSchema({
     id,
-    kind: enumSchema(["log", "trace", "diff", "test_report", "screenshot", "preview_metadata"]),
+    kind: enumSchema(["log", "trace", "diff", "test_report", "screenshot", "preview_metadata", "intake_attachment"]),
     storage: enumSchema(["local_fs", "s3"]),
     uri: { type: "string" },
     contentType: { type: "string" },
@@ -1078,6 +1139,7 @@ export const openApiSchemas = {
     requirementId: id,
     prdId: id,
     workItemId: id,
+    artifactReferences: arrayOf(schemaRef("IntakeArtifactReference")),
     sourceRunId: id,
     sourceTestRunId: id,
     sourceFailureType: failureType,

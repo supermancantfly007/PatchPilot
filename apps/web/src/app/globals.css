@@ -196,6 +196,99 @@ a {
   padding: 0 16px 16px;
 }
 
+.composer-artifacts {
+  display: grid;
+  gap: 10px;
+  padding: 0 16px 16px;
+}
+
+.attachment-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.attachment-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.file-input {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.link-input-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.2fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.artifact-list {
+  display: grid;
+  gap: 8px;
+}
+
+.artifact-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--muted);
+}
+
+.artifact-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+  color: var(--blue);
+}
+
+.artifact-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.artifact-copy strong,
+.artifact-copy small,
+.artifact-copy a {
+  overflow-wrap: anywhere;
+}
+
+.artifact-copy small {
+  color: var(--subtle);
+  line-height: 1.35;
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+  color: var(--subtle);
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  border-color: #fecaca;
+  color: var(--red);
+}
+
 .template-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -992,6 +1085,14 @@ a.dashboard-row:hover {
   .composer-footer {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .link-input-row {
+    grid-template-columns: 1fr;
+  }
+
+  .artifact-row {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
   }
 
   .button {

@@ -3,6 +3,7 @@
 import type {
   AgentProfile,
   AgentRun,
+  IntakeArtifactReference,
   PatchPilotSnapshot,
   Requirement,
   RequirementTemplate,
@@ -14,15 +15,20 @@ import {
   ArrowRight,
   Bug,
   ClipboardList,
+  FileText,
+  Image,
   Paperclip,
+  Plus,
   RefreshCw,
   ShieldCheck,
-  Sparkles
+  Sparkles,
+  Video
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { ArtifactReferenceList } from "@/components/ArtifactReferenceList";
 import { StatusNotice } from "@/components/StatusNotice";
 import { TemplateSelector } from "@/components/TemplateSelector";
 import { api } from "@/lib/api";
@@ -122,7 +128,7 @@ function countByStatus<T extends string>(items: Array<{ status: T }>, statuses: 
   }));
 }
 
-function toBugPayload(rawInput: string) {
+function toBugPayload(rawInput: string, artifactReferences: IntakeArtifactReference[]) {
   const lines = rawInput
     .split("\n")
     .map((line) => line.trim())
@@ -135,14 +141,38 @@ function toBugPayload(rawInput: string) {
     expectedBehavior: "按用户描述的期望结果正常工作。",
     actualBehavior: "当前行为与用户描述不一致。",
     severity: "medium" as const,
-    reporter: "human"
+    reporter: "human",
+    artifactReferences
   };
+}
+
+function makeClientId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return `client_${crypto.randomUUID()}`;
+  return `client_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+}
+
+function artifactKindForFile(file: File): IntakeArtifactReference["kind"] {
+  if (file.type.startsWith("image/")) return "screenshot";
+  if (file.type.startsWith("video/")) return "recording";
+  return "file";
+}
+
+function isValidUrl(value: string) {
+  try {
+    new URL(value.trim());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export default function HomePage() {
   const router = useRouter();
   const [template, setTemplate] = useState<RequirementTemplate>("feature");
   const [rawInput, setRawInput] = useState("");
+  const [artifactReferences, setArtifactReferences] = useState<IntakeArtifactReference[]>([]);
+  const [linkUrl, setLinkUrl] = useState("");
+  const [linkLabel, setLinkLabel] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
@@ -164,17 +194,78 @@ export default function HomePage() {
       });
   }, []);
 
+  function addFiles(files: FileList | null) {
+    if (!files?.length) return;
+    const selectedFiles = Array.from(files);
+    const now = new Date().toISOString();
+    setArtifactReferences((current) => [
+      ...current,
+      ...selectedFiles.map((file) => ({
+        id: makeClientId(),
+        kind: artifactKindForFile(file),
+        label: file.name,
+        contentType: file.type || "application/octet-stream",
+        sizeBytes: file.size,
+        metadata: {
+          source: "file_picker",
+          lastModified: new Date(file.lastModified).toISOString()
+        },
+        createdAt: now
+      }))
+    ].slice(0, 12));
+  }
+
+  function addPlaceholderArtifact(kind: Extract<IntakeArtifactReference["kind"], "screenshot" | "recording">) {
+    const count = artifactReferences.filter((reference) => reference.kind === kind).length + 1;
+    const label = kind === "screenshot" ? `待补充截图 ${count}` : `待补充录屏 ${count}`;
+    setArtifactReferences((current) => [
+      ...current,
+      {
+        id: makeClientId(),
+        kind,
+        label,
+        metadata: { source: "composer_placeholder" },
+        createdAt: new Date().toISOString()
+      }
+    ].slice(0, 12));
+  }
+
+  function addLinkReference() {
+    const normalizedUrl = linkUrl.trim();
+    if (!isValidUrl(normalizedUrl)) return;
+    setArtifactReferences((current) => [
+      ...current,
+      {
+        id: makeClientId(),
+        kind: "link" as const,
+        label: linkLabel.trim() || normalizedUrl,
+        uri: normalizedUrl,
+        metadata: { source: "composer_link" },
+        createdAt: new Date().toISOString()
+      }
+    ].slice(0, 12));
+    setLinkUrl("");
+    setLinkLabel("");
+  }
+
+  function removeArtifactReference(id: string) {
+    setArtifactReferences((current) => current.filter((reference) => reference.id !== id));
+  }
+
+  const canAddLink = isValidUrl(linkUrl) && artifactReferences.length < 12;
+
   async function submit() {
-    if (!rawInput.trim()) return;
+    if (!rawInput.trim() && artifactReferences.length === 0) return;
+    const normalizedInput = rawInput.trim() || "请根据附件和链接整理需求。";
     setSubmitting(true);
     setError(null);
     try {
       if (template === "bug") {
-        const result = await api.createBug(toBugPayload(rawInput));
+        const result = await api.createBug(toBugPayload(normalizedInput, artifactReferences));
         router.push(`/requirements/${result.requirement.id}/confirm`);
         return;
       }
-      const requirement = await api.createRequirement(rawInput, template);
+      const requirement = await api.createRequirement(normalizedInput, template, artifactReferences);
       router.push(`/requirements/${requirement.id}/confirm`);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "提交失败，请稍后再试。");
@@ -269,6 +360,77 @@ export default function HomePage() {
           placeholder="你想让 PatchPilot 做什么？例如：做一个白色底的 agent 平台首页，可以提交需求、看到进度并确认结果。"
           value={rawInput}
         />
+        <div className="composer-artifacts" aria-label="附件和链接">
+          <div className="attachment-toolbar">
+            <label className="button secondary attachment-button">
+              <FileText size={17} />
+              文件
+              <input
+                aria-label="添加文件、截图或录屏"
+                className="file-input"
+                multiple
+                onChange={(event) => {
+                  addFiles(event.target.files);
+                  event.target.value = "";
+                }}
+                type="file"
+              />
+            </label>
+            <button
+              className="button secondary"
+              disabled={artifactReferences.length >= 12}
+              onClick={() => addPlaceholderArtifact("screenshot")}
+              type="button"
+            >
+              <Image size={17} />
+              截图
+            </button>
+            <button
+              className="button secondary"
+              disabled={artifactReferences.length >= 12}
+              onClick={() => addPlaceholderArtifact("recording")}
+              type="button"
+            >
+              <Video size={17} />
+              录屏
+            </button>
+          </div>
+          <div className="link-input-row">
+            <input
+              aria-label="链接标题"
+              className="input"
+              onChange={(event) => setLinkLabel(event.target.value)}
+              placeholder="链接标题"
+              value={linkLabel}
+            />
+            <input
+              aria-label="链接 URL"
+              className="input"
+              onChange={(event) => setLinkUrl(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  addLinkReference();
+                }
+              }}
+              placeholder="https://example.com/context"
+              type="url"
+              value={linkUrl}
+            />
+            <button
+              className="button secondary"
+              disabled={!canAddLink}
+              onClick={addLinkReference}
+              type="button"
+            >
+              <Plus size={17} />
+              添加链接
+            </button>
+          </div>
+          {artifactReferences.length > 0 ? (
+            <ArtifactReferenceList references={artifactReferences} onRemove={removeArtifactReference} />
+          ) : null}
+        </div>
         {error ? (
           <div className="composer-notice">
             <StatusNotice title="需求没有提交成功" tone="error">
@@ -279,9 +441,14 @@ export default function HomePage() {
         <div className="composer-footer">
           <span className="muted" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
             <Paperclip size={16} />
-            MVP 支持文字输入；截图、录屏和文件入口已预留
+            {artifactReferences.length > 0 ? `${artifactReferences.length} 个附件或链接会进入需求说明` : "可附加文件、截图、录屏和链接"}
           </span>
-          <button className="button" disabled={!rawInput.trim() || submitting} onClick={submit} type="button">
+          <button
+            className="button"
+            disabled={(!rawInput.trim() && artifactReferences.length === 0) || submitting}
+            onClick={submit}
+            type="button"
+          >
             {submitting ? "提交中" : "生成需求说明"}
             <ArrowRight size={17} />
           </button>

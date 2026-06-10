@@ -23,6 +23,7 @@ describe("contract artifacts", () => {
     expect(httpApiContract.operations.createApproval.path).toBe("/api/approvals");
     expect(runEventStreamContract.stream.payload).toBe("AgentRun");
     expect(sharedStateContract.rootSchema).toBe("PatchPilotSnapshot");
+    expect(sharedStateContract.schemas).toContain("IntakeArtifactReference");
     expect(sharedStateContract.schemas).toContain("ApprovalRecord");
   });
 

@@ -8,7 +8,7 @@ import type {
   TestCase,
   WorkItem
 } from "@patchpilot/domain";
-import { Activity, AlertTriangle, Bug, ClipboardList, FileCheck2, GitPullRequest, ShieldCheck } from "lucide-react";
+import { Activity, AlertTriangle, Bug, ClipboardList, FileCheck2, GitPullRequest, Paperclip, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
@@ -130,6 +130,7 @@ export default function ControlPage() {
   const testCases = snapshot?.testCases ?? [];
   const runs = snapshot?.agentRuns ?? [];
   const reviewRecords = snapshot?.reviewRecords ?? [];
+  const artifacts = snapshot?.artifacts ?? [];
   const auditEvents = snapshot?.auditEvents ?? [];
   const pullRequests = snapshot?.pullRequests ?? [];
   const openWorkItems = workItems.filter((item) => !["done", "cancelled"].includes(item.status));
@@ -196,6 +197,10 @@ export default function ControlPage() {
             <span className="muted">审计</span>
             <strong>{auditEvents.length} 条审计事件</strong>
           </div>
+          <div className="summary-stat">
+            <span className="muted">输入资料</span>
+            <strong>{artifacts.filter((artifact) => artifact.kind === "intake_attachment").length} 个引用</strong>
+          </div>
         </div>
 
         <div className="dashboard-grid">
@@ -214,6 +219,7 @@ export default function ControlPage() {
                   const requirementRuns = runs.filter((run) => prdIds.includes(run.prdId));
                   const requirementTestCases = testCases.filter((testCase) => prdIds.includes(testCase.prdId));
                   const requirementReviews = reviewRecords.filter((review) => prdIds.includes(review.prdId));
+                  const artifactCount = requirement.artifactReferences?.length ?? 0;
 
                   return (
                     <Link className="dashboard-row" href={`/requirements/${requirement.id}/confirm`} key={requirement.id}>
@@ -226,6 +232,12 @@ export default function ControlPage() {
                           {requirementWorkItems.length} 个工作项 · {requirementRuns.length} 个 Agent Run ·{" "}
                           {requirementTestCases.length} 条测试用例 · {requirementReviews.length} 条审查证据
                         </small>
+                        {artifactCount > 0 ? (
+                          <small>
+                            <Paperclip size={13} />
+                            {artifactCount} 个输入资料引用
+                          </small>
+                        ) : null}
                       </span>
                       <span className={`status-pill ${statusTone(requirement.status)}`}>
                         {requirementStatusLabels[requirement.status]}
@@ -283,6 +295,12 @@ export default function ControlPage() {
                       <small>
                         {bug.severity} · {bug.expectedBehavior}
                       </small>
+                      {(bug.artifactReferences?.length ?? 0) > 0 ? (
+                        <small>
+                          <Paperclip size={13} />
+                          {bug.artifactReferences?.length} 个输入资料引用
+                        </small>
+                      ) : null}
                     </span>
                     <span className={`status-pill ${statusTone(bug.status)}`}>{bugStatusLabels[bug.status]}</span>
                   </div>

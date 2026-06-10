@@ -5,6 +5,7 @@ import { ArrowRight, Bot, CheckCircle2, ClipboardList, RefreshCw, Send, UserRoun
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { ArtifactReferenceList } from "@/components/ArtifactReferenceList";
 import { StatusNotice } from "@/components/StatusNotice";
 import { api } from "@/lib/api";
 
@@ -122,6 +123,7 @@ export default function RequirementConfirmPage() {
     .slice()
     .reverse()
     .find((turn) => turn.speaker === "agent");
+  const artifactReferences = requirement.artifactReferences ?? [];
   const reworkItems = workItems.filter((item) => (item.reworkCount ?? 0) > 0 && !["done", "cancelled"].includes(item.status));
 
   return (
@@ -222,6 +224,12 @@ export default function RequirementConfirmPage() {
                     <strong>要做什么</strong>
                     <p style={{ margin: 0 }}>{requirement.rawInput}</p>
                   </div>
+                  {artifactReferences.length > 0 ? (
+                    <div className="question-card" style={{ background: "white" }}>
+                      <strong>关联资料</strong>
+                      <ArtifactReferenceList references={artifactReferences} />
+                    </div>
+                  ) : null}
                   <div className="question-card" style={{ background: "white" }}>
                     <strong>不做什么</strong>
                     <ul style={{ margin: 0, paddingLeft: 20 }}>

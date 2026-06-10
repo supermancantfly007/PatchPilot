@@ -68,7 +68,16 @@ export type FailureType =
   | "budget_exhausted"
   | "environment_failed";
 
-export type ArtifactKind = "log" | "trace" | "diff" | "test_report" | "screenshot" | "preview_metadata";
+export type ArtifactKind =
+  | "log"
+  | "trace"
+  | "diff"
+  | "test_report"
+  | "screenshot"
+  | "preview_metadata"
+  | "intake_attachment";
+
+export type IntakeArtifactKind = "file" | "screenshot" | "recording" | "link";
 
 export type ArtifactStorageProvider = "local_fs" | "s3";
 
@@ -122,10 +131,23 @@ export interface Requirement {
   template: RequirementTemplate;
   status: RequirementStatus;
   simpleSummary: string;
+  artifactReferences?: IntakeArtifactReference[];
   clarificationQuestions: ClarificationQuestion[];
   clarificationTurns: ClarificationTurn[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface IntakeArtifactReference {
+  id: string;
+  kind: IntakeArtifactKind;
+  label: string;
+  uri?: string;
+  contentType?: string;
+  sizeBytes?: number;
+  artifactId?: string;
+  metadata?: Record<string, string>;
+  createdAt: string;
 }
 
 export interface ClarificationQuestion {
@@ -222,6 +244,7 @@ export interface BugReport {
   requirementId: string;
   prdId: string;
   workItemId: string;
+  artifactReferences?: IntakeArtifactReference[];
   sourceRunId?: string;
   sourceTestRunId?: string;
   sourceFailureType?: FailureType;
@@ -844,6 +867,7 @@ export function makeSimpleSummary(input: string, template: RequirementTemplate):
 
 export function createPrd(requirement: Requirement): Prd {
   const title = requirement.simpleSummary;
+  const artifactReferences = renderArtifactReferencesMarkdown(requirement.artifactReferences);
   const clarificationSummary =
     requirement.clarificationTurns.length > 0
       ? requirement.clarificationTurns
@@ -868,6 +892,9 @@ export function createPrd(requirement: Requirement): Prd {
       "",
       "## 要做什么",
       requirement.rawInput,
+      "",
+      "## 关联资料",
+      artifactReferences,
       "",
       "## 澄清记录",
       clarificationSummary,
@@ -998,6 +1025,7 @@ export function createBugRequirement(input: {
   reproductionSteps: string;
   expectedBehavior: string;
   actualBehavior: string;
+  artifactReferences?: IntakeArtifactReference[];
   now: string;
 }): Requirement {
   const rawInput = [
@@ -1020,6 +1048,7 @@ export function createBugRequirement(input: {
     template: "bug",
     status: "approved",
     simpleSummary: `Bug 修复：${input.title}`,
+    artifactReferences: input.artifactReferences ?? [],
     clarificationQuestions: generateClarificationQuestions(rawInput, "bug").map((question) => ({
       ...question,
       answer: question.recommendedAnswer
@@ -1039,6 +1068,7 @@ export function createBugRequirement(input: {
 }
 
 export function createBugPrd(requirement: Requirement, now: string): Prd {
+  const artifactReferences = renderArtifactReferencesMarkdown(requirement.artifactReferences);
   const acceptanceCriteria = [
     "测试 agent 能根据复现步骤确认问题存在或给出阻塞原因",
     "开发 agent 完成修复后保留原有正常流程",
@@ -1059,6 +1089,9 @@ export function createBugPrd(requirement: Requirement, now: string): Prd {
       "## 要修什么",
       requirement.rawInput,
       "",
+      "## 关联资料",
+      artifactReferences,
+      "",
       "## 不做什么",
       "- 不访问生产密钥或生产数据",
       "- 不自动合并到主分支",
@@ -1068,6 +1101,41 @@ export function createBugPrd(requirement: Requirement, now: string): Prd {
       ...acceptanceCriteria.map((criterion) => `- ${criterion}`)
     ].join("\n")
   };
+}
+
+export function renderArtifactReferencesMarkdown(references: IntakeArtifactReference[] | undefined): string {
+  const items = references ?? [];
+  if (items.length === 0) return "- 无关联附件或链接";
+
+  return items.map((reference) => {
+    const details = [
+      reference.artifactId ? `artifact: \`${reference.artifactId}\`` : undefined,
+      reference.uri ? `uri: ${reference.uri}` : undefined,
+      reference.contentType ? `type: ${reference.contentType}` : undefined,
+      typeof reference.sizeBytes === "number" ? `size: ${formatBytes(reference.sizeBytes)}` : undefined
+    ].filter(Boolean);
+    const label = reference.uri && reference.kind === "link"
+      ? `[${reference.label}](${reference.uri})`
+      : reference.label;
+    const suffix = details.length > 0 ? ` (${details.join("; ")})` : "";
+    return `- ${artifactKindLabel(reference.kind)}：${label}${suffix}`;
+  }).join("\n");
+}
+
+export function artifactKindLabel(kind: IntakeArtifactKind): string {
+  const labels: Record<IntakeArtifactKind, string> = {
+    file: "文件",
+    screenshot: "截图",
+    recording: "录屏",
+    link: "链接"
+  };
+  return labels[kind];
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export function createBugWorkItem(input: {
