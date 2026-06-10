@@ -780,7 +780,8 @@ export const openApiSchemas = {
     codexSandbox: { type: "string" },
     codexBypass: { type: "boolean" },
     containerSandbox: schemaRef("RuntimeContainerSandboxConfig"),
-    egressPolicy: schemaRef("RuntimeEgressPolicyConfig")
+    egressPolicy: schemaRef("RuntimeEgressPolicyConfig"),
+    secretBroker: schemaRef("RuntimeSecretBrokerConfig")
   }),
   RuntimeContainerSandboxConfig: objectSchema({
     enabled: { type: "boolean" },
@@ -804,6 +805,18 @@ export const openApiSchemas = {
     denyPrivateNetworks: { const: true },
     denyMetadataEndpoints: { const: true }
   }),
+  RuntimeSecretBrokerConfig: objectSchema({
+    enabled: { type: "boolean" },
+    allowedSecrets: arrayOf(schemaRef("RuntimeSecretBrokerSecretConfig")),
+    allowProductionSecrets: { const: false }
+  }),
+  RuntimeSecretBrokerSecretConfig: objectSchema({
+    id: { type: "string" },
+    envVar: { type: "string" },
+    sourceEnv: { type: "string" },
+    environment: enumSchema(["dev", "ci"]),
+    description: { type: "string" }
+  }, ["id", "envVar", "sourceEnv", "environment"]),
   RuntimeBudgetConfig: objectSchema({
     codexTimeoutMs: { type: "number" },
     maxCostUsd: { type: "number" },
@@ -1006,7 +1019,8 @@ export const openApiSchemas = {
     headCommit: { type: "string" },
     codexSessionId: { type: "string" },
     artifactIds: arrayOf(id),
-    egressPolicyEvidence: schemaRef("EgressPolicyEvidence")
+    egressPolicyEvidence: schemaRef("EgressPolicyEvidence"),
+    secretBrokerEvidence: schemaRef("SecretBrokerEvidence")
   }, ["summary", "previewUrl", "riskLevel", "changedFiles", "tests", "reviewerSummary", "runner"]),
   EgressPolicyEvidence: looseObjectSchema({
     enabled: { type: "boolean" },
@@ -1028,6 +1042,23 @@ export const openApiSchemas = {
     target: { type: "string" },
     resolvedIps: arrayOf({ type: "string" })
   }, ["at", "decision", "reason", "protocol", "host", "port", "target"]),
+  SecretBrokerEvidence: looseObjectSchema({
+    enabled: { type: "boolean" },
+    mode: enumSchema(["env"]),
+    requestedSecretIds: arrayOf({ type: "string" }),
+    injected: arrayOf(schemaRef("SecretBrokerInjectedSecretEvidence")),
+    denied: arrayOf(schemaRef("SecretBrokerDeniedSecretEvidence"))
+  }, ["enabled", "mode", "requestedSecretIds", "injected", "denied"]),
+  SecretBrokerInjectedSecretEvidence: looseObjectSchema({
+    id: { type: "string" },
+    envVar: { type: "string" },
+    sourceEnv: { type: "string" },
+    environment: enumSchema(["dev", "ci"])
+  }, ["id", "envVar", "sourceEnv", "environment"]),
+  SecretBrokerDeniedSecretEvidence: looseObjectSchema({
+    id: { type: "string" },
+    reason: enumSchema(["broker_disabled", "not_configured", "source_env_missing", "production_secret_denied"])
+  }, ["id", "reason"]),
   WorkspaceRun: looseObjectSchema({
     id,
     runId: id,

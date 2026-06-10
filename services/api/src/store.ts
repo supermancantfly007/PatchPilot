@@ -31,6 +31,7 @@ import {
   type PullRequestRecord,
   type Requirement,
   type ReviewRecord,
+  type SecretBrokerEvidence,
   type TestRun,
   type WorkspaceRun,
   type WorkItem,
@@ -62,6 +63,7 @@ import {
   CodexRunError,
   LocalCodexRunner,
   classifyFailureMessage,
+  resolveSecretBrokerGrants,
   type CodexRunner,
   type CodexRunnerEvent
 } from "@patchpilot/codex-runner";
@@ -110,6 +112,7 @@ interface RunFailureDetails {
   failureSummary: string;
   testRun?: TestRun;
   egressPolicyEvidence?: EgressPolicyEvidence;
+  secretBrokerEvidence?: SecretBrokerEvidence;
 }
 
 type AddAuditEventInput = Pick<AuditEvent, "action" | "targetType" | "targetId" | "message"> &
@@ -1048,11 +1051,22 @@ export class PatchPilotStore {
       message: "已确认任务上下文，准备为本地 Codex agent 创建隔离工作区"
     });
 
+    const config = readPatchPilotConfig();
+    const secretBrokerResolution = this.resolveAndAuditSecretBroker(run, workItem, config.security.secretBroker);
     const result = await this.codexRunner.run(
       { runId, requirement, prd, workItem },
       (event) => this.appendRunEvent(runId, event),
-      readPatchPilotConfig()
+      {
+        ...config,
+        security: {
+          ...config.security,
+          secretEnv: secretBrokerResolution.env
+        }
+      }
     );
+    if (secretBrokerResolution.evidence.requestedSecretIds.length > 0) {
+      result.secretBrokerEvidence = secretBrokerResolution.evidence;
+    }
 
     await this.load();
     const completedRun = this.findRun(runId);
@@ -2201,7 +2215,8 @@ export class PatchPilotStore {
           reasoningSummaries: run.result?.reasoningSummaries ?? [],
           toolCalls: run.result?.toolCalls ?? [],
           testOutputSummary: run.result?.testOutputSummary,
-          egressPolicyEvidence: run.result?.egressPolicyEvidence
+          egressPolicyEvidence: run.result?.egressPolicyEvidence,
+          secretBrokerEvidence: run.result?.secretBrokerEvidence
         }
       }, null, 2),
       contentType: "application/json",
@@ -2484,6 +2499,81 @@ export class PatchPilotStore {
         auditLogPath: evidence.auditLogPath
       }
     });
+  }
+
+  private resolveAndAuditSecretBroker(
+    run: AgentRun,
+    workItem: WorkItem,
+    secretBrokerConfig: ReturnType<typeof readPatchPilotConfig>["security"]["secretBroker"]
+  ) {
+    const resolution = resolveSecretBrokerGrants({
+      config: secretBrokerConfig,
+      workItem,
+      env: process.env
+    });
+    const evidence = resolution.evidence;
+    if (evidence.requestedSecretIds.length === 0) return resolution;
+
+    const now = new Date().toISOString();
+    if (!resolution.authorized) {
+      this.addAuditEvent({
+        actor: "secret_broker",
+        action: "secret_broker.request_denied",
+        targetType: "agent_run",
+        targetId: run.id,
+        message: `Secret Broker 拒绝了 ${evidence.denied.length} 个未授权 secret 请求。`,
+        requirementId: run.requirementId,
+        prdId: run.prdId,
+        workItemId: workItem.id,
+        runId: run.id,
+        createdAt: now,
+        beforeJson: null,
+        afterJson: {
+          requestedSecretIds: evidence.requestedSecretIds,
+          denied: evidence.denied.map(auditSecretBrokerDeniedSecret),
+          injectedCount: 0
+        },
+        metadataJson: {
+          brokerEnabled: evidence.enabled,
+          mode: evidence.mode,
+          configuredSecretIds: secretBrokerConfig.allowedSecrets.map((secret) => secret.id),
+          allowProductionSecrets: secretBrokerConfig.allowProductionSecrets,
+          secretValuesStored: false
+        }
+      });
+      throw createRunFailureError(
+        `Secret Broker 拒绝 secret 请求：${evidence.denied.map((secret) => `${secret.id}:${secret.reason}`).join(", ")}`,
+        "policy_denied",
+        undefined,
+        undefined,
+        evidence
+      );
+    }
+
+    this.addAuditEvent({
+      actor: "secret_broker",
+      action: "secret_broker.secrets_injected",
+      targetType: "agent_run",
+      targetId: run.id,
+      message: `Secret Broker 已注入 ${evidence.injected.length} 个明确配置的开发/CI token。`,
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id,
+      createdAt: now,
+      beforeJson: null,
+      afterJson: {
+        requestedSecretIds: evidence.requestedSecretIds,
+        injected: evidence.injected.map(auditSecretBrokerInjectedSecret)
+      },
+      metadataJson: {
+        brokerEnabled: evidence.enabled,
+        mode: evidence.mode,
+        allowProductionSecrets: secretBrokerConfig.allowProductionSecrets,
+        secretValuesStored: false
+      }
+    });
+    return resolution;
   }
 
   private recordFailureDefect(
@@ -2982,6 +3072,26 @@ function auditEgressEntry(entry: EgressPolicyEvidence["recent"][number]): Record
   };
 }
 
+function auditSecretBrokerInjectedSecret(
+  secret: SecretBrokerEvidence["injected"][number]
+): Record<string, AuditJsonValue> {
+  return {
+    id: secret.id,
+    envVar: secret.envVar,
+    sourceEnv: secret.sourceEnv,
+    environment: secret.environment
+  };
+}
+
+function auditSecretBrokerDeniedSecret(
+  secret: SecretBrokerEvidence["denied"][number]
+): Record<string, AuditJsonValue> {
+  return {
+    id: secret.id,
+    reason: secret.reason
+  };
+}
+
 function auditBudgetScope(scope: BudgetScopeCheck): Record<string, AuditJsonValue> {
   return {
     type: scope.type,
@@ -3097,20 +3207,39 @@ function extractRunFailureDetails(error: unknown): RunFailureDetails {
     : record
       ? asEgressPolicyEvidence(record.egressPolicyEvidence)
       : undefined;
+  const secretBrokerEvidence = error instanceof CodexRunError
+    ? error.secretBrokerEvidence
+    : record
+      ? asSecretBrokerEvidence(record.secretBrokerEvidence)
+      : undefined;
   const failureType = rawFailureType || (testRun?.status === "failed" ? "test_failed" : classifyFailureMessage(failureSummary));
 
   return {
     failureType,
     failureSummary,
     ...(testRun ? { testRun } : {}),
-    ...(egressPolicyEvidence ? { egressPolicyEvidence } : {})
+    ...(egressPolicyEvidence ? { egressPolicyEvidence } : {}),
+    ...(secretBrokerEvidence ? { secretBrokerEvidence } : {})
   };
 }
 
-function createRunFailureError(message: string, failureType: FailureType, testRun?: TestRun) {
-  const error = new Error(message) as Error & { failureType: FailureType; testRun?: TestRun };
+function createRunFailureError(
+  message: string,
+  failureType: FailureType,
+  testRun?: TestRun,
+  egressPolicyEvidence?: EgressPolicyEvidence,
+  secretBrokerEvidence?: SecretBrokerEvidence
+) {
+  const error = new Error(message) as Error & {
+    failureType: FailureType;
+    testRun?: TestRun;
+    egressPolicyEvidence?: EgressPolicyEvidence;
+    secretBrokerEvidence?: SecretBrokerEvidence;
+  };
   error.failureType = failureType;
   if (testRun) error.testRun = testRun;
+  if (egressPolicyEvidence) error.egressPolicyEvidence = egressPolicyEvidence;
+  if (secretBrokerEvidence) error.secretBrokerEvidence = secretBrokerEvidence;
   return error;
 }
 
@@ -3154,6 +3283,21 @@ function asEgressPolicyEvidence(value: unknown): EgressPolicyEvidence | undefine
     return undefined;
   }
   return record as unknown as EgressPolicyEvidence;
+}
+
+function asSecretBrokerEvidence(value: unknown): SecretBrokerEvidence | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  if (
+    typeof record.enabled !== "boolean" ||
+    record.mode !== "env" ||
+    !Array.isArray(record.requestedSecretIds) ||
+    !Array.isArray(record.injected) ||
+    !Array.isArray(record.denied)
+  ) {
+    return undefined;
+  }
+  return record as unknown as SecretBrokerEvidence;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

@@ -10,6 +10,7 @@ import { createInMemoryTelemetry, prometheusMetricNames } from "@patchpilot/tele
 import {
   emptySnapshot,
   verifyAuditChain,
+  type AgentRunResult,
   type AgentRun,
   type ArtifactRecord,
   type EgressPolicyEvidence,
@@ -1166,6 +1167,152 @@ artifacts:
     await app.close();
   });
 
+  it("fails unauthorized secret requests before starting the runner and writes audit evidence", async () => {
+    const restoreEnv = setSecretBrokerEnv({
+      PATCHPILOT_SECRET_BROKER_ENABLED: "true",
+      PATCHPILOT_SECRET_BROKER_ALLOWED_SECRETS: undefined,
+      PATCHPILOT_CI_GITHUB_TOKEN: undefined
+    });
+    let runnerCalled = false;
+    let app: Awaited<ReturnType<typeof buildServer>> | undefined;
+    try {
+      const fakeCodexRunner: CodexRunner = {
+        isAvailable: async () => true,
+        isGitWorkspaceAvailable: async () => true,
+        run: async () => {
+          runnerCalled = true;
+          return fakeCodexRunResult();
+        }
+      };
+      const store = new PatchPilotStore({ codexRunner: fakeCodexRunner });
+      app = await buildServer({ store });
+      const workItem = await createApprovedWorkItem(app, "验证未授权 secret 请求会失败");
+      await setWorkItemCapabilities(store, workItem.id, ["secret:github-ci-token"]);
+
+      const start = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/start`,
+        payload: { runner: "codex" }
+      });
+      expect(start.statusCode).toBe(201);
+
+      const failedRun = await pollRun(app, start.json().id);
+      expect(runnerCalled).toBe(false);
+      expect(failedRun).toMatchObject({
+        status: "failed",
+        failureType: "policy_denied"
+      });
+
+      const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      const deniedAudit = snapshot
+        .json()
+        .auditEvents.find((event: { action: string; runId?: string }) =>
+          event.action === "secret_broker.request_denied" && event.runId === failedRun.id
+        );
+      expect(deniedAudit).toMatchObject({
+        targetType: "agent_run",
+        targetId: failedRun.id,
+        afterJson: {
+          requestedSecretIds: ["github-ci-token"],
+          denied: [{ id: "github-ci-token", reason: "not_configured" }],
+          injectedCount: 0
+        },
+        metadataJson: {
+          allowProductionSecrets: false,
+          secretValuesStored: false
+        }
+      });
+    } finally {
+      await app?.close();
+      restoreEnv();
+    }
+  });
+
+  it("injects authorized dev and CI secrets with a redacted audit trail", async () => {
+    const restoreEnv = setSecretBrokerEnv({
+      PATCHPILOT_SECRET_BROKER_ENABLED: "true",
+      PATCHPILOT_SECRET_BROKER_ALLOWED_SECRETS: JSON.stringify([
+        {
+          id: "github-ci-token",
+          envVar: "GITHUB_TOKEN",
+          sourceEnv: "PATCHPILOT_CI_GITHUB_TOKEN",
+          environment: "ci"
+        }
+      ]),
+      PATCHPILOT_CI_GITHUB_TOKEN: "ci-token-value"
+    });
+    let capturedSecretEnv: Record<string, string> | undefined;
+    let app: Awaited<ReturnType<typeof buildServer>> | undefined;
+    try {
+      const fakeCodexRunner: CodexRunner = {
+        isAvailable: async () => true,
+        isGitWorkspaceAvailable: async () => true,
+        run: async (_context, _emit, config) => {
+          capturedSecretEnv = config.security.secretEnv;
+          return fakeCodexRunResult("test_secret_broker_authorized");
+        }
+      };
+      const store = new PatchPilotStore({ codexRunner: fakeCodexRunner });
+      app = await buildServer({ store });
+      const workItem = await createApprovedWorkItem(app, "验证授权 secret 注入可追踪");
+      await setWorkItemCapabilities(store, workItem.id, ["secret:github-ci-token"]);
+
+      const start = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/start`,
+        payload: { runner: "codex" }
+      });
+      expect(start.statusCode).toBe(201);
+
+      const completedRun = await pollRun(app, start.json().id);
+      expect(completedRun.status).toBe("succeeded");
+      expect(capturedSecretEnv).toEqual({ GITHUB_TOKEN: "ci-token-value" });
+      expect(completedRun.result.secretBrokerEvidence).toMatchObject({
+        requestedSecretIds: ["github-ci-token"],
+        injected: [
+          {
+            id: "github-ci-token",
+            envVar: "GITHUB_TOKEN",
+            sourceEnv: "PATCHPILOT_CI_GITHUB_TOKEN",
+            environment: "ci"
+          }
+        ],
+        denied: []
+      });
+
+      const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      const snapshotBody = JSON.stringify(snapshot.json());
+      expect(snapshotBody).not.toContain("ci-token-value");
+      const injectedAudit = snapshot
+        .json()
+        .auditEvents.find((event: { action: string; runId?: string }) =>
+          event.action === "secret_broker.secrets_injected" && event.runId === completedRun.id
+        );
+      expect(injectedAudit).toMatchObject({
+        targetType: "agent_run",
+        targetId: completedRun.id,
+        afterJson: {
+          requestedSecretIds: ["github-ci-token"],
+          injected: [
+            {
+              id: "github-ci-token",
+              envVar: "GITHUB_TOKEN",
+              sourceEnv: "PATCHPILOT_CI_GITHUB_TOKEN",
+              environment: "ci"
+            }
+          ]
+        },
+        metadataJson: {
+          allowProductionSecrets: false,
+          secretValuesStored: false
+        }
+      });
+    } finally {
+      await app?.close();
+      restoreEnv();
+    }
+  });
+
   it("classifies failed codex test runs and creates defect evidence", async () => {
     const failedTestRun: TestRun = {
       id: "test_fake_codex_failed",
@@ -1887,6 +2034,57 @@ async function createApprovedWorkItem(app: Awaited<ReturnType<typeof buildServer
   const workItem = approval.json().workItems[0] as { id: string };
   if (!workItem) throw new Error("Expected approved PRD to create at least one work item");
   return workItem;
+}
+
+async function setWorkItemCapabilities(store: PatchPilotStore, workItemId: string, requiredCapabilities: string[]) {
+  const snapshot = await store.exportJsonSnapshot();
+  const workItem = snapshot.workItems.find((item) => item.id === workItemId);
+  if (!workItem) throw new Error(`Expected work item to exist: ${workItemId}`);
+  workItem.requiredCapabilities = requiredCapabilities;
+  await store.importJsonSnapshot(snapshot);
+}
+
+function setSecretBrokerEnv(values: Record<string, string | undefined>) {
+  const keys = [
+    "PATCHPILOT_SECRET_BROKER_ENABLED",
+    "PATCHPILOT_SECRET_BROKER_ALLOWED_SECRETS",
+    "PATCHPILOT_CI_GITHUB_TOKEN"
+  ];
+  const previous = new Map<string, string | undefined>();
+  for (const key of keys) {
+    previous.set(key, process.env[key]);
+    const value = values[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+
+  return () => {
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
+function fakeCodexRunResult(testId = "test_secret_broker"): AgentRunResult {
+  return {
+    summary: "Fake Codex runner completed the secret broker task.",
+    previewUrl: "http://fake-preview.local",
+    riskLevel: "low",
+    changedFiles: [],
+    tests: [
+      {
+        id: testId,
+        status: "passed",
+        command: "fake test",
+        summary: "fake test passed",
+        durationMs: 10
+      }
+    ],
+    reviewerSummary: "Fake reviewer approved the secret broker result.",
+    runner: "codex"
+  };
 }
 
 async function pollPrdRuns(app: Awaited<ReturnType<typeof buildServer>>, prdId: string, expectedCount: number) {

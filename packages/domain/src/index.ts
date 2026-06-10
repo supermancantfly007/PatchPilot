@@ -145,6 +145,46 @@ export interface EgressPolicyEvidence {
   recent: EgressPolicyAuditEntry[];
 }
 
+export type SecretBrokerTokenEnvironment = "dev" | "ci";
+
+export interface SecretBrokerSecretConfig {
+  id: string;
+  envVar: string;
+  sourceEnv: string;
+  environment: SecretBrokerTokenEnvironment;
+  description?: string;
+}
+
+export interface SecretBrokerRuntimeConfig {
+  enabled: boolean;
+  allowedSecrets: SecretBrokerSecretConfig[];
+  allowProductionSecrets: false;
+}
+
+export interface SecretBrokerInjectedSecretEvidence {
+  id: string;
+  envVar: string;
+  sourceEnv: string;
+  environment: SecretBrokerTokenEnvironment;
+}
+
+export interface SecretBrokerDeniedSecretEvidence {
+  id: string;
+  reason:
+    | "broker_disabled"
+    | "not_configured"
+    | "source_env_missing"
+    | "production_secret_denied";
+}
+
+export interface SecretBrokerEvidence {
+  enabled: boolean;
+  mode: "env";
+  requestedSecretIds: string[];
+  injected: SecretBrokerInjectedSecretEvidence[];
+  denied: SecretBrokerDeniedSecretEvidence[];
+}
+
 export interface ContainerSandboxRuntimeConfig {
   enabled: boolean;
   runtime: ContainerRuntimeKind;
@@ -395,6 +435,7 @@ export interface AgentRunResult {
   codexSessionId?: string;
   artifactIds?: string[];
   egressPolicyEvidence?: EgressPolicyEvidence;
+  secretBrokerEvidence?: SecretBrokerEvidence;
 }
 
 export type AgentRunToolCallStatus = "started" | "completed" | "failed" | "unknown";
@@ -460,6 +501,7 @@ export interface RuntimeConfig {
     codexBypass: boolean;
     containerSandbox: ContainerSandboxRuntimeConfig;
     egressPolicy: EgressPolicyRuntimeConfig;
+    secretBroker: SecretBrokerRuntimeConfig;
   };
   budget: {
     codexTimeoutMs: number;
