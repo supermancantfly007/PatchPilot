@@ -1,0 +1,29 @@
+{
+  "name": "@patchpilot/workflows",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./activities": "./src/activities.ts",
+    "./client": "./src/client.ts",
+    "./worker": "./src/worker.ts",
+    "./workflows": "./src/workflows.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint:workspace": "eslint . --max-warnings=0",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@temporalio/client": "^1.18.0",
+    "@temporalio/worker": "^1.18.0",
+    "@temporalio/workflow": "^1.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15"
+  }
+}

@@ -179,6 +179,36 @@ PATCHPILOT_WORKER_INTERVAL_MS=5000
 PATCHPILOT_WORKER_ONCE=false
 ```
 
+## Temporal Workflow Engine
+
+TD-204 adds the Temporal TypeScript SDK boundary without replacing the existing polling worker. The Temporal worker is a separate process that currently runs a canary workflow proving worker startup, activity execution, signal/query handlers, retry policy, and idempotency-key plumbing. Product workflows such as requirement intake and work item execution remain separate follow-up tasks.
+
+Start a local Temporal server through the optional compose middleware:
+
+```bash
+docker compose -f infra/docker-compose.yml up -d postgres temporal
+```
+
+Then run the TD-204 acceptance canary:
+
+```bash
+pnpm e2e:temporal
+```
+
+Temporal environment:
+
+```bash
+PATCHPILOT_TEMPORAL_ADDRESS=localhost:7233
+PATCHPILOT_TEMPORAL_NAMESPACE=default
+PATCHPILOT_TEMPORAL_TASK_QUEUE=patchpilot-td-204
+```
+
+Run the Temporal worker directly when you want to connect it to another local script or manual Temporal client:
+
+```bash
+pnpm --filter @patchpilot/worker start:temporal
+```
+
 OpenTelemetry environment:
 
 ```bash
