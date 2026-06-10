@@ -1,7 +1,10 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import {
+  executeCommand,
+  type CommandAuditSink
+} from "@patchpilot/command-executor";
 import type { TestRun, TestRunStatus } from "@patchpilot/domain";
-import { enforceCommandPolicy, type CapabilityManifest } from "@patchpilot/policy";
+import type { CapabilityManifest } from "@patchpilot/policy";
 import { knownSecretsFromEnv, redactSecrets } from "@patchpilot/security";
 
 export type TestOutputFormat = "auto" | "json" | "junit" | "text";
@@ -24,6 +27,7 @@ export interface CommandExecutorOptions {
   inheritEnv?: boolean;
   maxOutputBytes?: number;
   capabilityManifest?: CapabilityManifest;
+  auditSink?: CommandAuditSink;
 }
 
 export interface CommandExecutorResult {
@@ -55,6 +59,7 @@ export interface TestRunnerOptions {
   maxOutputBytes?: number;
   executor?: CommandExecutor;
   capabilityManifest?: CapabilityManifest;
+  auditSink?: CommandAuditSink;
 }
 
 interface CommandAttempt {
@@ -81,7 +86,6 @@ export class TestRunner {
 export async function runTestCommand(options: TestRunnerOptions): Promise<TestRun> {
   const command = options.command.trim();
   if (!command) throw new Error("Test command must not be empty");
-  if (options.capabilityManifest) enforceCommandPolicy(options.capabilityManifest, command);
   const timeoutMs = Math.min(options.timeoutMs, options.capabilityManifest?.runtime.maxRuntimeMs ?? options.timeoutMs);
   const knownSecrets = knownSecretsFromEnv(options.env);
   const displayCommand = redactSecrets(command, { knownSecrets }).redacted;
@@ -99,7 +103,8 @@ export async function runTestCommand(options: TestRunnerOptions): Promise<TestRu
       env: options.env,
       inheritEnv: options.inheritEnv,
       maxOutputBytes: options.maxOutputBytes,
-      capabilityManifest: options.capabilityManifest
+      capabilityManifest: options.capabilityManifest,
+      auditSink: options.auditSink
     });
     const commandAttempt = {
       attempt,
@@ -126,7 +131,7 @@ export async function runTestCommand(options: TestRunnerOptions): Promise<TestRu
   const status = statusForAttempt(lastAttempt, parsed);
   const failureSummary = status === "failed" ? summarizeFailure(lastAttempt, parsed, timeoutMs) : undefined;
   const logArtifactId = `artifact_test_log_${randomUUID()}`;
-  const git = options.collectGitMetadata === false ? {} : await readGitMetadata(options.cwd);
+  const git = options.collectGitMetadata === false ? {} : await readGitMetadata(options.cwd, options.capabilityManifest);
 
   return {
     id: `test_${randomUUID()}`,
@@ -161,11 +166,37 @@ function executeTestCommand(
   executor: CommandExecutor | undefined,
   options: CommandExecutorOptions
 ) {
-  if (executor) return executor(options);
-  return runShellCommand(options.command, options.cwd, options.timeoutMs, {
+  return executeCommand({
+    kind: "test",
+    command: options.command,
+    cwd: options.cwd,
+    timeoutMs: options.timeoutMs,
     env: options.env,
     inheritEnv: options.inheritEnv,
-    maxOutputBytes: options.maxOutputBytes
+    maxOutputBytes: options.maxOutputBytes,
+    capabilityManifest: options.capabilityManifest,
+    auditSink: options.auditSink,
+    ...(executor
+      ? {
+          executor: async (effectiveOptions) => {
+            const result = await executor({
+              command: effectiveOptions.command,
+              cwd: effectiveOptions.cwd,
+              timeoutMs: effectiveOptions.timeoutMs,
+              env: effectiveOptions.env,
+              inheritEnv: effectiveOptions.inheritEnv,
+              maxOutputBytes: effectiveOptions.maxOutputBytes,
+              capabilityManifest: options.capabilityManifest,
+              auditSink: options.auditSink
+            });
+            return {
+              ...result,
+              stdout: result.output,
+              stderr: ""
+            };
+          }
+        }
+      : {})
   });
 }
 
@@ -297,63 +328,10 @@ function parseTextOutput(output: string, format: Exclude<TestOutputFormat, "auto
   };
 }
 
-function runShellCommand(
-  command: string,
-  cwd: string,
-  timeoutMs: number,
-  options: { env?: NodeJS.ProcessEnv; inheritEnv?: boolean; maxOutputBytes?: number } = {}
-): Promise<Omit<CommandAttempt, "attempt">> {
-  return new Promise((resolve) => {
-    const startedAt = Date.now();
-    const child = spawn("sh", ["-lc", command], {
-      cwd,
-      env: options.inheritEnv === false ? options.env ?? {} : { ...process.env, ...options.env },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-
-    let output = "";
-    let timedOut = false;
-    const maxOutputBytes = options.maxOutputBytes ?? 256 * 1024;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (child.exitCode === null) child.kill("SIGKILL");
-      }, 1000).unref();
-    }, timeoutMs);
-
-    const append = (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-      if (output.length > maxOutputBytes) output = output.slice(output.length - maxOutputBytes);
-    };
-
-    child.stdout.on("data", append);
-    child.stderr.on("data", append);
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      resolve({
-        exitCode: 1,
-        output: error.message,
-        timedOut,
-        durationMs: Date.now() - startedAt
-      });
-    });
-    child.on("close", (exitCode) => {
-      clearTimeout(timeout);
-      resolve({
-        exitCode,
-        output,
-        timedOut,
-        durationMs: Date.now() - startedAt
-      });
-    });
-  });
-}
-
-async function readGitMetadata(cwd: string): Promise<GitMetadata> {
+async function readGitMetadata(cwd: string, capabilityManifest?: CapabilityManifest): Promise<GitMetadata> {
   const [commit, branch] = await Promise.all([
-    readGitValue("git rev-parse HEAD", cwd),
-    readGitValue("git rev-parse --abbrev-ref HEAD", cwd)
+    readGitValue(["rev-parse", "HEAD"], cwd, capabilityManifest),
+    readGitValue(["rev-parse", "--abbrev-ref", "HEAD"], cwd, capabilityManifest)
   ]);
   return {
     ...(commit ? { commit } : {}),
@@ -361,8 +339,16 @@ async function readGitMetadata(cwd: string): Promise<GitMetadata> {
   };
 }
 
-async function readGitValue(command: string, cwd: string) {
-  const result = await runShellCommand(command, cwd, 5000, { maxOutputBytes: 4096 });
+async function readGitValue(args: string[], cwd: string, capabilityManifest?: CapabilityManifest) {
+  const result = await executeCommand({
+    kind: "git",
+    command: "git",
+    args,
+    cwd,
+    timeoutMs: 5000,
+    maxOutputBytes: 4096,
+    capabilityManifest
+  });
   if (result.exitCode !== 0) return undefined;
   const value = result.output.trim();
   return value || undefined;

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
+import { executeCommand } from "@patchpilot/command-executor";
 import type { Prd, Requirement, WorkItem } from "@patchpilot/domain";
 import {
   assertValidCapabilityManifest,
@@ -71,7 +71,7 @@ export interface WorkspaceManager {
 
 export class GitWorkspaceManager implements WorkspaceManager {
   async isGitWorkspaceAvailable(cwd = process.cwd()) {
-    const result = await runShell("git rev-parse --is-inside-work-tree", cwd, 5000);
+    const result = await runGit(["rev-parse", "--is-inside-work-tree"], cwd, 5000);
     return result.exitCode === 0 && result.output.trim() === "true";
   }
 
@@ -84,18 +84,19 @@ export class GitWorkspaceManager implements WorkspaceManager {
 
     const workspacePath = join(root, buildWorkspaceName(context));
     const baseRef = config.baseRef || "HEAD";
-    const base = await resolveBaseInfo(baseRef, process.cwd());
+    const base = await resolveBaseInfo(baseRef, process.cwd(), config.capabilityManifest);
     const branchName = buildWorkspaceBranchName(context);
     const taskFilePath = join(workspacePath, config.taskFileName || "PATCHPILOT_TASK.md");
     let worktreeCreated = false;
     if (config.capabilityManifest) assertValidCapabilityManifest(config.capabilityManifest);
 
     try {
-      await ensureBranchAtRef(branchName, base.baseCommit);
-      const worktreeResult = await runShell(
-        `git worktree add ${shellQuote(workspacePath)} ${shellQuote(branchName)}`,
+      await ensureBranchAtRef(branchName, base.baseCommit, config.capabilityManifest);
+      const worktreeResult = await runGit(
+        ["worktree", "add", workspacePath, branchName],
         process.cwd(),
-        30000
+        30000,
+        config.capabilityManifest
       );
       if (worktreeResult.exitCode !== 0) {
         throw new Error(`无法创建隔离 git worktree：${tail(worktreeResult.output, 1200)}`);
@@ -122,7 +123,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
 
   async getWorkspaceStatus(workspacePath: string): Promise<WorkspaceStatus> {
     if (!existsSync(workspacePath)) return "missing";
-    const result = await runShell("git status --short --untracked-files=all", workspacePath, 30000);
+    const result = await runGit(["status", "--short", "--untracked-files=all"], workspacePath, 30000);
     if (result.exitCode !== 0) return "unavailable";
     return parseChangedFiles(result.output).length > 0 ? "dirty" : "clean";
   }
@@ -131,7 +132,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
     workspace: PreparedWorkspace,
     options: { summaryPath?: string; capabilityManifest?: CapabilityManifest } = {}
   ): Promise<WorkspaceArtifacts> {
-    const changedFiles = await listChangedFiles(workspace.path);
+    const changedFiles = await listChangedFiles(workspace.path, options.capabilityManifest ?? workspace.capabilityManifest);
     const manifest = options.capabilityManifest ?? workspace.capabilityManifest;
     if (manifest) enforceWorkspaceWritePolicy(manifest, changedFiles);
     const summary = await readSummary(options.summaryPath, changedFiles);
@@ -147,7 +148,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
     workspace: PreparedWorkspace,
     options: { message: string; capabilityManifest?: CapabilityManifest }
   ): Promise<WorkspaceCommit> {
-    const changedFiles = await listChangedFiles(workspace.path);
+    const changedFiles = await listChangedFiles(workspace.path, options.capabilityManifest ?? workspace.capabilityManifest);
     const manifest = options.capabilityManifest ?? workspace.capabilityManifest;
     if (manifest) enforceWorkspaceWritePolicy(manifest, changedFiles);
     if (changedFiles.length === 0) {
@@ -156,32 +157,39 @@ export class GitWorkspaceManager implements WorkspaceManager {
         branchName: workspace.branchName,
         baseBranch: workspace.baseBranch,
         baseCommit: workspace.baseCommit,
-        headCommit: await readGitValue("git rev-parse HEAD", workspace.path, 5000, workspace.baseCommit),
+        headCommit: await readGitValue(["rev-parse", "HEAD"], workspace.path, 5000, workspace.baseCommit, manifest),
         changedFiles
       };
     }
 
-    const addResult = await runShell(`git add -- ${changedFiles.map(shellQuote).join(" ")}`, workspace.path, 30000);
+    const addResult = await runGit(["add", "--", ...changedFiles], workspace.path, 30000, manifest);
     if (addResult.exitCode !== 0) {
       throw new Error(`无法暂存 worktree 变更：${tail(addResult.output, 1200)}`);
     }
 
-    const staged = await runShell("git diff --cached --quiet", workspace.path, 30000);
+    const staged = await runGit(["diff", "--cached", "--quiet"], workspace.path, 30000, manifest);
     if (staged.exitCode === 0) {
       return {
         status: "unchanged",
         branchName: workspace.branchName,
         baseBranch: workspace.baseBranch,
         baseCommit: workspace.baseCommit,
-        headCommit: await readGitValue("git rev-parse HEAD", workspace.path, 5000, workspace.baseCommit),
+        headCommit: await readGitValue(["rev-parse", "HEAD"], workspace.path, 5000, workspace.baseCommit, manifest),
         changedFiles
       };
     }
 
-    const commitResult = await runShell(
-      `git -c user.name=PatchPilot -c user.email=patchpilot@example.local commit -m ${shellQuote(options.message)}`,
+    const commitResult = await runGit(
+      ["commit", "-m", options.message],
       workspace.path,
-      30000
+      30000,
+      manifest,
+      {
+        GIT_AUTHOR_NAME: "PatchPilot",
+        GIT_AUTHOR_EMAIL: "patchpilot@example.local",
+        GIT_COMMITTER_NAME: "PatchPilot",
+        GIT_COMMITTER_EMAIL: "patchpilot@example.local"
+      }
     );
     if (commitResult.exitCode !== 0) {
       throw new Error(`无法创建本地提交边界：${tail(commitResult.output, 1200)}`);
@@ -192,13 +200,13 @@ export class GitWorkspaceManager implements WorkspaceManager {
       branchName: workspace.branchName,
       baseBranch: workspace.baseBranch,
       baseCommit: workspace.baseCommit,
-      headCommit: await readGitValue("git rev-parse HEAD", workspace.path, 5000, workspace.baseCommit),
+      headCommit: await readGitValue(["rev-parse", "HEAD"], workspace.path, 5000, workspace.baseCommit, manifest),
       changedFiles
     };
   }
 
   async cleanupWorkspace(workspace: Pick<PreparedWorkspace, "path">) {
-    const result = await runShell(`git worktree remove --force ${shellQuote(workspace.path)}`, process.cwd(), 30000);
+    const result = await runGit(["worktree", "remove", "--force", workspace.path], process.cwd(), 30000);
     if (result.exitCode !== 0) {
       await rm(workspace.path, { recursive: true, force: true });
     }
@@ -215,8 +223,8 @@ export function buildWorkspaceBranchName(context: Pick<WorkspaceContext, "runId"
   return `patchpilot/${workItemId}-${titleSlug}`;
 }
 
-async function listChangedFiles(workspacePath: string) {
-  const result = await runShell("git status --short --untracked-files=all", workspacePath, 30000);
+async function listChangedFiles(workspacePath: string, capabilityManifest?: CapabilityManifest) {
+  const result = await runGit(["status", "--short", "--untracked-files=all"], workspacePath, 30000, capabilityManifest);
   if (result.exitCode !== 0) return ["PATCHPILOT_TASK.md"];
   return parseChangedFiles(result.output);
 }
@@ -234,18 +242,20 @@ function parseChangedFiles(output: string) {
     .filter((file) => file !== "PATCHPILOT_TASK.md" && !file.startsWith(".patchpilot-codex-"));
 }
 
-async function resolveBaseInfo(baseRef: string, cwd: string) {
+async function resolveBaseInfo(baseRef: string, cwd: string, capabilityManifest?: CapabilityManifest) {
   const baseCommit = await readGitValue(
-    `git rev-parse ${shellQuote(baseRef)}`,
+    ["rev-parse", baseRef],
     cwd,
     5000,
-    baseRef
+    baseRef,
+    capabilityManifest
   );
   const baseBranch = await readGitValue(
-    `git rev-parse --abbrev-ref ${shellQuote(baseRef)}`,
+    ["rev-parse", "--abbrev-ref", baseRef],
     cwd,
     5000,
-    baseRef
+    baseRef,
+    capabilityManifest
   );
   return {
     baseCommit,
@@ -253,23 +263,30 @@ async function resolveBaseInfo(baseRef: string, cwd: string) {
   };
 }
 
-async function ensureBranchAtRef(branchName: string, ref: string) {
-  const exists = await runShell(
-    `git show-ref --verify --quiet ${shellQuote(`refs/heads/${branchName}`)}`,
+async function ensureBranchAtRef(branchName: string, ref: string, capabilityManifest?: CapabilityManifest) {
+  const exists = await runGit(
+    ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
     process.cwd(),
-    5000
+    5000,
+    capabilityManifest
   );
-  const command = exists.exitCode === 0
-    ? `git branch -f ${shellQuote(branchName)} ${shellQuote(ref)}`
-    : `git branch ${shellQuote(branchName)} ${shellQuote(ref)}`;
-  const result = await runShell(command, process.cwd(), 30000);
+  const args = exists.exitCode === 0
+    ? ["branch", "-f", branchName, ref]
+    : ["branch", branchName, ref];
+  const result = await runGit(args, process.cwd(), 30000, capabilityManifest);
   if (result.exitCode !== 0) {
     throw new Error(`无法准备任务分支 ${branchName}：${tail(result.output, 1200)}`);
   }
 }
 
-async function readGitValue(command: string, cwd: string, timeoutMs: number, fallback: string) {
-  const result = await runShell(command, cwd, timeoutMs);
+async function readGitValue(
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+  fallback: string,
+  capabilityManifest?: CapabilityManifest
+) {
+  const result = await runGit(args, cwd, timeoutMs, capabilityManifest);
   if (result.exitCode !== 0) return fallback;
   return result.output.trim() || fallback;
 }
@@ -316,34 +333,23 @@ function slugSegment(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "item";
 }
 
-function runShell(command: string, cwd: string, timeoutMs: number) {
-  return new Promise<{ exitCode: number | null; output: string }>((resolve) => {
-    const child = spawn("sh", ["-lc", command], {
-      cwd,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let output = "";
-    const timeout = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      resolve({ exitCode: 1, output: error.message });
-    });
-    child.on("close", (exitCode) => {
-      clearTimeout(timeout);
-      resolve({ exitCode, output });
-    });
+function runGit(
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+  capabilityManifest?: CapabilityManifest,
+  env?: NodeJS.ProcessEnv
+) {
+  return executeCommand({
+    kind: "git",
+    command: "git",
+    args,
+    cwd,
+    timeoutMs,
+    maxOutputBytes: 256 * 1024,
+    ...(env ? { env } : {}),
+    ...(capabilityManifest ? { capabilityManifest } : {})
   });
-}
-
-function shellQuote(value: string) {
-  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function tail(value: string, max: number) {

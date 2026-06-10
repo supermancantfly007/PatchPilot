@@ -1,5 +1,5 @@
 {
-  "name": "@patchpilot/workspace-manager",
+  "name": "@patchpilot/command-executor",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,8 +13,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@patchpilot/command-executor": "workspace:*",
-    "@patchpilot/domain": "workspace:*",
     "@patchpilot/policy": "workspace:*",
     "@patchpilot/security": "workspace:*"
   },

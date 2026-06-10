@@ -1,13 +1,17 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import {
+  executeCommand,
+  shellJoin,
+  spawnCommand,
+  type CommandAuditEvidence
+} from "@patchpilot/command-executor";
 import { runTestCommand } from "@patchpilot/testing";
 import { GitWorkspaceManager, type WorkspaceManager } from "@patchpilot/workspace-manager";
 import { redactJsonValue, redactSecrets, type SecretRedactionOptions } from "@patchpilot/security";
 import {
   applyManifestToEgressPolicyConfig,
-  enforceCommandPolicy,
   generateCapabilityManifest,
   type CapabilityManifest
 } from "@patchpilot/policy";
@@ -89,7 +93,8 @@ export class CodexRunError extends Error {
     public readonly failureType: FailureType,
     public readonly testRun?: TestRun,
     public readonly egressPolicyEvidence?: EgressPolicyEvidence,
-    public readonly secretBrokerEvidence?: SecretBrokerEvidence
+    public readonly secretBrokerEvidence?: SecretBrokerEvidence,
+    public readonly commandAuditEvents: CommandAuditEvidence[] = []
   ) {
     super(message);
     this.name = "CodexRunError";
@@ -142,7 +147,14 @@ export class LocalCodexRunner implements CodexRunner {
 
   async isAvailable() {
     try {
-      const result = await runShell("codex --version", process.cwd(), 5000);
+      const result = await executeCommand({
+        kind: "codex",
+        command: "codex",
+        args: ["--version"],
+        cwd: process.cwd(),
+        timeoutMs: 5000,
+        maxOutputBytes: 4096
+      });
       return result.exitCode === 0;
     } catch {
       return false;
@@ -390,28 +402,40 @@ async function runCodexExec(
   if (containerSandbox || !existsSync(join(workspacePath, ".git"))) {
     args.splice(args.length - 1, 0, "--skip-git-repo-check");
   }
-  enforceCommandPolicy(capabilityManifest, ["codex", ...args].join(" "));
   const timeoutMs = resolveCapabilityRuntimeTimeoutMs(config.budget.codexTimeoutMs, capabilityManifest);
 
-  const sandboxedProcess = containerSandbox
-    ? await containerSandbox.spawn({
-        workspacePath,
-        command: shellJoin(["codex", ...args]),
-        timeoutMs,
-        env: buildCommandEnv(config.security.secretEnv)
-      })
-    : undefined;
-  const child = sandboxedProcess?.child ?? spawn("codex", args, {
+  const commandProcess = await spawnCommand({
+    kind: "codex",
+    command: "codex",
+    args,
     cwd: workspacePath,
+    timeoutMs,
     env: buildCommandEnv(config.security.secretEnv),
-    stdio: ["pipe", "pipe", "pipe"]
+    inheritEnv: false,
+    capabilityManifest,
+    redaction: redactionOptions,
+    ...(containerSandbox
+      ? {
+          spawnDelegate: async (options) => {
+            const sandboxedProcess = await containerSandbox.spawn({
+              workspacePath,
+              command: shellJoin([options.command, ...(options.args ?? [])]),
+              timeoutMs: options.timeoutMs,
+              env: options.env
+            });
+            return {
+              child: sandboxedProcess.child,
+              done: sandboxedProcess.done
+            };
+          }
+        }
+      : {})
   });
+  const child = commandProcess.child;
 
   child.stdin.end(redactSecrets(prompt, redactionOptions).redacted);
 
-  const timeout = sandboxedProcess ? undefined : setTimeout(() => child.kill("SIGTERM"), timeoutMs);
   let stdoutBuffer = "";
-  let stderr = "";
   let sessionId: string | undefined;
   let emitted = 0;
   let pendingEmit = Promise.resolve();
@@ -438,28 +462,34 @@ async function runCodexExec(
       }
     }
   });
-
-  child.stderr.on("data", (chunk: Buffer) => {
-    stderr += redactSecrets(chunk.toString("utf8"), redactionOptions).redacted;
-  });
-
-  const exitCode = await new Promise<number | null>((resolve) => {
-    child.on("close", resolve);
-  });
-  if (timeout) clearTimeout(timeout);
-  const sandboxCompletion = sandboxedProcess ? await sandboxedProcess.done : undefined;
+  const commandResult = await commandProcess.done;
+  const sandboxCompletion = commandResult.delegateResult as
+    | {
+        timedOut: boolean;
+        diskLimitExceeded: boolean;
+        durationMs: number;
+        egressPolicyEvidence?: EgressPolicyEvidence;
+      }
+    | undefined;
   await pendingEmit;
 
-  if (exitCode !== 0 || sandboxCompletion?.diskLimitExceeded) {
+  if (commandResult.exitCode !== 0 || sandboxCompletion?.diskLimitExceeded) {
     const egressPolicyEvidence = sandboxCompletion?.egressPolicyEvidence;
     const message = summarizeCodexExecFailure({
       stderr: sandboxCompletion?.diskLimitExceeded
-        ? `${stderr}\nContainer sandbox workspace disk quota exceeded.`
-        : stderr,
+        ? `${commandResult.stderr}\nContainer sandbox workspace disk quota exceeded.`
+        : commandResult.stderr,
       stdoutRemainder: stdoutBuffer,
-      exitCode
+      exitCode: commandResult.exitCode
     }, redactionOptions);
-    throw new CodexRunError(message, classifyFailureMessage(message), undefined, egressPolicyEvidence);
+    throw new CodexRunError(
+      message,
+      classifyFailureMessage(message),
+      undefined,
+      egressPolicyEvidence,
+      undefined,
+      commandResult.auditEvents
+    );
   }
 
   return {
@@ -889,40 +919,6 @@ function compactEnv(env: Record<string, string | undefined>) {
     compacted[key] = value;
   }
   return compacted;
-}
-
-function runShell(command: string, cwd: string, timeoutMs: number) {
-  return new Promise<{ exitCode: number | null; output: string }>((resolve) => {
-    const child = spawn("sh", ["-lc", command], {
-      cwd,
-      env: buildCommandEnv(),
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let output = "";
-    const timeout = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      resolve({ exitCode: 1, output: error.message });
-    });
-    child.on("close", (exitCode) => {
-      clearTimeout(timeout);
-      resolve({ exitCode, output });
-    });
-  });
-}
-
-function shellJoin(values: string[]) {
-  return values.map(shellQuote).join(" ");
-}
-
-function shellQuote(value: string) {
-  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function tail(value: string, max: number) {

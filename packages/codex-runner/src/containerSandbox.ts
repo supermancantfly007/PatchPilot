@@ -1,9 +1,10 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { executeCommand, spawnCommand } from "@patchpilot/command-executor";
 import type { EgressPolicyEvidence, EgressPolicyRuntimeConfig } from "@patchpilot/domain";
 import {
   buildEffectiveEgressAllowedHosts,
@@ -144,18 +145,27 @@ export class RootlessContainerSandbox {
     let diskLimitExceeded = false;
     let closed = false;
 
-    const child = spawn(runtime, args, {
+    const wrappedProcess = await spawnCommand({
+      kind: "runtime",
+      command: runtime,
+      args,
       cwd: options.workspacePath,
       env: process.env,
-      stdio: ["pipe", "pipe", "pipe"]
+      timeoutMs: options.timeoutMs,
+      maxOutputBytes: options.maxOutputBytes
     });
+    const child = wrappedProcess.child;
 
     const stopContainer = () => {
       if (closed) return;
-      const killer = spawn(runtime, ["kill", containerName], {
-        stdio: "ignore"
-      });
-      killer.on("error", () => undefined);
+      void executeCommand({
+        kind: "runtime",
+        command: runtime,
+        args: ["kill", containerName],
+        cwd: options.workspacePath,
+        timeoutMs: 5000,
+        maxOutputBytes: 4096
+      }).catch(() => undefined);
       child.kill("SIGTERM");
     };
 
@@ -474,74 +484,49 @@ async function cleanupEgressProxy(
   await rm(context.auditLogHostDir, { recursive: true, force: true });
 }
 
-function commandExists(command: string) {
-  return new Promise<boolean>((resolve) => {
-    const child = spawn("sh", ["-lc", `command -v ${shellQuote(command)} >/dev/null 2>&1`], {
-      stdio: "ignore"
-    });
-    child.on("error", () => resolve(false));
-    child.on("close", (code) => resolve(code === 0));
+async function commandExists(command: string) {
+  const result = await executeCommand({
+    kind: "runtime",
+    command: `command -v ${shellQuote(command)} >/dev/null 2>&1`,
+    cwd: process.cwd(),
+    timeoutMs: 5000,
+    maxOutputBytes: 4096
   });
+  return result.exitCode === 0;
 }
 
 async function readDirectorySizeBytes(path: string) {
-  const result = await runShell(`du -sk ${shellQuote(path)}`);
+  const result = await executeCommand({
+    kind: "runtime",
+    command: "du",
+    args: ["-sk", path],
+    cwd: process.cwd(),
+    timeoutMs: 5000,
+    maxOutputBytes: 4096
+  });
   if (result.exitCode !== 0) return 0;
   const kilobytes = Number(result.output.trim().split(/\s+/u)[0]);
   return Number.isFinite(kilobytes) ? kilobytes * 1024 : 0;
 }
 
-function runShell(command: string) {
-  return new Promise<{ exitCode: number | null; output: string }>((resolve) => {
-    const child = spawn("sh", ["-lc", command], {
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let output = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    child.on("error", (error) => resolve({ exitCode: 1, output: error.message }));
-    child.on("close", (exitCode) => resolve({ exitCode, output }));
-  });
-}
-
-function runRuntimeCommand(
+async function runRuntimeCommand(
   command: string,
   args: string[],
   timeoutMs: number,
   allowFailure = false
 ) {
-  return new Promise<{ exitCode: number | null; output: string }>((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let output = "";
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-    }, timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      if (allowFailure) resolve({ exitCode: 1, output: error.message });
-      else reject(error);
-    });
-    child.on("close", (exitCode) => {
-      clearTimeout(timeout);
-      if (exitCode !== 0 && !allowFailure) {
-        reject(new Error(`${command} ${args.join(" ")} failed: ${output.trim()}`));
-        return;
-      }
-      resolve({ exitCode, output });
-    });
+  const result = await executeCommand({
+    kind: "runtime",
+    command,
+    args,
+    cwd: process.cwd(),
+    timeoutMs,
+    maxOutputBytes: 256 * 1024
   });
+  if (result.exitCode !== 0 && !allowFailure) {
+    throw new Error(`${command} ${args.join(" ")} failed: ${result.output.trim()}`);
+  }
+  return result;
 }
 
 function sleep(ms: number) {

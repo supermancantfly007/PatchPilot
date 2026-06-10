@@ -165,9 +165,13 @@ const defaultCommandDeny = [
 
 const defaultCommandAllow = [
   "codex exec*",
+  "codex --version",
+  "git branch*",
+  "git show-ref*",
   "git status*",
   "git diff*",
   "git rev-parse*",
+  "git worktree*",
   "git add*",
   "git commit*"
 ];
