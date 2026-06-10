@@ -11,6 +11,7 @@ import type {
   RuntimeConfig,
   WorkItem
 } from "@patchpilot/domain";
+import { apiPath } from "@patchpilot/contracts";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4000";
 
@@ -41,7 +42,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   createRequirement(rawInput: string, template: RequirementTemplate) {
-    return request<Requirement>("/api/requirements", {
+    return request<Requirement>(apiPath("createRequirement"), {
       method: "POST",
       body: JSON.stringify({ rawInput, template })
     });
@@ -55,19 +56,19 @@ export const api = {
     severity?: BugReport["severity"];
     reporter?: string;
   }) {
-    return request<{ bug: BugReport; requirement: Requirement; prd: Prd; workItem: WorkItem }>("/api/bugs", {
+    return request<{ bug: BugReport; requirement: Requirement; prd: Prd; workItem: WorkItem }>(apiPath("createBug"), {
       method: "POST",
       body: JSON.stringify(input)
     });
   },
   getRequirement(id: string) {
     return request<{ requirement: Requirement; prd?: Prd; workItems: WorkItem[]; interfaceContracts: InterfaceContract[] }>(
-      `/api/requirements/${id}`
+      apiPath("getRequirement", { id })
     );
   },
   answerClarification(id: string, answers: Record<string, string>) {
     return request<{ requirement: Requirement; prd: Prd; interfaceContracts: InterfaceContract[] }>(
-      `/api/requirements/${id}/clarification-answer`,
+      apiPath("answerClarification", { id }),
       {
         method: "POST",
         body: JSON.stringify({ answers })
@@ -76,16 +77,16 @@ export const api = {
   },
   addClarificationTurn(id: string, message: string) {
     return request<{ requirement: Requirement; nextQuestion: ClarificationQuestion }>(
-      `/api/requirements/${id}/clarification-turn`,
+      apiPath("addClarificationTurn", { id }),
       {
-      method: "POST",
-      body: JSON.stringify({ message })
+        method: "POST",
+        body: JSON.stringify({ message })
       }
     );
   },
   createPrdFromClarification(id: string) {
     return request<{ requirement: Requirement; prd: Prd; interfaceContracts: InterfaceContract[] }>(
-      `/api/requirements/${id}/prd`,
+      apiPath("createPrd", { id }),
       {
         method: "POST"
       }
@@ -93,7 +94,7 @@ export const api = {
   },
   approvePrd(id: string) {
     return request<{ prd: Prd; workItems: WorkItem[]; interfaceContracts: InterfaceContract[] }>(
-      `/api/prds/${id}/approve`,
+      apiPath("approvePrd", { id }),
       { method: "POST" }
     );
   },
@@ -104,29 +105,29 @@ export const api = {
       interfaceContracts: InterfaceContract[];
       runs: AgentRun[];
       skippedWorkItems: WorkItem[];
-    }>(`/api/prds/${prdId}/start-team`, {
+    }>(apiPath("startTeam", { id: prdId }), {
       method: "POST",
       body: JSON.stringify({ runner })
     });
   },
   startRun(workItemId: string, runner?: AgentRun["runner"]) {
-    return request<AgentRun>(`/api/work-items/${workItemId}/start`, {
+    return request<AgentRun>(apiPath("startWorkItem", { id: workItemId }), {
       method: "POST",
       body: JSON.stringify({ runner })
     });
   },
   getRun(id: string) {
-    return request<AgentRun>(`/api/runs/${id}`);
+    return request<AgentRun>(apiPath("getRun", { id }));
   },
   acceptRun(runId: string, status: AcceptanceDecision["status"], reason?: string) {
-    return request<AcceptanceDecision>(`/api/acceptance/${runId}`, {
+    return request<AcceptanceDecision>(apiPath("acceptRun", { runId }), {
       method: "POST",
       body: JSON.stringify({ status, reason })
     });
   },
   acceptTeam(prdId: string, status: AcceptanceDecision["status"], reason?: string) {
     return request<{ decisions: AcceptanceDecision[]; workItems: WorkItem[]; runs: AgentRun[] }>(
-      `/api/prds/${prdId}/acceptance`,
+      apiPath("acceptTeam", { id: prdId }),
       {
         method: "POST",
         body: JSON.stringify({ status, reason })
@@ -134,12 +135,12 @@ export const api = {
     );
   },
   getSnapshot() {
-    return request<PatchPilotSnapshot>("/api/snapshot");
+    return request<PatchPilotSnapshot>(apiPath("snapshot"));
   },
   getConfig() {
-    return request<RuntimeConfig>("/api/config");
+    return request<RuntimeConfig>(apiPath("getConfig"));
   },
   eventSourceUrl(runId: string) {
-    return `${API_BASE}/api/runs/${runId}/events`;
+    return `${API_BASE}${apiPath("streamRunEvents", { id: runId })}`;
   }
 };

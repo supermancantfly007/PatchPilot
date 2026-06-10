@@ -17,6 +17,35 @@ pnpm dev:team
 
 The defaults are enough for local boot. Use `.env.example` as a template when you need to export overrides, for example `PATCHPILOT_RUNNER=simulated pnpm dev:team` or `PATCHPILOT_RUNNER=codex pnpm dev:team`.
 
+PatchPilot also reads `.patchpilot/config.yaml` from the repo root. Environment variables still override config file values, and missing config values fall back to the same local defaults:
+
+```yaml
+setup:
+  commands:
+    - pnpm install
+test:
+  command: pnpm test
+  timeoutMs: 120000
+  maxRepairAttempts: 1
+smoke:
+  command: pnpm e2e:smoke
+  previewUrl: http://localhost:3000
+e2e:
+  command: pnpm e2e:team && pnpm e2e:bug && pnpm e2e:smoke
+  baseUrl: http://localhost:3000
+dev:
+  runner: auto
+  workspaceRoot: .patchpilot/worktrees
+  previewUrl: http://localhost:3000
+  simulationDelayFactor: 1
+security:
+  codexSandbox: workspace-write
+  codexBypass: false
+budget:
+  codexTimeoutMs: 600000
+  maxCostUsd: 0
+```
+
 ## Local Processes
 
 Run the full local platform:
@@ -34,6 +63,27 @@ pnpm dev:worker
 ```
 
 The worker process polls the API snapshot, claims ready work items for idle agents, and starts runs through the API. The API process owns the run queue and executes the selected simulated or Codex runner after `/api/work-items/:id/start`.
+
+## Local CLI
+
+The CLI can operate the happy path without the Web UI as long as the API is running:
+
+```bash
+pnpm cli -- submit --input "Ship a CLI-controlled agent workflow" --template feature
+pnpm cli -- snapshot
+pnpm cli -- happy-path --input "Ship a CLI-controlled agent workflow" --runner simulated --out report.md
+```
+
+Supported operations include requirement submission, PRD creation and approval, snapshot inspection, team start, one worker dispatch tick, PRD acceptance, and Markdown report export:
+
+```bash
+pnpm cli -- create-prd --requirement <requirement-id>
+pnpm cli -- approve-prd --prd <prd-id>
+pnpm cli -- start-team --prd <prd-id> --runner simulated
+pnpm cli -- worker-once --runner simulated
+pnpm cli -- accept-prd --prd <prd-id> --status accepted
+pnpm cli -- report --prd <prd-id> --out report.md
+```
 
 ## Optional Middleware
 
@@ -111,6 +161,8 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm openapi:check
+pnpm events:check
 ```
 
 When the API is running, the local end-to-end checks are:
@@ -119,4 +171,5 @@ When the API is running, the local end-to-end checks are:
 pnpm e2e:team
 pnpm e2e:bug
 pnpm e2e:smoke
+pnpm e2e:cli
 ```

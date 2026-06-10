@@ -6,13 +6,17 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
+    "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
+    "lint:workspace": "eslint . --max-warnings=0",
     "test": "vitest run"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
-    "@patchpilot/domain": "file:../../packages/domain",
+    "@patchpilot/contracts": "workspace:*",
+    "@patchpilot/domain": "workspace:*",
     "fastify": "^5.8.5",
+    "yaml": "^2.9.0",
     "zod": "^4.2.1"
   },
   "devDependencies": {

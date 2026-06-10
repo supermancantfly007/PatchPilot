@@ -8,11 +8,13 @@
     "build": "next build",
     "start": "next start --port 3000",
     "lint": "eslint . --max-warnings=0",
+    "lint:workspace": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "@patchpilot/domain": "file:../../packages/domain",
+    "@patchpilot/contracts": "workspace:*",
+    "@patchpilot/domain": "workspace:*",
     "lucide-react": "^0.561.0",
     "next": "^16.2.7",
     "react": "^19.2.3",

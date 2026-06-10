@@ -25,7 +25,6 @@ import {
   createInitialClarificationTurn,
   createBugWorkItem,
   createDefaultAgents,
-  createInterfaceContracts,
   createPrd,
   createTestCasesForWorkItems,
   createTimeline,
@@ -35,13 +34,15 @@ import {
   makeSimpleSummary,
   type RuntimeConfig
 } from "@patchpilot/domain";
+import { createInterfaceContracts } from "@patchpilot/contracts";
 import { isCodexAvailable, isGitWorkspaceAvailable, runCodexAgent, type RunnerEvent } from "./codexRunner";
+import { readPatchPilotConfig } from "./config";
 
 const dataFile = join(process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"), "patchpilot-store.json");
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const simulationDelay = (ms: number) =>
-  Math.max(0, Math.round(ms * Number(process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR ?? 1)));
+  Math.max(0, Math.round(ms * readPatchPilotConfig().dev.simulationDelayFactor));
 
 export class PatchPilotStore {
   private snapshot: PatchPilotSnapshot = emptySnapshot();
@@ -380,19 +381,26 @@ export class PatchPilotStore {
   }
 
   async getRuntimeConfig(): Promise<RuntimeConfig> {
+    const config = readPatchPilotConfig();
     const codexAvailable = await isCodexAvailable();
     const gitWorkspaceAvailable = await isGitWorkspaceAvailable();
-    const configuredRunner =
-      process.env.PATCHPILOT_RUNNER === "codex" || process.env.PATCHPILOT_RUNNER === "simulated"
-        ? process.env.PATCHPILOT_RUNNER
-        : "auto";
     return {
-      configuredRunner,
+      configuredRunner: config.dev.runner,
       activeRunner: await this.resolveRunner(undefined, { codexAvailable, gitWorkspaceAvailable }),
       codexAvailable,
       gitWorkspaceAvailable,
-      testCommand: process.env.PATCHPILOT_TEST_COMMAND || "pnpm -r --if-present test",
-      workspaceRoot: process.env.PATCHPILOT_WORKSPACE_ROOT || join(process.cwd(), ".patchpilot", "worktrees")
+      testCommand: config.test.command,
+      workspaceRoot: config.dev.workspaceRoot,
+      previewUrl: config.dev.previewUrl,
+      configSource: config.configSource,
+      configPath: config.configPath,
+      setup: config.setup,
+      test: config.test,
+      smoke: config.smoke,
+      e2e: config.e2e,
+      dev: config.dev,
+      security: config.security,
+      budget: config.budget
     };
   }
 
@@ -755,7 +763,7 @@ export class PatchPilotStore {
   ): Promise<AgentRun["runner"]> {
     if (override) return override;
     if (process.env.NODE_ENV === "test") return "simulated";
-    const configured = process.env.PATCHPILOT_RUNNER;
+    const configured = readPatchPilotConfig().dev.runner;
     if (configured === "simulated" || configured === "codex") return configured;
     const checks = availability || {
       codexAvailable: await isCodexAvailable(),
@@ -924,7 +932,7 @@ export class PatchPilotStore {
   }
 
   private createWorkspaceRun(run: AgentRun, workItem: WorkItem, now: string): WorkspaceRun {
-    const workspaceRoot = process.env.PATCHPILOT_WORKSPACE_ROOT || join(process.cwd(), ".patchpilot", "worktrees");
+    const workspaceRoot = readPatchPilotConfig().dev.workspaceRoot;
     return {
       id: `ws_${run.id}`,
       runId: run.id,

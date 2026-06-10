@@ -1,138 +1,108 @@
 import cors from "@fastify/cors";
+import {
+  acceptanceSchema,
+  apiRoute,
+  bugInputSchema,
+  claimSchema,
+  clarificationSchema,
+  clarificationTurnSchema,
+  requirementInputSchema,
+  startRunSchema
+} from "@patchpilot/contracts";
 import Fastify from "fastify";
 import { z } from "zod";
 import { DomainError, PatchPilotStore } from "./store";
 
 const store = new PatchPilotStore();
 
-const requirementInputSchema = z.object({
-  rawInput: z.string().trim().min(3),
-  template: z.enum(["feature", "bug", "ui", "document"])
-});
-
-const clarificationSchema = z.object({
-  answers: z.record(z.string(), z.string()).default({})
-});
-
-const clarificationTurnSchema = z.object({
-  message: z.string().trim().min(1)
-});
-
-const acceptanceSchema = z.object({
-  status: z.enum(["accepted", "rejected"]),
-  reason: z.string().optional()
-}).superRefine((input, ctx) => {
-  if (input.status === "rejected" && !input.reason?.trim()) {
-    ctx.addIssue({
-      code: "custom",
-      message: "Reason is required when rejecting a run",
-      path: ["reason"]
-    });
-  }
-});
-
-const bugInputSchema = z.object({
-  title: z.string().trim().min(3),
-  description: z.string().trim().min(3),
-  reproductionSteps: z.string().trim().min(3),
-  expectedBehavior: z.string().trim().min(3),
-  actualBehavior: z.string().trim().min(3),
-  severity: z.enum(["low", "medium", "high", "critical"]).default("medium"),
-  reporter: z.string().trim().optional()
-});
-
-const claimSchema = z.object({
-  agentId: z.string().trim().min(1)
-});
-
 export async function buildServer() {
   const app = Fastify({ logger: true });
   await app.register(cors, { origin: true });
 
-  app.get("/health", async () => ({ ok: true, service: "patchpilot-api" }));
+  app.get(apiRoute("health"), async () => ({ ok: true, service: "patchpilot-api" }));
 
-  app.get("/api/config", async () => store.getRuntimeConfig());
+  app.get(apiRoute("getConfig"), async () => store.getRuntimeConfig());
 
-  app.get("/api/snapshot", async () => store.getSnapshot());
+  app.get(apiRoute("snapshot"), async () => store.getSnapshot());
 
-  app.get("/api/agents", async () => store.getAgents());
+  app.get(apiRoute("agents"), async () => store.getAgents());
 
-  app.post("/api/requirements", async (request, reply) => {
+  app.post(apiRoute("createRequirement"), async (request, reply) => {
     const input = requirementInputSchema.parse(request.body);
     const requirement = await store.createRequirement(input);
     return reply.code(201).send(requirement);
   });
 
-  app.get("/api/requirements/:id", async (request) => {
+  app.get(apiRoute("getRequirement"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     return store.getRequirementBundle(id);
   });
 
-  app.post("/api/requirements/:id/clarification-answer", async (request) => {
+  app.post(apiRoute("answerClarification"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = clarificationSchema.parse(request.body);
     return store.answerClarification(id, input.answers);
   });
 
-  app.post("/api/requirements/:id/clarification-turn", async (request) => {
+  app.post(apiRoute("addClarificationTurn"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = clarificationTurnSchema.parse(request.body);
     return store.addClarificationTurn(id, input.message);
   });
 
-  app.post("/api/requirements/:id/prd", async (request) => {
+  app.post(apiRoute("createPrd"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     return store.createPrdFromClarification(id);
   });
 
-  app.post("/api/prds/:id/approve", async (request) => {
+  app.post(apiRoute("approvePrd"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     return store.approvePrd(id);
   });
 
-  app.post("/api/prds/:id/start-team", async (request, reply) => {
+  app.post(apiRoute("startTeam"), async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
-    const input = z.object({ runner: z.enum(["simulated", "codex"]).optional() }).default({}).parse(request.body);
+    const input = startRunSchema.parse(request.body);
     const result = await store.startTeam(id, input.runner);
     return reply.code(201).send(result);
   });
 
-  app.post("/api/prds/:id/acceptance", async (request) => {
+  app.post(apiRoute("acceptTeam"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = acceptanceSchema.parse(request.body);
     return store.acceptPrdRuns(id, input.status, input.reason);
   });
 
-  app.post("/api/work-items/:id/start", async (request, reply) => {
+  app.post(apiRoute("startWorkItem"), async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
-    const input = z.object({ runner: z.enum(["simulated", "codex"]).optional() }).default({}).parse(request.body);
+    const input = startRunSchema.parse(request.body);
     const run = await store.startRun(id, input.runner);
     return reply.code(201).send(run);
   });
 
-  app.post("/api/work-items/:id/claim", async (request) => {
+  app.post(apiRoute("claimWorkItem"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = claimSchema.parse(request.body);
     return store.claimWorkItem(id, input.agentId);
   });
 
-  app.post("/api/work-items/:id/release", async (request) => {
+  app.post(apiRoute("releaseWorkItem"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     return store.releaseWorkItem(id);
   });
 
-  app.post("/api/bugs", async (request, reply) => {
+  app.post(apiRoute("createBug"), async (request, reply) => {
     const input = bugInputSchema.parse(request.body);
     const result = await store.createBug(input);
     return reply.code(201).send(result);
   });
 
-  app.get("/api/runs/:id", async (request) => {
+  app.get(apiRoute("getRun"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     return store.getRun(id);
   });
 
-  app.get("/api/runs/:id/events", async (request, reply) => {
+  app.get(apiRoute("streamRunEvents"), async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -165,7 +135,7 @@ export async function buildServer() {
     await send();
   });
 
-  app.post("/api/acceptance/:runId", async (request) => {
+  app.post(apiRoute("acceptRun"), async (request) => {
     const { runId } = z.object({ runId: z.string() }).parse(request.params);
     const input = acceptanceSchema.parse(request.body);
     return store.acceptRun(runId, input.status, input.reason);

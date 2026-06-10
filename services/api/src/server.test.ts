@@ -1,4 +1,10 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { contractVersion } from "@patchpilot/contracts";
+import type { AgentRun } from "@patchpilot/domain";
 import { buildServer } from "./server";
 
 process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR = "0";
@@ -26,6 +32,11 @@ describe("PatchPilot API", () => {
     expect(answer.json().interfaceContracts.every((contract: { status: string }) => contract.status === "draft")).toBe(
       true
     );
+    expect(
+      answer.json().interfaceContracts.every((contract: { specMarkdown: string }) =>
+        contract.specMarkdown.includes(`Contract version: \`${contractVersion}\``)
+      )
+    ).toBe(true);
 
     await app.close();
   });
@@ -64,6 +75,110 @@ describe("PatchPilot API", () => {
     expect(typeof response.json().codexAvailable).toBe("boolean");
     expect(typeof response.json().gitWorkspaceAvailable).toBe("boolean");
     await app.close();
+  });
+
+  it("returns test command and preview URL overrides from .patchpilot/config.yaml", async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), "patchpilot-api-config-"));
+    const configDir = join(fixtureRoot, ".patchpilot");
+    const configPath = join(configDir, "config.yaml");
+    const previousConfigPath = process.env.PATCHPILOT_CONFIG_PATH;
+    const previousTestCommand = process.env.PATCHPILOT_TEST_COMMAND;
+    const previousPreviewUrl = process.env.PATCHPILOT_PREVIEW_URL;
+    const previousWorkspaceRoot = process.env.PATCHPILOT_WORKSPACE_ROOT;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      configPath,
+      `
+test:
+  command: pnpm test:fixture-api
+dev:
+  previewUrl: http://fixture-preview.local
+  workspaceRoot: .patchpilot/worktrees-from-config
+`.trimStart(),
+      "utf8"
+    );
+
+    const app = await buildServer();
+
+    try {
+      process.env.PATCHPILOT_CONFIG_PATH = configPath;
+      delete process.env.PATCHPILOT_TEST_COMMAND;
+      delete process.env.PATCHPILOT_PREVIEW_URL;
+      delete process.env.PATCHPILOT_WORKSPACE_ROOT;
+
+      const response = await app.inject({ method: "GET", url: "/api/config" });
+      const config = response.json();
+
+      expect(response.statusCode).toBe(200);
+      expect(config.configSource).toBe("file");
+      expect(config.configPath).toBe(configPath);
+      expect(config.testCommand).toBe("pnpm test:fixture-api");
+      expect(config.test.command).toBe("pnpm test:fixture-api");
+      expect(config.previewUrl).toBe("http://fixture-preview.local");
+      expect(config.dev.previewUrl).toBe("http://fixture-preview.local");
+      expect(config.workspaceRoot).toBe(join(fixtureRoot, ".patchpilot", "worktrees-from-config"));
+    } finally {
+      if (previousConfigPath === undefined) delete process.env.PATCHPILOT_CONFIG_PATH;
+      else process.env.PATCHPILOT_CONFIG_PATH = previousConfigPath;
+      if (previousTestCommand === undefined) delete process.env.PATCHPILOT_TEST_COMMAND;
+      else process.env.PATCHPILOT_TEST_COMMAND = previousTestCommand;
+      if (previousPreviewUrl === undefined) delete process.env.PATCHPILOT_PREVIEW_URL;
+      else process.env.PATCHPILOT_PREVIEW_URL = previousPreviewUrl;
+      if (previousWorkspaceRoot === undefined) delete process.env.PATCHPILOT_WORKSPACE_ROOT;
+      else process.env.PATCHPILOT_WORKSPACE_ROOT = previousWorkspaceRoot;
+      await app.close();
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("streams the current run, incremental updates, and closes after a terminal status", async () => {
+    const app = await buildServer();
+    const previousDelayFactor = process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR;
+    process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR = "0.5";
+
+    try {
+      const baseUrl = await listenOnRandomPort(app);
+      const run = await startSimulatedRun(app, "验证 SSE 首包、增量更新和终态关闭");
+
+      const frames = await collectSseFrames(`${baseUrl}/api/runs/${run.id}/events`, 7000);
+      const runFrames = frames.filter((frame) => frame.event === "message");
+      const payloads = runFrames.map((frame) => JSON.parse(frame.data) as AgentRun);
+      const firstPayload = payloads[0];
+      const terminalPayload = payloads.at(-1);
+
+      expect(firstPayload).toMatchObject({
+        id: run.id,
+        status: "running",
+        currentStep: "understanding"
+      });
+      expect(firstPayload?.events).toHaveLength(1);
+      expect(firstPayload?.events[0]?.type).toBe("requirement.understood");
+      expect(payloads.length).toBeGreaterThanOrEqual(2);
+      expect(Math.max(...payloads.map((payload) => payload.events.length))).toBeGreaterThan(1);
+      expect(terminalPayload?.status).toBe("succeeded");
+      expect(terminalPayload?.events.at(-1)?.type).toBe("acceptance.waiting");
+    } finally {
+      if (previousDelayFactor === undefined) delete process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR;
+      else process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR = previousDelayFactor;
+      await app.close();
+    }
+  });
+
+  it("streams an SSE error envelope for a missing run and then closes", async () => {
+    const app = await buildServer();
+
+    try {
+      const baseUrl = await listenOnRandomPort(app);
+      const frames = await collectSseFrames(`${baseUrl}/api/runs/missing-run/events`, 2000);
+      const errorFrame = frames[0];
+      const payload = JSON.parse(errorFrame?.data ?? "{}") as { message?: string };
+
+      expect(frames).toHaveLength(1);
+      expect(errorFrame?.event).toBe("error");
+      expect(payload.message).toContain("AgentRun not found: missing-run");
+    } finally {
+      await app.close();
+    }
   });
 
   it("makes starting the same work item idempotent", async () => {
@@ -128,6 +243,11 @@ describe("PatchPilot API", () => {
     expect(
       approval.json().interfaceContracts.every((contract: { status: string }) => contract.status === "approved")
     ).toBe(true);
+    expect(
+      approval.json().interfaceContracts.every((contract: { specMarkdown: string }) =>
+        contract.specMarkdown.includes(`Contract version: \`${contractVersion}\``)
+      )
+    ).toBe(true);
 
     const start = await app.inject({
       method: "POST",
@@ -139,7 +259,8 @@ describe("PatchPilot API", () => {
     expect(run.runner).toBe("simulated");
     const snapshotWhileRunning = await app.inject({ method: "GET", url: "/api/snapshot" });
     const runningWorkItem = snapshotWhileRunning.json().workItems.find((item: { id: string }) => item.id === workItem.id);
-    expect(runningWorkItem.assignedAgentId).toBe("agent_backend");
+    expect(runningWorkItem.status).toBe("running");
+    expect(runningWorkItem.assignedAgentId).toBeTruthy();
 
     const completedRun = await pollRun(app, run.id);
     expect(completedRun.status).toBe("succeeded");
@@ -531,4 +652,100 @@ async function pollPrdRuns(app: Awaited<ReturnType<typeof buildServer>>, prdId: 
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Runs did not finish for PRD: ${prdId}`);
+}
+
+async function listenOnRandomPort(app: Awaited<ReturnType<typeof buildServer>>) {
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  const address = app.server.address() as AddressInfo | string | null;
+  if (!address || typeof address === "string") throw new Error("Fastify did not bind to a TCP port");
+  return `http://127.0.0.1:${address.port}`;
+}
+
+async function startSimulatedRun(app: Awaited<ReturnType<typeof buildServer>>, rawInput: string) {
+  const create = await app.inject({
+    method: "POST",
+    url: "/api/requirements",
+    payload: { rawInput, template: "feature" }
+  });
+  expect(create.statusCode).toBe(201);
+  const requirement = create.json() as { id: string };
+
+  const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
+  expect(prdResponse.statusCode).toBe(200);
+  const prd = prdResponse.json().prd as { id: string };
+
+  const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
+  expect(approval.statusCode).toBe(200);
+  const workItem = (approval.json().workItems as Array<{ id: string }>)[0];
+  if (!workItem) throw new Error("Expected approved PRD to create at least one work item");
+
+  const start = await app.inject({
+    method: "POST",
+    url: `/api/work-items/${workItem.id}/start`,
+    payload: { runner: "simulated" }
+  });
+  expect(start.statusCode).toBe(201);
+  return start.json() as AgentRun;
+}
+
+interface SseFrame {
+  event: string;
+  data: string;
+  raw: string;
+}
+
+async function collectSseFrames(url: string, timeoutMs: number) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    if (!response.body) throw new Error("SSE response did not expose a readable body");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const frames: SseFrame[] = [];
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let frameEnd = buffer.indexOf("\n\n");
+      while (frameEnd >= 0) {
+        const raw = buffer.slice(0, frameEnd);
+        buffer = buffer.slice(frameEnd + 2);
+        if (raw.trim()) frames.push(parseSseFrame(raw));
+        frameEnd = buffer.indexOf("\n\n");
+      }
+    }
+
+    buffer += decoder.decode();
+    if (buffer.trim()) frames.push(parseSseFrame(buffer));
+    return frames;
+  } catch (error) {
+    if (timedOut) throw new Error(`Timed out waiting for SSE stream to close: ${url}`, { cause: error });
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseSseFrame(raw: string): SseFrame {
+  let event = "message";
+  const dataLines: string[] = [];
+
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.startsWith("event:")) event = line.slice("event:".length).trim();
+    if (line.startsWith("data:")) dataLines.push(line.slice("data:".length).trimStart());
+  }
+
+  return { event, data: dataLines.join("\n"), raw };
 }

@@ -12,6 +12,7 @@ import type {
   TimelineStepKey,
   WorkItem
 } from "@patchpilot/domain";
+import { readPatchPilotConfig, type ResolvedPatchPilotConfig } from "./config";
 
 export interface CodexRunContext {
   runId: string;
@@ -27,9 +28,6 @@ export interface RunnerEvent {
 }
 
 export type EmitRunnerEvent = (event: RunnerEvent) => Promise<void>;
-
-const commandTimeoutMs = () => Number(process.env.PATCHPILOT_CODEX_TIMEOUT_MS || 10 * 60 * 1000);
-const testTimeoutMs = () => Number(process.env.PATCHPILOT_TEST_TIMEOUT_MS || 2 * 60 * 1000);
 
 export async function isCodexAvailable() {
   try {
@@ -49,7 +47,8 @@ export async function runCodexAgent(
   context: CodexRunContext,
   emit: EmitRunnerEvent
 ): Promise<AgentRunResult> {
-  const workspace = await prepareWorkspace(context);
+  const config = readPatchPilotConfig();
+  const workspace = await prepareWorkspace(context, config);
   await emit({
     step: "developing",
     type: "workspace.created",
@@ -63,15 +62,15 @@ export async function runCodexAgent(
     message: "本地 Codex agent 已启动，正在隔离 worktree 中开发"
   });
 
-  const firstCodexRun = await runCodexExec(workspace.path, prompt, emit);
+  const firstCodexRun = await runCodexExec(workspace.path, prompt, emit, config);
   await emit({
     step: "testing",
     type: "test.started",
     message: "Codex 执行结束，开始运行项目测试"
   });
 
-  let testRun = await runProjectTests(workspace.path);
-  const repairAttempts = Number(process.env.PATCHPILOT_MAX_REPAIR_ATTEMPTS || 1);
+  let testRun = await runProjectTests(workspace.path, config);
+  const repairAttempts = config.test.maxRepairAttempts;
 
   for (let attempt = 1; testRun.status === "failed" && attempt <= repairAttempts; attempt += 1) {
     await emit({
@@ -79,13 +78,13 @@ export async function runCodexAgent(
       type: "test.failed",
       message: `测试未通过，启动第 ${attempt} 次 Codex 修复回合`
     });
-    await runCodexExec(workspace.path, buildRepairPrompt(context, testRun.summary), emit);
+    await runCodexExec(workspace.path, buildRepairPrompt(context, testRun.summary), emit, config);
     await emit({
       step: "testing",
       type: "test.started",
       message: `第 ${attempt} 次修复完成，重新运行测试`
     });
-    testRun = await runProjectTests(workspace.path);
+    testRun = await runProjectTests(workspace.path, config);
   }
 
   if (testRun.status !== "passed") {
@@ -107,7 +106,7 @@ export async function runCodexAgent(
 
   return {
     summary: await readSummary(firstCodexRun.lastMessagePath, changedFiles),
-    previewUrl: process.env.PATCHPILOT_PREVIEW_URL || "http://localhost:3000",
+    previewUrl: config.dev.previewUrl,
     riskLevel: changedFiles.length > 12 ? "medium" : "low",
     changedFiles,
     tests: [testRun],
@@ -119,8 +118,8 @@ export async function runCodexAgent(
   };
 }
 
-async function prepareWorkspace(context: CodexRunContext) {
-  const root = process.env.PATCHPILOT_WORKSPACE_ROOT || join(process.cwd(), ".patchpilot", "worktrees");
+async function prepareWorkspace(context: CodexRunContext, config: ResolvedPatchPilotConfig) {
+  const root = config.dev.workspaceRoot;
   await mkdir(root, { recursive: true });
 
   const workspacePath = join(root, context.runId);
@@ -139,11 +138,16 @@ async function prepareWorkspace(context: CodexRunContext) {
   };
 }
 
-async function runCodexExec(workspacePath: string, prompt: string, emit: EmitRunnerEvent) {
+async function runCodexExec(
+  workspacePath: string,
+  prompt: string,
+  emit: EmitRunnerEvent,
+  config: ResolvedPatchPilotConfig
+) {
   const lastMessagePath = join(workspacePath, `.patchpilot-codex-${randomUUID()}.md`);
-  const sandbox = process.env.PATCHPILOT_CODEX_SANDBOX || "workspace-write";
+  const sandbox = config.security.codexSandbox;
   const args = ["exec", "--json", "--sandbox", sandbox, "-C", workspacePath, "-o", lastMessagePath, "-"];
-  const useBypass = process.env.PATCHPILOT_CODEX_BYPASS === "true";
+  const useBypass = config.security.codexBypass;
   if (useBypass) {
     args.splice(2, 2, "--dangerously-bypass-approvals-and-sandbox");
   }
@@ -159,7 +163,7 @@ async function runCodexExec(workspacePath: string, prompt: string, emit: EmitRun
 
   child.stdin.end(prompt);
 
-  const timeout = setTimeout(() => child.kill("SIGTERM"), commandTimeoutMs());
+  const timeout = setTimeout(() => child.kill("SIGTERM"), config.budget.codexTimeoutMs);
   let stdoutBuffer = "";
   let stderr = "";
   let sessionId: string | undefined;
@@ -204,10 +208,10 @@ async function runCodexExec(workspacePath: string, prompt: string, emit: EmitRun
   return { lastMessagePath, sessionId };
 }
 
-async function runProjectTests(workspacePath: string): Promise<TestRun> {
-  const command = process.env.PATCHPILOT_TEST_COMMAND || "pnpm -r --if-present test";
+async function runProjectTests(workspacePath: string, config: ResolvedPatchPilotConfig): Promise<TestRun> {
+  const command = config.test.command;
   const startedAt = Date.now();
-  const result = await runShell(command, workspacePath, testTimeoutMs());
+  const result = await runShell(command, workspacePath, config.test.timeoutMs);
   return {
     id: `test_${randomUUID()}`,
     status: result.exitCode === 0 ? "passed" : "failed",

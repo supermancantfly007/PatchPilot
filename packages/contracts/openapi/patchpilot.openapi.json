@@ -1,0 +1,2345 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "PatchPilot Control Plane API",
+    "version": "patchpilot.mvp.v1",
+    "description": "Generated from @patchpilot/contracts artifacts used by API, Web, and Worker packages."
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "GET /health",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "operationId": "getConfig",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "GET /api/config",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeConfig"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/snapshot": {
+      "get": {
+        "operationId": "snapshot",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "GET /api/snapshot",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatchPilotSnapshot"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents": {
+      "get": {
+        "operationId": "agents",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "GET /api/agents",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AgentProfile"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/requirements": {
+      "post": {
+        "operationId": "createRequirement",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "POST /api/requirements",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRequirementRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Requirement"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/requirements/:id": {
+      "get": {
+        "operationId": "getRequirement",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "GET /api/requirements/:id",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequirementBundle"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/requirements/:id/clarification-answer": {
+      "post": {
+        "operationId": "answerClarification",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "POST /api/requirements/:id/clarification-answer",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClarificationAnswerRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequirementPrdBundle"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/requirements/:id/clarification-turn": {
+      "post": {
+        "operationId": "addClarificationTurn",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "POST /api/requirements/:id/clarification-turn",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClarificationTurnRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClarificationTurnResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/requirements/:id/prd": {
+      "post": {
+        "operationId": "createPrd",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "POST /api/requirements/:id/prd",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequirementPrdBundle"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/prds/:id/approve": {
+      "post": {
+        "operationId": "approvePrd",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "POST /api/prds/:id/approve",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovePrdResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/prds/:id/start-team": {
+      "post": {
+        "operationId": "startTeam",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "POST /api/prds/:id/start-team",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartTeamResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/prds/:id/acceptance": {
+      "post": {
+        "operationId": "acceptTeam",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "POST /api/prds/:id/acceptance",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptanceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamAcceptanceResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/work-items/:id/start": {
+      "post": {
+        "operationId": "startWorkItem",
+        "tags": [
+          "Work Items"
+        ],
+        "summary": "POST /api/work-items/:id/start",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRun"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/work-items/:id/claim": {
+      "post": {
+        "operationId": "claimWorkItem",
+        "tags": [
+          "Work Items"
+        ],
+        "summary": "POST /api/work-items/:id/claim",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimWorkItemRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimWorkItemResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/work-items/:id/release": {
+      "post": {
+        "operationId": "releaseWorkItem",
+        "tags": [
+          "Work Items"
+        ],
+        "summary": "POST /api/work-items/:id/release",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseWorkItemResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/bugs": {
+      "post": {
+        "operationId": "createBug",
+        "tags": [
+          "Bugs"
+        ],
+        "summary": "POST /api/bugs",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBugRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateBugResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/:id": {
+      "get": {
+        "operationId": "getRun",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "GET /api/runs/:id",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRun"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/:id/events": {
+      "get": {
+        "operationId": "streamRunEvents",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "GET /api/runs/:id/events",
+        "responses": {
+          "200": {
+            "description": "Server-sent event stream. Each data frame contains an AgentRun JSON payload.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/acceptance/:runId": {
+      "post": {
+        "operationId": "acceptRun",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "POST /api/acceptance/:runId",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptanceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptanceDecision"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "service"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "service": {
+            "type": "string"
+          }
+        }
+      },
+      "RunEventError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateRequirementRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rawInput",
+          "template"
+        ],
+        "properties": {
+          "rawInput": {
+            "type": "string",
+            "minLength": 3
+          },
+          "template": {
+            "type": "string",
+            "enum": [
+              "feature",
+              "bug",
+              "ui",
+              "document"
+            ]
+          }
+        }
+      },
+      "ClarificationAnswerRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "answers"
+        ],
+        "properties": {
+          "answers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {}
+          }
+        }
+      },
+      "ClarificationTurnRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "StartRunRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {
+          "runner": {
+            "type": "string",
+            "enum": [
+              "simulated",
+              "codex"
+            ]
+          }
+        }
+      },
+      "AcceptanceRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "ClaimWorkItemRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agentId"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "CreateBugRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "description",
+          "reproductionSteps",
+          "expectedBehavior",
+          "actualBehavior"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 3
+          },
+          "description": {
+            "type": "string",
+            "minLength": 3
+          },
+          "reproductionSteps": {
+            "type": "string",
+            "minLength": 3
+          },
+          "expectedBehavior": {
+            "type": "string",
+            "minLength": 3
+          },
+          "actualBehavior": {
+            "type": "string",
+            "minLength": 3
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "reporter": {
+            "type": "string"
+          }
+        }
+      },
+      "RuntimeConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "configuredRunner",
+          "activeRunner",
+          "codexAvailable",
+          "gitWorkspaceAvailable",
+          "testCommand",
+          "workspaceRoot",
+          "previewUrl",
+          "configSource",
+          "setup",
+          "test",
+          "smoke",
+          "e2e",
+          "dev",
+          "security",
+          "budget"
+        ],
+        "properties": {
+          "configuredRunner": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "simulated",
+              "codex"
+            ]
+          },
+          "activeRunner": {
+            "type": "string",
+            "enum": [
+              "simulated",
+              "codex"
+            ]
+          },
+          "codexAvailable": {
+            "type": "boolean"
+          },
+          "gitWorkspaceAvailable": {
+            "type": "boolean"
+          },
+          "testCommand": {
+            "type": "string"
+          },
+          "workspaceRoot": {
+            "type": "string"
+          },
+          "previewUrl": {
+            "type": "string"
+          },
+          "configSource": {
+            "type": "string",
+            "enum": [
+              "defaults",
+              "file"
+            ]
+          },
+          "configPath": {
+            "type": "string"
+          },
+          "setup": {
+            "$ref": "#/components/schemas/RuntimeSetupConfig"
+          },
+          "test": {
+            "$ref": "#/components/schemas/RuntimeTestConfig"
+          },
+          "smoke": {
+            "$ref": "#/components/schemas/RuntimeSmokeConfig"
+          },
+          "e2e": {
+            "$ref": "#/components/schemas/RuntimeE2eConfig"
+          },
+          "dev": {
+            "$ref": "#/components/schemas/RuntimeDevConfig"
+          },
+          "security": {
+            "$ref": "#/components/schemas/RuntimeSecurityConfig"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/RuntimeBudgetConfig"
+          }
+        }
+      },
+      "RuntimeSetupConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "commands"
+        ],
+        "properties": {
+          "commands": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RuntimeTestConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command",
+          "timeoutMs",
+          "maxRepairAttempts"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "number"
+          },
+          "maxRepairAttempts": {
+            "type": "number"
+          }
+        }
+      },
+      "RuntimeSmokeConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command",
+          "timeoutMs",
+          "previewUrl"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "number"
+          },
+          "previewUrl": {
+            "type": "string"
+          }
+        }
+      },
+      "RuntimeE2eConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command",
+          "timeoutMs",
+          "baseUrl"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "number"
+          },
+          "baseUrl": {
+            "type": "string"
+          }
+        }
+      },
+      "RuntimeDevConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "runner",
+          "simulationDelayFactor",
+          "workspaceRoot",
+          "previewUrl"
+        ],
+        "properties": {
+          "runner": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "simulated",
+              "codex"
+            ]
+          },
+          "simulationDelayFactor": {
+            "type": "number"
+          },
+          "workspaceRoot": {
+            "type": "string"
+          },
+          "previewUrl": {
+            "type": "string"
+          }
+        }
+      },
+      "RuntimeSecurityConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "codexSandbox",
+          "codexBypass"
+        ],
+        "properties": {
+          "codexSandbox": {
+            "type": "string"
+          },
+          "codexBypass": {
+            "type": "boolean"
+          }
+        }
+      },
+      "RuntimeBudgetConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "codexTimeoutMs",
+          "maxCostUsd"
+        ],
+        "properties": {
+          "codexTimeoutMs": {
+            "type": "number"
+          },
+          "maxCostUsd": {
+            "type": "number"
+          }
+        }
+      },
+      "Requirement": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "title",
+          "rawInput",
+          "template",
+          "status",
+          "simpleSummary",
+          "clarificationQuestions",
+          "clarificationTurns",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string"
+          },
+          "rawInput": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string",
+            "enum": [
+              "feature",
+              "bug",
+              "ui",
+              "document"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "submitted",
+              "clarifying",
+              "prd_draft",
+              "approved",
+              "rejected"
+            ]
+          },
+          "simpleSummary": {
+            "type": "string"
+          },
+          "clarificationQuestions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClarificationQuestion"
+            }
+          },
+          "clarificationTurns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClarificationTurn"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ClarificationQuestion": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "question",
+          "recommendedAnswer"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "question": {
+            "type": "string"
+          },
+          "recommendedAnswer": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          }
+        }
+      },
+      "ClarificationTurn": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "speaker",
+          "message",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "speaker": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "user"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "recommendedAnswer": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Prd": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "requirementId",
+          "version",
+          "status",
+          "title",
+          "bodyMarkdown",
+          "acceptanceCriteria"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requirementId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "approved"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "bodyMarkdown": {
+            "type": "string"
+          },
+          "acceptanceCriteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "approvedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "WorkItem": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "prdId",
+          "title",
+          "status",
+          "role",
+          "scope",
+          "nonGoals",
+          "acceptanceCriteria",
+          "testSuggestions",
+          "assignedAgentId",
+          "sourceBugId",
+          "reworkCount",
+          "lastRejectionReason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "proposed",
+              "ready",
+              "claimed",
+              "running",
+              "review",
+              "blocked",
+              "done",
+              "cancelled"
+            ]
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "product",
+              "frontend",
+              "backend",
+              "test",
+              "ops",
+              "reviewer"
+            ]
+          },
+          "scope": {
+            "type": "string"
+          },
+          "nonGoals": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "acceptanceCriteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "testSuggestions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "assignedAgentId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourceBugId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reworkCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lastRejectionReason": {
+            "type": "string"
+          }
+        }
+      },
+      "InterfaceContract": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "prdId",
+          "name",
+          "kind",
+          "status",
+          "version",
+          "summary",
+          "providerRole",
+          "consumerRoles",
+          "specMarkdown",
+          "testSuggestions",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "http",
+              "event",
+              "schema"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "approved",
+              "breaking_change_pending",
+              "deprecated"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "summary": {
+            "type": "string"
+          },
+          "providerRole": {
+            "type": "string",
+            "enum": [
+              "product",
+              "frontend",
+              "backend",
+              "test",
+              "ops",
+              "reviewer"
+            ]
+          },
+          "consumerRoles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "product",
+                "frontend",
+                "backend",
+                "test",
+                "ops",
+                "reviewer"
+              ]
+            }
+          },
+          "specMarkdown": {
+            "type": "string"
+          },
+          "testSuggestions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AgentProfile": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "role",
+          "status",
+          "lastSeenAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "product",
+              "frontend",
+              "backend",
+              "test",
+              "ops",
+              "reviewer"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "busy",
+              "offline"
+            ]
+          },
+          "currentWorkItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "lastSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AgentRun": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "requirementId",
+          "prdId",
+          "workItemId",
+          "runner",
+          "status",
+          "currentStep",
+          "timeline",
+          "events",
+          "costEstimateUsd",
+          "startedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requirementId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runner": {
+            "type": "string",
+            "enum": [
+              "simulated",
+              "codex"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "needs_approval",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "currentStep": {
+            "type": "string",
+            "enum": [
+              "understanding",
+              "planning",
+              "developing",
+              "testing",
+              "confirming"
+            ]
+          },
+          "timeline": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TimelineStep"
+            }
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentRunEvent"
+            }
+          },
+          "result": {
+            "$ref": "#/components/schemas/AgentRunResult"
+          },
+          "failureSummary": {
+            "type": "string"
+          },
+          "costEstimateUsd": {
+            "type": "number"
+          },
+          "costActualUsd": {
+            "type": "number"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TimelineStep": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "label",
+          "status",
+          "detail"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "understanding",
+              "planning",
+              "developing",
+              "testing",
+              "confirming"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "waiting",
+              "active",
+              "done",
+              "failed"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentRunEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "at",
+          "type",
+          "message"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "type": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentRunResult": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "summary",
+          "previewUrl",
+          "riskLevel",
+          "changedFiles",
+          "tests",
+          "reviewerSummary",
+          "runner"
+        ],
+        "properties": {
+          "summary": {
+            "type": "string"
+          },
+          "previewUrl": {
+            "type": "string"
+          },
+          "riskLevel": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "changedFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TestRun"
+            }
+          },
+          "reviewerSummary": {
+            "type": "string"
+          },
+          "runner": {
+            "type": "string",
+            "enum": [
+              "simulated",
+              "codex"
+            ]
+          },
+          "workspacePath": {
+            "type": "string"
+          },
+          "codexSessionId": {
+            "type": "string"
+          }
+        }
+      },
+      "WorkspaceRun": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "runId",
+          "requirementId",
+          "prdId",
+          "workItemId",
+          "runner",
+          "status",
+          "isolation",
+          "path",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requirementId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runner": {
+            "type": "string",
+            "enum": [
+              "simulated",
+              "codex"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "preparing",
+              "ready",
+              "active",
+              "archived",
+              "failed",
+              "destroyed"
+            ]
+          },
+          "isolation": {
+            "type": "string",
+            "enum": [
+              "simulated",
+              "git_worktree"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TestCase": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "requirementId",
+          "prdId",
+          "workItemId",
+          "title",
+          "kind",
+          "status",
+          "priority",
+          "steps",
+          "expectedResult",
+          "linkedAcceptanceCriteria"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requirementId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "acceptance",
+              "regression",
+              "contract",
+              "smoke"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "ready",
+              "passed",
+              "failed",
+              "blocked"
+            ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expectedResult": {
+            "type": "string"
+          },
+          "linkedAcceptanceCriteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "TestRun": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "status",
+          "command",
+          "summary",
+          "durationMs"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "testCaseId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "passed",
+              "failed",
+              "blocked",
+              "skipped"
+            ]
+          },
+          "command": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "durationMs": {
+            "type": "number"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PullRequestRecord": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "provider",
+          "status",
+          "title",
+          "requirementId",
+          "prdId",
+          "workItemId",
+          "runId",
+          "branchName",
+          "baseBranch",
+          "url",
+          "bodyMarkdown"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "local",
+              "github"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "ready_for_review",
+              "changes_requested",
+              "approved",
+              "merged",
+              "closed"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "requirementId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "branchName": {
+            "type": "string"
+          },
+          "baseBranch": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "bodyMarkdown": {
+            "type": "string"
+          }
+        }
+      },
+      "ReviewRecord": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "status",
+          "requirementId",
+          "prdId",
+          "workItemId",
+          "runId",
+          "linkedPullRequestId",
+          "summary"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "changes_requested",
+              "blocked"
+            ]
+          },
+          "requirementId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "linkedPullRequestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      },
+      "AuditEvent": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "traceId",
+          "actor",
+          "action",
+          "targetType",
+          "targetId",
+          "message",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "traceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "actor": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "targetType": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "BugReport": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "title",
+          "description",
+          "reproductionSteps",
+          "expectedBehavior",
+          "actualBehavior",
+          "severity",
+          "status",
+          "reporter",
+          "requirementId",
+          "prdId",
+          "workItemId"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "reproductionSteps": {
+            "type": "string"
+          },
+          "expectedBehavior": {
+            "type": "string"
+          },
+          "actualBehavior": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "reported",
+              "confirmed",
+              "fixing",
+              "fixed",
+              "rejected"
+            ]
+          },
+          "reporter": {
+            "type": "string"
+          },
+          "requirementId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "AcceptanceDecision": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "runId",
+          "status"
+        ],
+        "properties": {
+          "runId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "accepted",
+              "rejected"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "decidedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RequirementBundle": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requirement",
+          "workItems",
+          "interfaceContracts"
+        ],
+        "properties": {
+          "requirement": {
+            "$ref": "#/components/schemas/Requirement"
+          },
+          "prd": {
+            "$ref": "#/components/schemas/Prd"
+          },
+          "workItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkItem"
+            }
+          },
+          "interfaceContracts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterfaceContract"
+            }
+          }
+        }
+      },
+      "RequirementPrdBundle": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requirement",
+          "prd",
+          "interfaceContracts"
+        ],
+        "properties": {
+          "requirement": {
+            "$ref": "#/components/schemas/Requirement"
+          },
+          "prd": {
+            "$ref": "#/components/schemas/Prd"
+          },
+          "interfaceContracts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterfaceContract"
+            }
+          }
+        }
+      },
+      "ClarificationTurnResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requirement",
+          "nextQuestion"
+        ],
+        "properties": {
+          "requirement": {
+            "$ref": "#/components/schemas/Requirement"
+          },
+          "nextQuestion": {
+            "$ref": "#/components/schemas/ClarificationQuestion"
+          }
+        }
+      },
+      "ApprovePrdResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "prd",
+          "workItems",
+          "interfaceContracts"
+        ],
+        "properties": {
+          "prd": {
+            "$ref": "#/components/schemas/Prd"
+          },
+          "workItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkItem"
+            }
+          },
+          "interfaceContracts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterfaceContract"
+            }
+          },
+          "testCases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TestCase"
+            }
+          }
+        }
+      },
+      "StartTeamResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "prd",
+          "workItems",
+          "interfaceContracts",
+          "runs",
+          "skippedWorkItems"
+        ],
+        "properties": {
+          "prd": {
+            "$ref": "#/components/schemas/Prd"
+          },
+          "workItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkItem"
+            }
+          },
+          "interfaceContracts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterfaceContract"
+            }
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentRun"
+            }
+          },
+          "skippedWorkItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkItem"
+            }
+          }
+        }
+      },
+      "TeamAcceptanceResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "decisions",
+          "workItems",
+          "runs"
+        ],
+        "properties": {
+          "decisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AcceptanceDecision"
+            }
+          },
+          "workItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkItem"
+            }
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentRun"
+            }
+          }
+        }
+      },
+      "ClaimWorkItemResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workItem",
+          "agent"
+        ],
+        "properties": {
+          "workItem": {
+            "$ref": "#/components/schemas/WorkItem"
+          },
+          "agent": {
+            "$ref": "#/components/schemas/AgentProfile"
+          },
+          "bug": {
+            "$ref": "#/components/schemas/BugReport"
+          }
+        }
+      },
+      "ReleaseWorkItemResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workItem"
+        ],
+        "properties": {
+          "workItem": {
+            "$ref": "#/components/schemas/WorkItem"
+          },
+          "agent": {
+            "$ref": "#/components/schemas/AgentProfile"
+          }
+        }
+      },
+      "CreateBugResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "bug",
+          "requirement",
+          "prd",
+          "workItem"
+        ],
+        "properties": {
+          "bug": {
+            "$ref": "#/components/schemas/BugReport"
+          },
+          "requirement": {
+            "$ref": "#/components/schemas/Requirement"
+          },
+          "prd": {
+            "$ref": "#/components/schemas/Prd"
+          },
+          "workItem": {
+            "$ref": "#/components/schemas/WorkItem"
+          }
+        }
+      },
+      "PatchPilotSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requirements",
+          "prds",
+          "workItems",
+          "interfaceContracts",
+          "agentRuns",
+          "workspaceRuns",
+          "testCases",
+          "testRuns",
+          "pullRequests",
+          "reviewRecords",
+          "auditEvents",
+          "acceptances",
+          "bugs",
+          "agents"
+        ],
+        "properties": {
+          "requirements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Requirement"
+            }
+          },
+          "prds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Prd"
+            }
+          },
+          "workItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkItem"
+            }
+          },
+          "interfaceContracts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterfaceContract"
+            }
+          },
+          "agentRuns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentRun"
+            }
+          },
+          "workspaceRuns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRun"
+            }
+          },
+          "testCases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TestCase"
+            }
+          },
+          "testRuns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TestRun"
+            }
+          },
+          "pullRequests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PullRequestRecord"
+            }
+          },
+          "reviewRecords": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewRecord"
+            }
+          },
+          "auditEvents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEvent"
+            }
+          },
+          "acceptances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AcceptanceDecision"
+            }
+          },
+          "bugs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BugReport"
+            }
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentProfile"
+            }
+          }
+        }
+      }
+    }
+  }
+}

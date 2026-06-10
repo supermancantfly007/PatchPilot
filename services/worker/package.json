@@ -10,11 +10,14 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
+    "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
+    "lint:workspace": "eslint . --max-warnings=0",
     "test": "vitest run"
   },
   "dependencies": {
-    "@patchpilot/domain": "file:../../packages/domain"
+    "@patchpilot/contracts": "workspace:*",
+    "@patchpilot/domain": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

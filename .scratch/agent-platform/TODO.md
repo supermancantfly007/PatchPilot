@@ -1,0 +1,140 @@
+# PatchPilot Agent Platform TODO
+
+Source: `.scratch/agent-platform/TECHNICAL_DESIGN.md`
+
+Status: ready-for-agent
+
+## 使用规则
+
+- Agent 领取任务时，把任务行的 `Owner: unclaimed` 改成自己的 agent/thread 标识，并把 `Status` 改成 `doing`。
+- Agent 完成任务时，把复选框改为 `[x]`，把 `Status` 改成 `done`，补充 `Evidence` 和 `Verification`。
+- 不要领取依赖未完成的任务；如果必须拆分，新增子任务并保留原任务。
+- 已完成项基于当前仓库取证标记；不要因为目录或类型名存在就把后续生产能力标为完成。
+
+## Legend
+
+- `[x]` 已完成，当前仓库有源码或测试证据。
+- `[ ]` 待领取。
+- `Role` 是建议领取角色；实际可由具备能力的 agent 领取。
+
+## A. 已完成的本地 JSON-backed MVP
+
+- [x] `TD-001` 初始化 TypeScript pnpm workspace monorepo。Status: done. Role: ops. Owner: completed. Evidence: `package.json`, `pnpm-workspace.yaml`, `apps/*`, `services/*`, `packages/*`. Verification: `pnpm -r --if-present test` 覆盖各 workspace 测试入口。
+- [x] `TD-002` 建立领域类型和核心状态枚举。Status: done. Role: backend. Owner: completed. Evidence: `packages/domain/src/index.ts` 定义 `Requirement`, `Prd`, `WorkItem`, `InterfaceContract`, `AgentRun`, `WorkspaceRun`, `TestCase`, `TestRun`, `PullRequestRecord`, `ReviewRecord`, `AuditEvent`, `AcceptanceDecision`, `BugReport`. Verification: `packages/domain/src/domain.test.ts`.
+- [x] `TD-003` 实现普通模式需求入口和模板选择。Status: done. Role: frontend. Owner: completed. Evidence: `apps/web/src/app/page.tsx`, `apps/web/src/components/TemplateSelector.tsx`. Verification: `apps/web/src/components/TemplateSelector.test.tsx`, `scripts/e2e-smoke.mjs`.
+- [x] `TD-004` 实现 `grill-me` 式逐轮澄清 UI 和 API。Status: done. Role: fullstack. Owner: completed. Evidence: `POST /api/requirements/:id/clarification-turn`, `createGrillMeQuestion`, `apps/web/src/app/requirements/[id]/confirm/page.tsx`. Verification: `services/api/src/server.test.ts` 的 clarification turns 测试。
+- [x] `TD-005` 从澄清记录生成简版 PRD 草案。Status: done. Role: backend. Owner: completed. Evidence: `createPrd`, `POST /api/requirements/:id/prd`, `POST /api/requirements/:id/clarification-answer`. Verification: API 测试校验 PRD 包含 `## 如何验收` 和澄清记录。
+- [x] `TD-006` PRD 批准后生成 4 个团队工作项。Status: done. Role: backend. Owner: completed. Evidence: `createWorkItems` 生成 backend/frontend/test/ops 四类工作项，`approvePrd`. Verification: `services/api/src/server.test.ts` 的 `starts the whole agent team for a PRD`.
+- [x] `TD-007` 工作项包含角色、范围、非目标、验收标准和测试建议。Status: done. Role: backend. Owner: completed. Evidence: `createWorkItems`. Verification: `packages/domain/src/domain.test.ts`.
+- [x] `TD-008` 生成 HTTP、事件流、共享状态三类 draft/approved 接口契约。Status: done. Role: backend. Owner: completed. Evidence: `createInterfaceContracts`, requirement bundle, approve response. Verification: API 和 domain 测试断言 3 个 contract。
+- [x] `TD-009` 暴露 Fastify Control Plane API 基础端点。Status: done. Role: backend. Owner: completed. Evidence: `services/api/src/server.ts` 覆盖 requirements, PRD, agents, bugs, work-items claim/release/start, runs, SSE, acceptance, snapshot, config. Verification: `services/api/src/server.test.ts`.
+- [x] `TD-010` 使用 JSON-backed 本地 store 作为当前 MVP 状态源。Status: done. Role: backend. Owner: completed. Evidence: `services/api/src/store.ts` 使用 `patchpilot-store.json`, `emptySnapshot`, `normalizeSnapshot`. Verification: API 生命周期测试。
+- [x] `TD-011` `/api/snapshot` 暴露统一证据链快照。Status: done. Role: backend. Owner: completed. Evidence: `PatchPilotSnapshot`, `GET /api/snapshot`. Verification: API、worker E2E、web control page 均读取 snapshot。
+- [x] `TD-012` 实现 SSE 运行事件流。Status: done. Role: backend. Owner: completed. Evidence: `GET /api/runs/:id/events`, `RunPage` 使用 `EventSource`. Verification: smoke E2E 等待运行状态和终态。
+- [x] `TD-013` 实现订单式 5 阶段运行 timeline。Status: done. Role: frontend. Owner: completed. Evidence: `createTimeline`, `advanceTimeline`, `completeTimeline`, `apps/web/src/app/runs/[id]/page.tsx`. Verification: domain timeline 测试。
+- [x] `TD-014` 实现本地模拟 runner fallback。Status: done. Role: backend. Owner: completed. Evidence: `simulateRun`, `PATCHPILOT_RUNNER=simulated`, `getRuntimeConfig`. Verification: API 生命周期测试和 E2E 脚本。
+- [x] `TD-015` 实现 CodexRunner MVP adapter over `codex exec --json`。Status: done. Role: backend. Owner: completed. Evidence: `services/api/src/codexRunner.ts` 启动 `codex exec --json`, 解析 JSONL, 采集 session/message, 支持 repair attempt. Verification: 静态证据；真实 Codex 依赖本机 Codex CLI。
+- [x] `TD-016` Codex runner 创建独立 git worktree 和任务文件。Status: done. Role: backend. Owner: completed. Evidence: `prepareWorkspace`, `git worktree add --detach`, `PATCHPILOT_TASK.md`. Verification: `isGitWorkspaceAvailable`, README runner 说明。
+- [x] `TD-017` Codex prompt 保持短提示并按任务类型使用 `/tdd` 或 `/diagnose`。Status: done. Role: backend. Owner: completed. Evidence: `buildCodexPrompt`, `buildRepairPrompt`. Verification: 源码取证。
+- [x] `TD-018` 执行项目测试命令并记录 TestRun。Status: done. Role: backend. Owner: completed. Evidence: `runProjectTests`, `recordCompletedRunEvidence`, `TestRun.testCaseId`. Verification: API 和 worker E2E 校验 TestRun passed 且关联 TestCase。
+- [x] `TD-019` PRD 批准后生成可复用 TestCase。Status: done. Role: backend. Owner: completed. Evidence: `createTestCasesForWorkItems`, `ensureTestCasesForWorkItems`. Verification: domain/API/worker E2E。
+- [x] `TD-020` 成功 AgentRun 生成本地 PullRequestRecord。Status: done. Role: backend. Owner: completed. Evidence: `recordPullRequest`, `local://pull-requests/:runId`, PR body 模板. Verification: API/worker E2E 校验 PR body 包含需求、工作项、测试、Reviewer 摘要。
+- [x] `TD-021` 成功 AgentRun 生成 ReviewRecord。Status: done. Role: backend. Owner: completed. Evidence: `recordReview`, `review.approved` audit event. Verification: API/worker E2E 校验 review approved 且关联 PR。
+- [x] `TD-022` 记录 WorkspaceRun、TestRun、PullRequest、ReviewRecord、AuditEvent 证据链。Status: done. Role: backend. Owner: completed. Evidence: `recordCompletedRunEvidence`, `workspaceRuns`, `testRuns`, `pullRequests`, `reviewRecords`, `auditEvents`. Verification: `services/api/src/server.test.ts`, `scripts/e2e-team-worker.mjs`.
+- [x] `TD-023` 实现单 run 和团队验收 accepted/rejected。Status: done. Role: fullstack. Owner: completed. Evidence: `acceptRun`, `acceptPrdRuns`, `apps/web/src/app/acceptance/[id]/page.tsx`. Verification: API acceptance lifecycle 测试。
+- [x] `TD-024` rejected 验收触发返工队列，保留旧证据并创建新 run。Status: done. Role: backend. Owner: completed. Evidence: `requestWorkItemRework`, `shouldStartReworkRun`, `lastRejectionReason`, `reworkCount`. Verification: API 和 smoke E2E 的返工测试。
+- [x] `TD-025` 实现 bug intake -> test agent 复现任务 -> backend 修复任务。Status: done. Role: backend. Owner: completed. Evidence: `POST /api/bugs`, `createBugWorkItem`, `ensureBugFixWorkItem`, `completeBugIfNeeded`. Verification: `services/api/src/server.test.ts`, `scripts/e2e-bug-worker.mjs`.
+- [x] `TD-026` 实现基础 worker dispatcher。Status: done. Role: backend. Owner: completed. Evidence: `services/worker/src/dispatch.ts`, `services/worker/src/index.ts` 读取 snapshot、匹配 idle agent、claim 后 start. Verification: `services/worker/src/dispatch.test.ts`, `scripts/e2e-team-worker.mjs`.
+- [x] `TD-027` 提供专业控制台查看需求、工作项、Bug、TestCase、AgentRun、PR、审计。Status: done. Role: frontend. Owner: completed. Evidence: `apps/web/src/app/control/page.tsx`. Verification: smoke E2E 检查专业控制台关键区域。
+- [x] `TD-028` 提供运行页和验收页的证据摘要。Status: done. Role: frontend. Owner: completed. Evidence: `apps/web/src/app/runs/[id]/page.tsx`, `apps/web/src/app/acceptance/[id]/page.tsx`. Verification: smoke E2E 检查 WorkspaceRun/TestCase/TestRun/PR/Review/Audit 展示。
+- [x] `TD-029` 提供本地开发脚本、环境变量和端口文档。Status: done. Role: ops. Owner: completed. Evidence: `README.md`, `.env.example`, `docs/PORTS.md`, `package.json` scripts. Verification: 文档和脚本取证。
+- [x] `TD-030` 提供可选本地中间件 compose。Status: done. Role: ops. Owner: completed. Evidence: `infra/docker-compose.yml` 包含 Postgres、Redis、MinIO. Verification: compose 文件有 healthcheck 和端口配置。
+- [x] `TD-031` 提供平台自身测试和本地 E2E 脚本。Status: done. Role: test. Owner: completed. Evidence: `pnpm test`, `pnpm e2e:smoke`, `pnpm e2e:team`, `pnpm e2e:bug`. Verification: test files and scripts present.
+
+## B. 近期待领取：把本地 MVP 补成技术方案要求的 MVP
+
+- [x] `TD-101` 引入 Turborepo pipeline。Status: done. Role: ops. Owner: codex-thread. Depends on: TD-001. Scope: 增加 `turbo.json` 和必要 devDependency，把 build/test/typecheck/lint 接入缓存和依赖图。 Acceptance: `pnpm build`, `pnpm test`, `pnpm typecheck`, `pnpm lint` 行为不回退。 Evidence: `turbo.json`, `apps/web/turbo.json`, root `package.json` turbo scripts, `turbo` devDependency in `pnpm-lock.yaml`, workspace `build`/`lint:workspace` scripts, internal `workspace:*` dependencies. Verification: `pnpm exec turbo run build --dry-run=json` showed `@patchpilot/domain` upstream of api/web/worker; `pnpm build`, `pnpm typecheck`, `pnpm test`, `pnpm lint`, `pnpm e2e:smoke`, `pnpm e2e:team`, `pnpm e2e:bug` passed. Code review: final diff checked; generated `.turbo` cache ignored and Next dev `next-env.d.ts` noise restored.
+- [x] `TD-102` 建立 `apps/cli` 本地/运维 CLI。Status: done. Role: ops. Owner: codex-thread. Depends on: TD-009. Scope: 支持提交需求、查看 snapshot、启动 team、运行 worker once、导出报告。 Acceptance: CLI 可在无 Web UI 时跑通需求到验收的 happy path。 Evidence: `apps/cli/src/index.ts` 提供 submit/create-prd/approve-prd/snapshot/start-team/worker-once/accept-prd/report/happy-path；`services/worker/src/index.ts` 支持 strict worker tick result 和 runner override；`scripts/e2e-cli.mjs` 启动 API 后用根 `pnpm --silent cli -- ...` 入口跑通无 Web UI 的需求到验收和报告；`README.md` 记录 CLI 用法。 Verification: code review 检查 CLI 参数、JSON 输出、worker 错误路径、报告证据和根脚本参数透传；`pnpm cli -- help`、`pnpm --filter @patchpilot/cli test`、`pnpm --filter @patchpilot/worker test`、`pnpm test`、`pnpm typecheck`、`pnpm lint`、`pnpm e2e:cli` passed。
+- [x] `TD-103` 拆出 `packages/contracts`。Status: done. Role: backend. Owner: codex-thread. Depends on: TD-002, TD-008. Scope: 把 HTTP API、SSE event、shared state schema 从代码内 Markdown 升级成版本化 contract artifact。 Acceptance: contract 包可生成类型并被 API/Web/Worker 引用。 Evidence: `packages/contracts/src/index.ts` 定义 `contractVersion`, HTTP API artifact, AgentRun SSE event artifact, shared state schema artifact, `ApiOperationId`/`ApiRoute`/`RunEventTerminalStatus`/`SharedStateSchemaName` 推导类型, `apiRoute`, `apiPath`, `createInterfaceContracts`, `renderContractMarkdown`；`services/api/src/server.ts` 使用 `apiRoute` 注册公开 API，`services/api/src/store.ts` 使用 contracts 包生成 `InterfaceContract`；`apps/web/src/lib/api.ts` 和 `services/worker/src/index.ts` 使用 `apiPath` 构造 API/SSE/worker 路径。 Verification: code review 检查旧 domain Markdown 生成已移除、API/Web/Worker 依赖同一 contract artifact、路径参数编码和版本化 Markdown；`pnpm --filter @patchpilot/contracts test`、`pnpm --filter @patchpilot/api test`、`pnpm --filter @patchpilot/web test`、`pnpm --filter @patchpilot/worker test`、`pnpm test`、`pnpm typecheck`、`pnpm lint`、`pnpm build`、`pnpm e2e:cli`、`PATCHPILOT_E2E_URL=http://localhost:3100 pnpm e2e:smoke` passed。
+- [x] `TD-104` 生成 OpenAPI 文档。Status: done. Role: backend. Owner: codex-thread. Depends on: TD-009, TD-103. Scope: Fastify + Zod schema 输出 OpenAPI，覆盖当前公开 API。 Acceptance: CI 验证 OpenAPI 文件更新且前端 client 不漂移。 Evidence: `packages/contracts/src/index.ts` 导出 Fastify 复用的 Zod request schemas、HTTP contract artifact 和 `buildOpenApiDocument`; `packages/contracts/openapi/patchpilot.openapi.json` 是生成并提交的 OpenAPI 3.1 artifact；`scripts/generate-openapi.mjs` 提供 `openapi:generate`/`openapi:check`; `packages/contracts/src/openapi.test.ts` 校验所有 HTTP operation 被 OpenAPI 覆盖且 committed artifact 不漂移；`services/api/src/server.ts` 使用 contracts 包的 route 和 Zod schema；`apps/web/src/lib/api.ts` 使用 `apiPath` 防前端 client 路径漂移。 Verification: code review 检查 OpenAPI 19 paths/38 schemas/0 missing refs、`Foo[]` 输出 array schema、Web/Worker 运行路径无散落硬编码；`pnpm openapi:generate`、`pnpm openapi:check`、`pnpm --filter @patchpilot/contracts test`、`pnpm --filter @patchpilot/api test`、`pnpm test`、`pnpm typecheck`、`pnpm lint`、`pnpm build`、`pnpm e2e:cli`、`PATCHPILOT_E2E_URL=http://localhost:3100 pnpm e2e:smoke` passed。
+- [x] `TD-105` 生成 AsyncAPI 或等价事件 schema。Status: done. Role: backend. Owner: codex-thread. Depends on: TD-012, TD-103. Scope: 描述 `GET /api/runs/:id/events` envelope、终态、错误事件和兼容规则。 Acceptance: event schema 测试覆盖 SSE 首包、增量更新、终态关闭。 Evidence: `packages/contracts/src/index.ts` 导出 `buildRunEventSchemaDocument`、RunEventError schema、SSE envelope/terminal/compatibility artifact；`packages/contracts/events/run-events.schema.json` 是生成并提交的事件 schema artifact；`scripts/generate-event-schema.mjs` 和根 `events:generate`/`events:check` 锁住 artifact 漂移；`packages/contracts/src/events.test.ts` 覆盖 message/error envelope、终态、兼容规则、自包含 components 和首包可缺省的 optional 字段；`services/api/src/server.test.ts` 用真实临时 HTTP 端口验证 SSE 首包、增量更新、终态关闭和 missing-run error event。 Verification: code review 发现并修复事件 schema 中 `AgentRun` optional 字段误标 required、artifact `$ref` 不自包含、Next dev `next-env.d.ts` 生成噪音；`pnpm --filter @patchpilot/contracts test`、`pnpm --filter @patchpilot/api test`、`pnpm openapi:check`、`pnpm events:check`、`pnpm test`、`pnpm typecheck`、`pnpm lint`、`pnpm build`、`pnpm --filter @patchpilot/web typecheck`、`pnpm e2e:cli`、`PATCHPILOT_E2E_URL=http://localhost:3000 pnpm e2e:smoke` passed；`pnpm e2e:team` 和 `pnpm e2e:bug` 也在 TD-105 验证过程中 passed。
+- [x] `TD-106` 实现 `.patchpilot/config.yaml` 读取。Status: done. Role: backend. Owner: codex-thread. Depends on: TD-018. Scope: 支持 setup/test/smoke/e2e/dev/security/budget 配置，保留 env fallback。 Acceptance: fixture repo 可用 config 覆盖测试命令和 preview URL。 Evidence: `services/api/src/config.ts` 读取 repo 根 `.patchpilot/config.yaml` 或 `PATCHPILOT_CONFIG_PATH`，支持 setup/test/smoke/e2e/dev/security/budget 并按 env > config > defaults 解析；`services/api/src/codexRunner.ts` 和 `services/api/src/store.ts` 使用解析后的 runner、workspaceRoot、test command/timeout、repair attempts、Codex timeout/sandbox/bypass、preview URL；`packages/domain/src/index.ts` 和 `packages/contracts/src/index.ts` 扩展 `RuntimeConfig` schema；`services/api/src/config.test.ts` 和 `services/api/src/server.test.ts` 覆盖 fixture config、env override、包目录启动读取 repo config、`/api/config` 返回测试命令和 preview URL；`.env.example` 和 `README.md` 记录配置文件用法。 Verification: code review 检查优先级、路径解析、默认 config 查找、`NODE_ENV=test` simulated fallback、runtime config schema 和 Codex runner 调用点；`pnpm --filter @patchpilot/contracts test`、`pnpm --filter @patchpilot/domain test`、`pnpm --filter @patchpilot/api test`、`pnpm openapi:check`、`pnpm events:check`、`pnpm typecheck`、`pnpm lint`、`pnpm build`、`pnpm test`、`pnpm e2e:cli`、`pnpm e2e:team`、`pnpm e2e:bug`、`PATCHPILOT_E2E_URL=http://localhost:3000 pnpm e2e:smoke` passed。
+- [ ] `TD-107` 拆出 `packages/testing` TestRunner。Status: todo. Role: test. Owner: unclaimed. Depends on: TD-018, TD-106. Scope: 统一命令执行、超时、重试、JUnit/JSON/text 摘要、artifact id、flaky signal。 Acceptance: API 不直接运行 shell 测试，TestRun 字段覆盖设计要求。
+- [ ] `TD-108` 增强 TestCase 状态同步。Status: todo. Role: test. Owner: unclaimed. Depends on: TD-019, TD-107. Scope: TestRun 通过/失败后更新 TestCase `passed/failed/blocked`，记录最近一次运行和 flaky 状态。 Acceptance: 验收页能展示 TestCase 通过率。
+- [ ] `TD-109` 拆出 `packages/codex-runner`。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-015. Scope: 把 CodexRunner interface、exec adapter、event parser、failure summary 从 API store 中解耦。 Acceptance: API 通过包接口调用 runner，测试可注入 fake runner。
+- [ ] `TD-110` 拆出 `packages/workspace-manager`。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-016. Scope: 管理 worktree 命名、分支命名、cleanup、artifact collection、workspace status。 Acceptance: runner 不直接执行 `git worktree add`，失败清理有测试。
+- [ ] `TD-111` 实现真实任务分支命名和本地 commit 边界。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-110. Scope: 按 `patchpilot/<work_item_id>-<slug>` 创建分支，保存 base ref 和 commit 信息。 Acceptance: PullRequestRecord 关联真实 branch/base/commit。
+- [ ] `TD-112` 增强 worker claim lease/fencing。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-026. Scope: 为 WorkItem 增加 `claim_token`, `lease_expires_at`, `heartbeat_at`, `version`，写状态时校验 token。 Acceptance: 并发 claim 测试证明不会双重领取，过期 lease 可回收。
+- [ ] `TD-113` 实现本地 Markdown 模式文件锁。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-112. Scope: 技术方案要求本地 Markdown MVP 使用文件锁；补齐 `.scratch` WorkItem/Run report 导入导出或明确迁移边界。 Acceptance: 多 worker 同时领取 `.scratch` 任务不会冲突。
+- [ ] `TD-114` 增强 Scheduler 策略。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-112. Scope: 支持依赖、并发限制、预算、capability 匹配、lease 回收、恢复已有 workflow/run。 Acceptance: scheduler 测试覆盖依赖未满足、预算不足、agent capability 不匹配。
+- [ ] `TD-115` 补齐 Approval API。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-009. Scope: 实现 `/api/approvals/:id/approve`, `/deny` 和 approval records。 Acceptance: budget/dangerous/breaking/secret/network 审批对象可创建、批准、拒绝、过期。
+- [ ] `TD-116` 实现预算和成本治理。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-115. Scope: 为 PRD/WorkItem/AgentRun 设置预算、软阈值告警、硬阈值暂停、继续执行需审批。 Acceptance: 超预算 run 进入 `needs_approval`，审计记录完整。
+- [ ] `TD-117` 实现失败分类和 Defect 沉淀。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-018, TD-025. Scope: 区分 transient/deterministic/test_failed/policy_denied/budget_exhausted/environment_failed，测试失败可生成 Defect。 Acceptance: 失败记录关联 commit/workItem/run/testRun。
+- [ ] `TD-118` 对齐正式 Defect 状态机。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-025, TD-117. Scope: 从当前 `reported/confirmed/fixing/fixed/rejected` 升级到 `reported -> needs_repro -> reproduced/unreproducible -> fixing -> verifying -> closed` 或补 ADR 说明偏差。 Acceptance: bug E2E 更新后仍通过，UI 文案清楚。
+- [ ] `TD-119` 实现 Artifact Store 抽象。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-022. Scope: 支持本地 FS 和 S3-compatible storage，保存日志、trace、diff、test report、screenshots、preview metadata。 Acceptance: TestRun/AgentRun 引用 artifact ids，MinIO 可选集成测试通过。
+- [ ] `TD-120` 增加日志、diff、工具调用采集。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-015, TD-119. Scope: Codex JSONL 中 agent message、reasoning 摘要、command execution、file changes、test output 入 event/artifact。 Acceptance: 专业视图能按 run 查看关键工具调用和 diff 摘要。
+- [ ] `TD-121` 增强验收质量门。Status: todo. Role: fullstack. Owner: unclaimed. Depends on: TD-108, TD-117, TD-119. Scope: 验收页展示验收标准覆盖率、TestCase 通过率、未解决缺陷、flaky、契约兼容性、PR 状态、审计完整性。 Acceptance: 未满足门禁时不能接受或必须显示豁免原因。
+- [ ] `TD-122` 实现 formal AuditEvent before/after/hash chain。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-022. Scope: 审计事件增加 actor_type/id、target_type/id、before_json、after_json、metadata_json、hash、previous_hash。 Acceptance: 审计链可校验、旧 snapshot 可迁移。
+- [ ] `TD-123` UI 支持文件、截图、录屏、链接输入。Status: todo. Role: frontend. Owner: unclaimed. Depends on: TD-003, TD-119. Scope: 首屏输入支持附件和链接 metadata，bug/需求 intake 能引用 artifact。 Acceptance: 提交带附件需求后 PRD 和证据页能展示附件引用。
+- [ ] `TD-124` 移动端关键动作验证。Status: todo. Role: frontend. Owner: unclaimed. Depends on: TD-003, TD-023. Scope: 为提交需求、回复澄清、查看进度、验收/驳回补移动端 Playwright smoke。 Acceptance: 375px 和桌面视口均无核心文字溢出或操作遮挡。
+- [ ] `TD-125` 完成专业模式缺失的成本、预算、审批视图。Status: todo. Role: frontend. Owner: unclaimed. Depends on: TD-115, TD-116. Scope: 在 `/control` 和 run details 展示 Approval、budget、cost、failure type。 Acceptance: 审批和预算状态不需要查 JSON 文件即可操作。
+
+## C. 生产化主线
+
+- [ ] `TD-201` 建立 `packages/db` 和 Drizzle schema/migrations。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-002. Scope: 覆盖 organizations, projects, repositories, requirements, prd_versions, work_items, interface_contracts, test_cases, test_runs, defects, agents, agent_runs, workspace_runs, pull_requests, approvals, audit_events, artifacts, capability_manifests, budgets。 Acceptance: 迁移可在 Postgres 上创建约束和索引。
+- [ ] `TD-202` 将 JSON store 迁移到 Postgres repository layer。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-201. Scope: 保留 `.scratch`/JSON 导入导出能力，但产品状态以 Postgres 为权威。 Acceptance: API 测试在 test database 上运行，JSON fixture 可导入。
+- [ ] `TD-203` 实现数据约束和索引。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-201. Scope: `work_items(status, lease_expires_at)`, `agent_runs(work_item_id,status)`, `audit_events(trace_id,created_at)`, `test_runs(work_item_id,created_at)`, `pull_requests(work_item_id)`, claim token fencing。 Acceptance: 数据库层拒绝非法重复 claim/PR 记录。
+- [ ] `TD-204` 接入 Temporal TypeScript SDK。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-202. Scope: 建立 workflow worker、activity worker、signal/query、retry policy、idempotency key。 Acceptance: 本地 Temporal 环境可跑一个 workflow 到终态。
+- [ ] `TD-205` 实现 `RequirementIntakeWorkflow`。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-204. Scope: 需求进入、逐轮澄清、PRD 草案、确认等待。 Acceptance: 用户信号回答问题后 workflow 恢复并生成 PRD。
+- [ ] `TD-206` 实现 `WorkItemPlanningWorkflow`。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-204, TD-103. Scope: PRD 到 1-4 个垂直工作项、测试建议、契约基线。 Acceptance: planning workflow 幂等重放不重复创建任务。
+- [ ] `TD-207` 实现 `WorkItemExecutionWorkflow`。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-204, TD-109, TD-110, TD-107. Scope: claim、workspace、CodexRun、test、PR、review、archive。 Acceptance: activity 失败按策略重试，终态写入证据链。
+- [ ] `TD-208` 实现 `ApprovalWorkflow`。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-115, TD-204. Scope: 等待人工或策略审批，signal approve/deny/expire。 Acceptance: approval signal 可恢复被暂停 run。
+- [ ] `TD-209` 实现 `DefectReproductionWorkflow`。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-118, TD-204. Scope: `/diagnose` 驱动 bug 复现、诊断、修复前证据。 Acceptance: 无复现证据不能自动进入修复任务。
+- [ ] `TD-210` 实现 `RetrospectiveWorkflow`。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-207. Scope: 完成后汇总成本、测试、风险和审计链路。 Acceptance: 每个 PRD 终态有 retrospective artifact。
+- [ ] `TD-211` 实现 rootless container sandbox。Status: todo. Role: ops. Owner: unclaimed. Depends on: TD-110. Scope: Docker/Podman rootless、无 privileged、禁 Docker socket、禁宿主 home、workspace write mount、CPU/memory/disk/time quota。 Acceptance: workspace integration test 证明容器不能访问 deny path 或 Docker socket。
+- [ ] `TD-212` 实现网络 egress allowlist。Status: todo. Role: ops. Owner: unclaimed. Depends on: TD-211, TD-301. Scope: 默认拒绝内网和 metadata endpoint，只放行 Git remote、package registry、OpenAI/Codex endpoint。 Acceptance: 被禁止 endpoint 请求失败并写审计。
+- [ ] `TD-213` 实现 Secret Broker MVP。Status: todo. Role: security. Owner: unclaimed. Depends on: TD-115, TD-122. Scope: 只注入明确配置的开发/CI token，写审计，默认无生产密钥。 Acceptance: 未授权 secret 请求失败；授权注入可追踪。
+- [ ] `TD-214` 实现 prompt/log/diff/artifact secret scanning 和脱敏。Status: todo. Role: security. Owner: unclaimed. Depends on: TD-119, TD-213. Scope: 对 prompt、logs、diff、test artifact 做敏感信息扫描和 redaction。 Acceptance: fixture secret 不出现在 UI/API 响应中。
+- [ ] `TD-215` 实现 GitHub PR Adapter。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-111, TD-020. Scope: local branch/commit、push branch、Octokit 创建 PR、更新 PR body、读取 checks、写 reviewer comment。 Acceptance: GitHub fixture repo 可创建真实 PR，local PR record 保持兼容。
+- [ ] `TD-216` 实现 Contract Registry diff 和 breaking change approval。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-103, TD-115. Scope: contract diff、provider/consumer 映射、breaking change approval、contract TestRun。 Acceptance: breaking API/schema/event 变更进入 Approval。
+- [ ] `TD-217` 实现 provider/consumer contract tests。Status: todo. Role: test. Owner: unclaimed. Depends on: TD-216. Scope: OpenAPI/AsyncAPI/schema 对前端、后端、worker consumer 生成测试要求。 Acceptance: contract 变更 PR 必须有通过的 contract TestRun。
+- [ ] `TD-218` 实现 policy/capability manifest 包。Status: todo. Role: security. Owner: unclaimed. Depends on: TD-112, TD-211. Scope: `packages/policy` 生成和校验 repo write deny、commands allow/deny、network allow、secrets、runtime、cost。 Acceptance: Scheduler/Workspace/Command wrapper 都执行同一 manifest。
+- [ ] `TD-219` 实现命令执行 wrapper。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-218. Scope: 所有 shell/git/codex/test 命令经 wrapper 做 allow/deny、timeout、log capture、audit。 Acceptance: 禁止命令无法绕过并有审计事件。
+- [ ] `TD-220` 接入 OpenTelemetry。Status: todo. Role: ops. Owner: unclaimed. Depends on: TD-122. Scope: trace、metrics、logs 关联 Requirement/Workflow/WorkItem/AgentRun/TestRun。 Acceptance: 本地 collector 可看到一次 run 的 trace。
+- [ ] `TD-221` 增加 Prometheus/Grafana-compatible metrics。Status: todo. Role: ops. Owner: unclaimed. Depends on: TD-220. Scope: run duration、failure reason、queue depth、cost、test pass rate、acceptance rate。 Acceptance: `/metrics` 或 collector export 有稳定指标。
+- [ ] `TD-222` 实现 RBAC/auth 最小版本。Status: todo. Role: security. Owner: unclaimed. Depends on: TD-201. Scope: 区分 requirement submitter、maintainer、reviewer/admin，保护 approval、secret、production data action。 Acceptance: 未授权用户不能批准高风险动作。
+
+## D. 后续阶段和企业集成
+
+- [ ] `TD-301` 生产级 sandbox runtime 评估和 ADR。Status: todo. Role: architecture. Owner: unclaimed. Depends on: TD-211. Scope: gVisor/Kata/Firecracker 选择、退出标准、成本和兼容性。 Acceptance: ADR 记录决策，PoC 跑通最小 work item。
+- [ ] `TD-302` Kubernetes worker pool 模板。Status: todo. Role: ops. Owner: unclaimed. Depends on: TD-211, TD-220. Scope: 独立 worker nodes、per-run service account、resource quota、network policy。 Acceptance: k8s manifest 或 Helm chart 可部署非生产环境。
+- [ ] `TD-303` Vault/cloud Secrets Manager adapter。Status: todo. Role: security. Owner: unclaimed. Depends on: TD-213. Scope: 短期 token、轮换、撤销、访问审计。 Acceptance: 本地 fake + 一个 cloud/Vault adapter 测试通过。
+- [ ] `TD-304` GitHub App 集成。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-215, TD-222. Scope: installation auth、repo selection、webhook、checks、PR permissions。 Acceptance: GitHub App 安装后可选择仓库并创建 PR。
+- [ ] `TD-305` Linear/Jira adapter。Status: todo. Role: backend. Owner: unclaimed. Depends on: TD-202. Scope: WorkItem/Defect 双向同步，保留 PatchPilot 状态源边界。 Acceptance: 外部 issue 状态变化可触发或阻塞 PatchPilot work item。
+- [ ] `TD-306` 多仓库编排。Status: todo. Role: architecture. Owner: unclaimed. Depends on: TD-304, TD-216. Scope: 多 repo PRD、contract dependency、cross-repo scheduling。 Acceptance: 一个 PRD 可产生多个 repo 的 work item 和 PR。
+- [ ] `TD-307` 发布和回滚审批。Status: todo. Role: ops. Owner: unclaimed. Depends on: TD-208, TD-222. Scope: release workflow、rollback workflow、manual approval gates。 Acceptance: 平台仍不自动生产发布，必须走审批和审计。
+- [ ] `TD-308` 审计导出和保留策略。Status: todo. Role: security. Owner: unclaimed. Depends on: TD-122, TD-220. Scope: WORM/保留期/PII 脱敏/导出格式。 Acceptance: 管理员可导出某 PRD 全链路审计包。
+- [ ] `TD-309` 成本和产品指标仪表盘。Status: todo. Role: frontend. Owner: unclaimed. Depends on: TD-116, TD-221. Scope: 需求到 PR 时间、自主完成率、首次测试通过率、人类介入次数、失败原因、成本/接受 PR、复现成功率、审计完整率、返工轮次、最终接受率。 Acceptance: 指标从真实事件计算，不手写静态数字。
+
+## E. ADR 待办
+
+- [ ] `ADR-0001` 生产工作流引擎选择 Temporal，以及 polling MVP 的退出标准。Status: todo. Role: architecture. Owner: unclaimed.
+- [ ] `ADR-0002` 项目事实源选择 `.scratch` Markdown、JSON、Postgres 或混合事件存储。Status: todo. Role: architecture. Owner: unclaimed.
+- [ ] `ADR-0003` Codex 集成主路径：SDK、`codex exec --json`、MCP 的分工和适配器接口。Status: todo. Role: architecture. Owner: unclaimed.
+- [ ] `ADR-0004` worktree + container/sandbox 隔离模型。Status: todo. Role: architecture. Owner: unclaimed.
+- [ ] `ADR-0005` WorkItem 并发领取与 lease/fencing 机制。Status: todo. Role: architecture. Owner: unclaimed.
+- [ ] `ADR-0006` InterfaceContract 注册、版本化和 breaking change 策略。Status: todo. Role: architecture. Owner: unclaimed.
+- [ ] `ADR-0007` PR 分支、review、merge queue、冲突处理策略。Status: todo. Role: architecture. Owner: unclaimed.
+- [ ] `ADR-0008` AgentRun/AuditEvent 事件模型、日志保留和脱敏策略。Status: todo. Role: architecture. Owner: unclaimed.
+- [ ] `ADR-0009` 凭证、MCP 工具、网络访问和审批门安全模型。Status: todo. Role: architecture. Owner: unclaimed.
+- [ ] `ADR-0010` 测试与契约验证策略，包括目标测试、全量测试、失败沉淀为 Defect 的规则。Status: todo. Role: architecture. Owner: unclaimed.
+
+## F. 当前不应标记完成的事项
+
+- Postgres/Drizzle 只是有 compose 和 env，占位不等于完成。
+- Temporal 尚未接入；当前 worker 是 polling worker，不是 durable workflow。
+- 当前 PR 是 `local://` 记录，不是真实 GitHub PR。
+- 当前 worktree runner 没有 container sandbox、egress policy 或 secret broker。
+- 当前 contract 是 Markdown draft/approved 记录，不是 OpenAPI/AsyncAPI registry。
+- 当前 claim 是基础状态写入，不具备 lease、heartbeat、claim token fencing 或文件锁原子性。
+- 当前成本是静态估算，不具备预算审批和真实用量归集。

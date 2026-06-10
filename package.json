@@ -16,13 +16,20 @@
     "dev:web": "pnpm --filter @patchpilot/web dev",
     "dev:worker": "pnpm --filter @patchpilot/worker dev",
     "dev:reset": "node scripts/reset-dev-data.mjs",
+    "cli": "pnpm --filter @patchpilot/cli start",
+    "openapi:generate": "tsx scripts/generate-openapi.mjs",
+    "openapi:check": "tsx scripts/generate-openapi.mjs --check",
+    "events:generate": "tsx scripts/generate-event-schema.mjs",
+    "events:check": "tsx scripts/generate-event-schema.mjs --check",
+    "e2e:cli": "node scripts/e2e-cli.mjs",
     "e2e:smoke": "node scripts/e2e-smoke.mjs",
     "e2e:team": "node scripts/e2e-team-worker.mjs",
     "e2e:bug": "node scripts/e2e-bug-worker.mjs",
-    "build": "pnpm -r --if-present build",
-    "test": "pnpm -r --if-present test",
-    "typecheck": "pnpm -r --if-present typecheck",
-    "lint": "eslint . --max-warnings=0"
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run //#lint:repo lint:workspace",
+    "lint:repo": "eslint eslint.config.mjs scripts --max-warnings=0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -32,6 +39,7 @@
     "globals": "^17.6.0",
     "playwright-core": "^1.60.0",
     "tsx": "^4.21.0",
+    "turbo": "^2.9.17",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.61.0",
     "vitest": "^4.0.15"

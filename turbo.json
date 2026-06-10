@@ -1,0 +1,37 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": [
+    "eslint.config.mjs",
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "tsconfig.base.json"
+  ],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": []
+    },
+    "lint:workspace": {
+      "dependsOn": ["^lint:workspace"],
+      "outputs": []
+    },
+    "//#lint:repo": {
+      "inputs": [
+        "eslint.config.mjs",
+        "package.json",
+        "pnpm-lock.yaml",
+        "scripts/**/*.mjs"
+      ],
+      "outputs": []
+    }
+  }
+}

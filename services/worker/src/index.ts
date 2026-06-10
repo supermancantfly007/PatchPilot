@@ -1,17 +1,32 @@
 import { pathToFileURL } from "node:url";
-import type { PatchPilotSnapshot } from "@patchpilot/domain";
+import { apiPath } from "@patchpilot/contracts";
+import type { AgentRunnerKind, PatchPilotSnapshot } from "@patchpilot/domain";
 import { planDispatch, type DispatchAssignment } from "./dispatch";
 
 interface WorkerConfig {
   apiBaseUrl: string;
   intervalMs: number;
   once: boolean;
+  runner?: AgentRunnerKind;
+  silent?: boolean;
+}
+
+export interface WorkerTickResult {
+  planned: number;
+  dispatched: number;
+  failed: number;
+  errors: string[];
+}
+
+interface WorkerTickOptions {
+  throwOnError?: boolean;
 }
 
 interface WorkerEnv {
   PATCHPILOT_API_BASE_URL?: string;
   PATCHPILOT_WORKER_INTERVAL_MS?: string;
   PATCHPILOT_WORKER_ONCE?: string;
+  PATCHPILOT_WORKER_RUNNER?: string;
 }
 
 const defaultApiBaseUrl = "http://localhost:4000";
@@ -26,12 +41,13 @@ export function readWorkerConfig(env: WorkerEnv = process.env): WorkerConfig {
   return {
     apiBaseUrl: trimTrailingSlash(env.PATCHPILOT_API_BASE_URL ?? defaultApiBaseUrl),
     intervalMs: Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : defaultIntervalMs,
-    once: isTruthy(env.PATCHPILOT_WORKER_ONCE)
+    once: isTruthy(env.PATCHPILOT_WORKER_ONCE),
+    runner: parseRunner(env.PATCHPILOT_WORKER_RUNNER)
   };
 }
 
 export async function runWorker(config = readWorkerConfig()): Promise<void> {
-  log(`listening ${config.apiBaseUrl} every ${config.intervalMs}ms`);
+  log(config, `listening ${config.apiBaseUrl} every ${config.intervalMs}ms`);
 
   if (config.once) {
     await runWorkerTick(config);
@@ -44,44 +60,75 @@ export async function runWorker(config = readWorkerConfig()): Promise<void> {
   }
 }
 
-export async function runWorkerTick(config = readWorkerConfig()): Promise<void> {
+export async function runWorkerTick(
+  config = readWorkerConfig(),
+  options: WorkerTickOptions = {}
+): Promise<WorkerTickResult> {
   try {
     const snapshot = await getSnapshot(config.apiBaseUrl);
     const plan = planDispatch(snapshot);
 
     if (plan.length === 0) {
-      log("idle");
-      return;
+      log(config, "idle");
+      return { planned: 0, dispatched: 0, failed: 0, errors: [] };
     }
 
+    const result: WorkerTickResult = {
+      planned: plan.length,
+      dispatched: 0,
+      failed: 0,
+      errors: []
+    };
+
     for (const assignment of plan) {
-      await dispatchAssignment(config.apiBaseUrl, assignment);
+      const dispatched = await dispatchAssignment(config, assignment);
+      if (dispatched.ok) {
+        result.dispatched += 1;
+      } else {
+        result.failed += 1;
+        result.errors.push(dispatched.error);
+      }
     }
+
+    if (options.throwOnError && result.failed > 0) {
+      throw new Error(`Worker tick failed for ${result.failed}/${result.planned} assignment(s): ${result.errors.join("; ")}`);
+    }
+
+    return result;
   } catch (error) {
-    log(`error ${formatError(error)}`);
+    const message = formatError(error);
+    log(config, `error ${message}`);
+    if (options.throwOnError) throw error;
+    return { planned: 0, dispatched: 0, failed: 1, errors: [message] };
   }
 }
 
 async function getSnapshot(apiBaseUrl: string): Promise<PatchPilotSnapshot> {
-  return requestJson<PatchPilotSnapshot>(`${apiBaseUrl}/api/snapshot`, {
+  return requestJson<PatchPilotSnapshot>(`${apiBaseUrl}${apiPath("snapshot")}`, {
     method: "GET"
   });
 }
 
-async function dispatchAssignment(apiBaseUrl: string, assignment: DispatchAssignment) {
+async function dispatchAssignment(
+  config: WorkerConfig,
+  assignment: DispatchAssignment
+): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
-    log(`dispatch ${assignment.workItemId} -> ${assignment.agentId}`);
-    await requestJson(`${apiBaseUrl}/api/work-items/${encodeURIComponent(assignment.workItemId)}/claim`, {
+    log(config, `dispatch ${assignment.workItemId} -> ${assignment.agentId}`);
+    await requestJson(`${config.apiBaseUrl}${apiPath("claimWorkItem", { id: assignment.workItemId })}`, {
       method: "POST",
       body: JSON.stringify({ agentId: assignment.agentId })
     });
-    await requestJson(`${apiBaseUrl}/api/work-items/${encodeURIComponent(assignment.workItemId)}/start`, {
+    await requestJson(`${config.apiBaseUrl}${apiPath("startWorkItem", { id: assignment.workItemId })}`, {
       method: "POST",
-      body: JSON.stringify({})
+      body: JSON.stringify(config.runner ? { runner: config.runner } : {})
     });
-    log(`started ${assignment.workItemId}`);
+    log(config, `started ${assignment.workItemId}`);
+    return { ok: true };
   } catch (error) {
-    log(`skip ${assignment.workItemId}: ${formatError(error)}`);
+    const message = `skip ${assignment.workItemId}: ${formatError(error)}`;
+    log(config, message);
+    return { ok: false, error: message };
   }
 }
 
@@ -109,11 +156,16 @@ function isTruthy(value: string | undefined) {
   return value === "1" || value === "true" || value === "yes";
 }
 
+function parseRunner(value: string | undefined): AgentRunnerKind | undefined {
+  return value === "simulated" || value === "codex" ? value : undefined;
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function log(message: string) {
+function log(config: Pick<WorkerConfig, "silent">, message: string) {
+  if (config.silent) return;
   console.log(`[worker] ${message}`);
 }
 
@@ -124,7 +176,7 @@ function formatError(error: unknown) {
 const entrypoint = process.argv[1];
 if (entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
   runWorker().catch((error: unknown) => {
-    log(`fatal ${formatError(error)}`);
+    log({ silent: false }, `fatal ${formatError(error)}`);
     process.exitCode = 1;
   });
 }
