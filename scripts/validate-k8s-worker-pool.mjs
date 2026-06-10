@@ -30,7 +30,6 @@ const renderedChecks = [
   ["default-deny NetworkPolicy", "name: patchpilot-worker-default-deny"],
   ["DNS NetworkPolicy", "name: patchpilot-worker-allow-dns"],
   ["API egress NetworkPolicy", "name: patchpilot-worker-allow-control-plane-api"],
-  ["external egress NetworkPolicy", "name: patchpilot-agent-run-allow-external-egress"],
   ["worker controller Deployment", "name: patchpilot-worker-controller"],
   ["worker controller ServiceAccount", "serviceAccountName: patchpilot-worker-controller"],
   ["per-run ServiceAccount", "name: patchpilot-run-example"],
@@ -41,12 +40,20 @@ const renderedChecks = [
   ["worker node taint toleration", "patchpilot.dev/workload"],
   ["run network profile", "patchpilot.dev/network-profile: agent-run"],
   ["restricted pod security", "pod-security.kubernetes.io/enforce: restricted"],
-  ["quota jobs cap", "count/jobs.batch: \"20\""],
-  ["public egress private range exclusion", "169.254.0.0/16"]
+  ["quota jobs cap", "count/jobs.batch: \"20\""]
 ];
 
 for (const [label, needle] of renderedChecks) {
   assert(rendered.includes(needle), `Rendered overlay is missing ${label}: ${needle}`);
+}
+
+const forbiddenNeedles = [
+  ["broad public egress", "cidr: 0.0.0.0/0"],
+  ["legacy external egress policy", "name: patchpilot-agent-run-allow-external-egress"]
+];
+
+for (const [label, needle] of forbiddenNeedles) {
+  assert(!rendered.includes(needle), `Rendered overlay must not include ${label}: ${needle}`);
 }
 
 console.log("Kubernetes worker pool manifests rendered and passed static checks");

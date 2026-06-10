@@ -41,6 +41,15 @@ security:
     pidsLimit: 128
     uid: 1001
     gid: 1002
+  egressPolicy:
+    enabled: true
+    allowedHosts:
+      - registry.npmjs.org
+      - api.openai.com
+    allowGitRemotes: false
+    proxyImage: patchpilot/egress-proxy:test
+    proxyPort: 43128
+    auditLogPath: .patchpilot/custom-egress-audit.jsonl
 budget:
   codexTimeoutMs: 123000
   maxCostUsd: 4.5
@@ -92,6 +101,16 @@ artifacts:
           pidsLimit: 128,
           uid: 1001,
           gid: 1002
+        },
+        egressPolicy: {
+          enabled: true,
+          allowedHosts: ["registry.npmjs.org", "api.openai.com"],
+          allowGitRemotes: false,
+          proxyImage: "patchpilot/egress-proxy:test",
+          proxyPort: 43128,
+          auditLogPath: ".patchpilot/custom-egress-audit.jsonl",
+          denyPrivateNetworks: true,
+          denyMetadataEndpoints: true
         }
       });
       expect(config.budget).toEqual({
@@ -172,6 +191,12 @@ security:
           PATCHPILOT_CONTAINER_SANDBOX_PIDS_LIMIT: "64",
           PATCHPILOT_CONTAINER_SANDBOX_UID: "1003",
           PATCHPILOT_CONTAINER_SANDBOX_GID: "1004",
+          PATCHPILOT_EGRESS_POLICY_ENABLED: "true",
+          PATCHPILOT_EGRESS_ALLOWED_HOSTS: "registry.npmjs.org,api.openai.com",
+          PATCHPILOT_EGRESS_ALLOW_GIT_REMOTES: "false",
+          PATCHPILOT_EGRESS_PROXY_IMAGE: "patchpilot/egress-proxy:env",
+          PATCHPILOT_EGRESS_PROXY_PORT: "43129",
+          PATCHPILOT_EGRESS_AUDIT_LOG_PATH: ".patchpilot/env-egress-audit.jsonl",
           PATCHPILOT_BUDGET_MAX_COST_USD: "6",
           PATCHPILOT_BUDGET_WORK_ITEM_USD: "3.25",
           PATCHPILOT_BUDGET_RUN_USD: "1.5",
@@ -203,6 +228,16 @@ security:
         pidsLimit: 64,
         uid: 1003,
         gid: 1004
+      });
+      expect(config.security.egressPolicy).toEqual({
+        enabled: true,
+        allowedHosts: ["registry.npmjs.org", "api.openai.com"],
+        allowGitRemotes: false,
+        proxyImage: "patchpilot/egress-proxy:env",
+        proxyPort: 43129,
+        auditLogPath: ".patchpilot/env-egress-audit.jsonl",
+        denyPrivateNetworks: true,
+        denyMetadataEndpoints: true
       });
       expect(config.test.timeoutMs).toBe(120000);
       expect(config.budget.codexTimeoutMs).toBe(600000);

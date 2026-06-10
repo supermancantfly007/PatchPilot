@@ -594,7 +594,8 @@
         "required": [
           "codexSandbox",
           "codexBypass",
-          "containerSandbox"
+          "containerSandbox",
+          "egressPolicy"
         ],
         "properties": {
           "codexSandbox": {
@@ -605,6 +606,9 @@
           },
           "containerSandbox": {
             "$ref": "#/components/schemas/RuntimeContainerSandboxConfig"
+          },
+          "egressPolicy": {
+            "$ref": "#/components/schemas/RuntimeEgressPolicyConfig"
           }
         }
       },
@@ -658,6 +662,49 @@
           },
           "gid": {
             "type": "number"
+          }
+        }
+      },
+      "RuntimeEgressPolicyConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled",
+          "allowedHosts",
+          "allowGitRemotes",
+          "proxyImage",
+          "proxyPort",
+          "auditLogPath",
+          "denyPrivateNetworks",
+          "denyMetadataEndpoints"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "allowedHosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "allowGitRemotes": {
+            "type": "boolean"
+          },
+          "proxyImage": {
+            "type": "string"
+          },
+          "proxyPort": {
+            "type": "number"
+          },
+          "auditLogPath": {
+            "type": "string"
+          },
+          "denyPrivateNetworks": {
+            "const": true
+          },
+          "denyMetadataEndpoints": {
+            "const": true
           }
         }
       },
@@ -1692,6 +1739,109 @@
               "type": "string",
               "minLength": 1
             }
+          },
+          "egressPolicyEvidence": {
+            "$ref": "#/components/schemas/EgressPolicyEvidence"
+          }
+        }
+      },
+      "EgressPolicyEvidence": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "enabled",
+          "mode",
+          "allowedHosts",
+          "auditLogPath",
+          "allowedCount",
+          "deniedCount",
+          "denied",
+          "recent"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "proxy_sidecar",
+              "disabled"
+            ]
+          },
+          "allowedHosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "auditLogPath": {
+            "type": "string"
+          },
+          "allowedCount": {
+            "type": "number"
+          },
+          "deniedCount": {
+            "type": "number"
+          },
+          "denied": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EgressPolicyAuditEntry"
+            }
+          },
+          "recent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EgressPolicyAuditEntry"
+            }
+          }
+        }
+      },
+      "EgressPolicyAuditEntry": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "at",
+          "decision",
+          "reason",
+          "protocol",
+          "host",
+          "port",
+          "target"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "allowed",
+              "denied"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "port": {
+            "type": "number"
+          },
+          "target": {
+            "type": "string"
+          },
+          "resolvedIps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -1970,6 +2120,9 @@
           },
           "flakySignal": {
             "type": "boolean"
+          },
+          "egressPolicyEvidence": {
+            "$ref": "#/components/schemas/EgressPolicyEvidence"
           }
         }
       },

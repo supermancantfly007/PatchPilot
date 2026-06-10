@@ -83,6 +83,68 @@ export type ArtifactStorageProvider = "local_fs" | "s3";
 
 export type ContainerRuntimeKind = "auto" | "docker" | "podman";
 
+export const defaultEgressAllowedHosts = [
+  "github.com",
+  "api.github.com",
+  "codeload.github.com",
+  "objects.githubusercontent.com",
+  "raw.githubusercontent.com",
+  "github-releases.githubusercontent.com",
+  "npm.pkg.github.com",
+  "registry.npmjs.org",
+  "registry.yarnpkg.com",
+  "pypi.org",
+  "files.pythonhosted.org",
+  "rubygems.org",
+  "crates.io",
+  "index.crates.io",
+  "static.crates.io",
+  "proxy.golang.org",
+  "sum.golang.org",
+  "api.openai.com",
+  "auth.openai.com",
+  "chatgpt.com",
+  "*.openai.com",
+  "*.oaistatic.com"
+] as const;
+
+export const defaultEgressAuditLogPath = ".patchpilot/egress-audit.jsonl";
+
+export interface EgressPolicyRuntimeConfig {
+  enabled: boolean;
+  allowedHosts: string[];
+  allowGitRemotes: boolean;
+  proxyImage: string;
+  proxyPort: number;
+  auditLogPath: string;
+  denyPrivateNetworks: true;
+  denyMetadataEndpoints: true;
+}
+
+export type EgressPolicyDecision = "allowed" | "denied";
+
+export interface EgressPolicyAuditEntry {
+  at: string;
+  decision: EgressPolicyDecision;
+  reason: string;
+  protocol: string;
+  host: string;
+  port: number;
+  target: string;
+  resolvedIps?: string[];
+}
+
+export interface EgressPolicyEvidence {
+  enabled: boolean;
+  mode: "proxy_sidecar" | "disabled";
+  allowedHosts: string[];
+  auditLogPath: string;
+  allowedCount: number;
+  deniedCount: number;
+  denied: EgressPolicyAuditEntry[];
+  recent: EgressPolicyAuditEntry[];
+}
+
 export interface ContainerSandboxRuntimeConfig {
   enabled: boolean;
   runtime: ContainerRuntimeKind;
@@ -332,6 +394,7 @@ export interface AgentRunResult {
   headCommit?: string;
   codexSessionId?: string;
   artifactIds?: string[];
+  egressPolicyEvidence?: EgressPolicyEvidence;
 }
 
 export type AgentRunToolCallStatus = "started" | "completed" | "failed" | "unknown";
@@ -396,6 +459,7 @@ export interface RuntimeConfig {
     codexSandbox: string;
     codexBypass: boolean;
     containerSandbox: ContainerSandboxRuntimeConfig;
+    egressPolicy: EgressPolicyRuntimeConfig;
   };
   budget: {
     codexTimeoutMs: number;
@@ -444,6 +508,7 @@ export interface TestRun {
   attempt?: number;
   maxAttempts?: number;
   flakySignal?: boolean;
+  egressPolicyEvidence?: EgressPolicyEvidence;
 }
 
 export interface TestCase {

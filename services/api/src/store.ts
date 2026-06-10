@@ -24,6 +24,7 @@ import {
   type BugReport,
   type BugSeverity,
   type BugStatus,
+  type EgressPolicyEvidence,
   type FailureType,
   type IntakeArtifactReference,
   type PatchPilotSnapshot,
@@ -108,6 +109,7 @@ interface RunFailureDetails {
   failureType: FailureType;
   failureSummary: string;
   testRun?: TestRun;
+  egressPolicyEvidence?: EgressPolicyEvidence;
 }
 
 type AddAuditEventInput = Pick<AuditEvent, "action" | "targetType" | "targetId" | "message"> &
@@ -1210,6 +1212,12 @@ export class PatchPilotStore {
           workItem: { ...auditWorkItemState(workItem), status: "blocked", updatedAt: endedAt }
         }
       });
+      this.recordEgressPolicyAudit(
+        run,
+        workItem,
+        failure.egressPolicyEvidence ?? failure.testRun?.egressPolicyEvidence,
+        endedAt
+      );
       this.completeAgentAssignment(workItem.id, endedAt);
       workItem.status = "blocked";
       workItem.updatedAt = endedAt;
@@ -2192,7 +2200,8 @@ export class PatchPilotStore {
           agentMessages: run.result?.agentMessages ?? [],
           reasoningSummaries: run.result?.reasoningSummaries ?? [],
           toolCalls: run.result?.toolCalls ?? [],
-          testOutputSummary: run.result?.testOutputSummary
+          testOutputSummary: run.result?.testOutputSummary,
+          egressPolicyEvidence: run.result?.egressPolicyEvidence
         }
       }, null, 2),
       contentType: "application/json",
@@ -2347,6 +2356,7 @@ export class PatchPilotStore {
     finalRunStatus: AgentRun["status"]
   ) {
     await this.recordRunTestEvidence(run, workItem, tests, endedAt, { workspaceStatus: "archived", finalRunStatus });
+    this.recordEgressPolicyAudit(run, workItem, run.result?.egressPolicyEvidence, endedAt);
 
     const pullRequest = this.recordPullRequest(run, workItem, endedAt);
     this.addAuditEvent({
@@ -2415,6 +2425,63 @@ export class PatchPilotStore {
           artifactIds: run.artifactIds || []
         },
         workItem: auditWorkItemState(workItem)
+      }
+    });
+  }
+
+  private recordEgressPolicyAudit(
+    run: AgentRun,
+    workItem: WorkItem,
+    evidence: EgressPolicyEvidence | undefined,
+    now: string
+  ) {
+    if (!evidence?.enabled) return;
+    this.addAuditEvent({
+      actor: "egress_policy",
+      action: "network.egress_policy.enforced",
+      targetType: "agent_run",
+      targetId: run.id,
+      message: `网络 egress allowlist 已执行：允许 ${evidence.allowedCount} 次，拒绝 ${evidence.deniedCount} 次。`,
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id,
+      createdAt: now,
+      beforeJson: null,
+      afterJson: {
+        policy: {
+          mode: evidence.mode,
+          allowedHosts: evidence.allowedHosts,
+          auditLogPath: evidence.auditLogPath,
+          allowedCount: evidence.allowedCount,
+          deniedCount: evidence.deniedCount
+        }
+      },
+      metadataJson: {
+        recent: evidence.recent.map(auditEgressEntry)
+      }
+    });
+
+    if (evidence.deniedCount === 0) return;
+    this.addAuditEvent({
+      actor: "egress_policy",
+      action: "network.egress_denied",
+      targetType: "agent_run",
+      targetId: run.id,
+      message: `网络 egress policy 拒绝了 ${evidence.deniedCount} 次 prohibited endpoint 请求。`,
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id,
+      createdAt: now,
+      beforeJson: null,
+      afterJson: {
+        deniedCount: evidence.deniedCount,
+        denied: evidence.denied.map(auditEgressEntry)
+      },
+      metadataJson: {
+        allowedHosts: evidence.allowedHosts,
+        auditLogPath: evidence.auditLogPath
       }
     });
   }
@@ -2902,6 +2969,19 @@ function auditApprovalState(approval: ApprovalRecord): Record<string, AuditJsonV
   };
 }
 
+function auditEgressEntry(entry: EgressPolicyEvidence["recent"][number]): Record<string, AuditJsonValue> {
+  return {
+    at: entry.at,
+    decision: entry.decision,
+    reason: entry.reason,
+    protocol: entry.protocol,
+    host: entry.host,
+    port: entry.port,
+    target: entry.target,
+    resolvedIps: entry.resolvedIps ?? []
+  };
+}
+
 function auditBudgetScope(scope: BudgetScopeCheck): Record<string, AuditJsonValue> {
   return {
     type: scope.type,
@@ -2971,7 +3051,16 @@ function renderTestLog(test: TestRun) {
     "",
     "Summary:",
     test.summary,
-    ...(test.failureSummary ? ["", "Failure:", test.failureSummary] : [])
+    ...(test.failureSummary ? ["", "Failure:", test.failureSummary] : []),
+    ...(test.egressPolicyEvidence
+      ? [
+          "",
+          "Egress policy:",
+          `Allowed: ${test.egressPolicyEvidence.allowedCount}`,
+          `Denied: ${test.egressPolicyEvidence.deniedCount}`,
+          ...test.egressPolicyEvidence.denied.map((entry) => `${entry.reason}: ${entry.target}`)
+        ]
+      : [])
   ].join("\n");
 }
 
@@ -3003,12 +3092,18 @@ function extractRunFailureDetails(error: unknown): RunFailureDetails {
     : record
       ? asTestRun(record.testRun)
       : undefined;
+  const egressPolicyEvidence = error instanceof CodexRunError
+    ? error.egressPolicyEvidence
+    : record
+      ? asEgressPolicyEvidence(record.egressPolicyEvidence)
+      : undefined;
   const failureType = rawFailureType || (testRun?.status === "failed" ? "test_failed" : classifyFailureMessage(failureSummary));
 
   return {
     failureType,
     failureSummary,
-    ...(testRun ? { testRun } : {})
+    ...(testRun ? { testRun } : {}),
+    ...(egressPolicyEvidence ? { egressPolicyEvidence } : {})
   };
 }
 
@@ -3041,6 +3136,24 @@ function asTestRun(value: unknown): TestRun | undefined {
     return undefined;
   }
   return record as unknown as TestRun;
+}
+
+function asEgressPolicyEvidence(value: unknown): EgressPolicyEvidence | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  if (
+    typeof record.enabled !== "boolean" ||
+    typeof record.mode !== "string" ||
+    !Array.isArray(record.allowedHosts) ||
+    typeof record.auditLogPath !== "string" ||
+    typeof record.allowedCount !== "number" ||
+    typeof record.deniedCount !== "number" ||
+    !Array.isArray(record.denied) ||
+    !Array.isArray(record.recent)
+  ) {
+    return undefined;
+  }
+  return record as unknown as EgressPolicyEvidence;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
