@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { CodexRunError, classifyFailureMessage, parseCodexEvent, summarizeCodexExecFailure } from "./index";
+import { generateCapabilityManifest } from "@patchpilot/policy";
+import {
+  CodexRunError,
+  classifyFailureMessage,
+  parseCodexEvent,
+  resolveCapabilityRuntimeTimeoutMs,
+  summarizeCodexExecFailure
+} from "./index";
 
 describe("codex-runner", () => {
   it("parses Codex JSONL events and session ids", () => {
@@ -70,6 +77,18 @@ describe("codex-runner", () => {
 
     expect(summary).toHaveLength("Codex 执行失败：".length + 1600);
     expect(summary).toMatch(/^Codex 执行失败：x+$/);
+  });
+
+  it("caps Codex exec timeout with the active capability manifest runtime limit", () => {
+    const manifest = generateCapabilityManifest({
+      testTimeoutMs: 15_000,
+      budget: {
+        codexTimeoutMs: 60_000
+      }
+    });
+
+    expect(resolveCapabilityRuntimeTimeoutMs(60_000, manifest)).toBe(15_000);
+    expect(resolveCapabilityRuntimeTimeoutMs(10_000, manifest)).toBe(10_000);
   });
 
   it("classifies structured runner failures", () => {

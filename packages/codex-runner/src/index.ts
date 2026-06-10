@@ -388,12 +388,13 @@ async function runCodexExec(
     args.splice(args.length - 1, 0, "--skip-git-repo-check");
   }
   enforceCommandPolicy(capabilityManifest, ["codex", ...args].join(" "));
+  const timeoutMs = resolveCapabilityRuntimeTimeoutMs(config.budget.codexTimeoutMs, capabilityManifest);
 
   const sandboxedProcess = containerSandbox
     ? await containerSandbox.spawn({
         workspacePath,
         command: shellJoin(["codex", ...args]),
-        timeoutMs: config.budget.codexTimeoutMs,
+        timeoutMs,
         env: buildCommandEnv(config.security.secretEnv)
       })
     : undefined;
@@ -405,7 +406,7 @@ async function runCodexExec(
 
   child.stdin.end(prompt);
 
-  const timeout = sandboxedProcess ? undefined : setTimeout(() => child.kill("SIGTERM"), config.budget.codexTimeoutMs);
+  const timeout = sandboxedProcess ? undefined : setTimeout(() => child.kill("SIGTERM"), timeoutMs);
   let stdoutBuffer = "";
   let stderr = "";
   let sessionId: string | undefined;
@@ -464,6 +465,13 @@ async function runCodexExec(
     capture,
     ...(sandboxCompletion?.egressPolicyEvidence ? { egressPolicyEvidence: sandboxCompletion.egressPolicyEvidence } : {})
   };
+}
+
+export function resolveCapabilityRuntimeTimeoutMs(
+  configuredTimeoutMs: number,
+  capabilityManifest: Pick<CapabilityManifest, "runtime">
+) {
+  return Math.min(configuredTimeoutMs, capabilityManifest.runtime.maxRuntimeMs);
 }
 
 
