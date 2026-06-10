@@ -12,14 +12,20 @@ import {
   requirementInputSchema,
   startRunSchema
 } from "@patchpilot/contracts";
+import { getTelemetry, shutdownTelemetry, type PatchPilotTelemetry } from "@patchpilot/telemetry";
 import Fastify from "fastify";
 import { z } from "zod";
 import { DomainError, PatchPilotStore } from "./store";
 
-export async function buildServer(options: { store?: PatchPilotStore } = {}) {
+export async function buildServer(options: { store?: PatchPilotStore; telemetry?: PatchPilotTelemetry } = {}) {
   const app = Fastify({ logger: true });
-  const store = options.store ?? new PatchPilotStore();
+  const telemetry = options.telemetry ?? getTelemetry({ serviceName: "patchpilot-api" });
+  const store = options.store ?? new PatchPilotStore({ telemetry });
   await app.register(cors, { origin: true });
+  app.addHook("onClose", async () => {
+    if (options.telemetry) await telemetry.shutdown();
+    else await shutdownTelemetry();
+  });
 
   app.get(apiRoute("health"), async () => ({ ok: true, service: "patchpilot-api" }));
 

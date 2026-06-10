@@ -58,6 +58,7 @@ import {
   type CodexRunner,
   type CodexRunnerEvent
 } from "@patchpilot/codex-runner";
+import { getTelemetry, type PatchPilotTelemetry } from "@patchpilot/telemetry";
 import { readPatchPilotConfig } from "./config";
 
 const defaultDataFile = join(process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"), "patchpilot-store.json");
@@ -127,12 +128,21 @@ export class PatchPilotStore {
   private loaded = false;
   private readonly codexRunner: CodexRunner;
   private readonly artifactStore?: ArtifactStore;
+  private readonly telemetry: PatchPilotTelemetry;
   private readonly dataFilePath: string | undefined;
   private mutationQueue: Promise<void> = Promise.resolve();
 
-  constructor(options: { codexRunner?: CodexRunner; dataFilePath?: string | false; artifactStore?: ArtifactStore } = {}) {
+  constructor(
+    options: {
+      codexRunner?: CodexRunner;
+      dataFilePath?: string | false;
+      artifactStore?: ArtifactStore;
+      telemetry?: PatchPilotTelemetry;
+    } = {}
+  ) {
     this.codexRunner = options.codexRunner ?? new LocalCodexRunner();
     this.artifactStore = options.artifactStore;
+    this.telemetry = options.telemetry ?? getTelemetry({ serviceName: "patchpilot-api" });
     this.dataFilePath =
       options.dataFilePath === false
         ? undefined
@@ -726,11 +736,12 @@ export class PatchPilotStore {
         costEstimateUsd: defaultRunCostEstimateUsd,
         startedAt: now
       };
-      run.events.push(this.makeEvent("requirement.understood", "已读取需求说明，正在生成执行计划"));
+      this.telemetry.startAgentRun(run);
+      this.pushRunEvent(run, "requirement.understood", "已读取需求说明，正在生成执行计划");
       this.snapshot.agentRuns.unshift(run);
 
       if (needsBudgetApproval) {
-        run.events.push(this.makeEvent("agent.progress", "预算硬阈值已触发，run 暂停等待审批"));
+        this.pushRunEvent(run, "agent.progress", "预算硬阈值已触发，run 暂停等待审批");
         const approval = this.createBudgetApproval(run, budgetCheck, now);
         run.budgetApprovalId = approval.id;
         this.addBudgetExceededAudit(run, budgetCheck, runActor, now);
@@ -983,8 +994,8 @@ export class PatchPilotStore {
     const completedWorkItem = this.findWorkItem(completedRun.workItemId);
     completedRun.timeline = completeTimeline(completedRun.timeline);
     completedRun.currentStep = "confirming";
-    completedRun.events.push(this.makeEvent("review.completed", "Reviewer agent 已整理执行证据，等待你确认"));
-    completedRun.events.push(this.makeEvent("acceptance.waiting", "执行完成，请查看证据摘要并确认"));
+    this.pushRunEvent(completedRun, "review.completed", "Reviewer agent 已整理执行证据，等待你确认");
+    this.pushRunEvent(completedRun, "acceptance.waiting", "执行完成，请查看证据摘要并确认");
     completedRun.result = result;
     completedRun.costActualUsd = 0;
     completedRun.endedAt = new Date().toISOString();
@@ -992,6 +1003,7 @@ export class PatchPilotStore {
     completedWorkItem.updatedAt = completedRun.endedAt;
     await this.recordCompletedRunEvidence(completedRun, completedWorkItem, result.tests, completedRun.endedAt, "succeeded");
     completedRun.status = "succeeded";
+    this.telemetry.endAgentRun(completedRun, "succeeded");
     this.completeAgentAssignment(completedWorkItem.id, completedRun.endedAt);
     this.completeBugIfNeeded(completedWorkItem, completedRun.endedAt);
     await this.save();
@@ -1030,7 +1042,7 @@ export class PatchPilotStore {
         if (!run || run.status !== "running") return;
         run.currentStep = item.step;
         run.timeline = advanceTimeline(run.timeline, item.step);
-        run.events.push(this.makeEvent(item.type, item.message));
+        this.pushRunEvent(run, item.type, item.message);
         await this.save();
       }
 
@@ -1051,7 +1063,7 @@ export class PatchPilotStore {
       const changedFiles = ["apps/web", "services/api", "packages/domain"];
       run.timeline = completeTimeline(run.timeline);
       run.currentStep = "confirming";
-      run.events.push(this.makeEvent("acceptance.waiting", "执行完成，请查看证据摘要并确认"));
+      this.pushRunEvent(run, "acceptance.waiting", "执行完成，请查看证据摘要并确认");
       run.result = {
         summary: this.makeSimulatedSummary(workItem),
         previewUrl: "http://localhost:3000",
@@ -1079,6 +1091,7 @@ export class PatchPilotStore {
       workItem.updatedAt = run.endedAt;
       await this.recordCompletedRunEvidence(run, workItem, tests, run.endedAt, "succeeded");
       run.status = "succeeded";
+      this.telemetry.endAgentRun(run, "succeeded");
       this.completeAgentAssignment(workItem.id, run.endedAt);
       this.completeBugIfNeeded(workItem, run.endedAt);
       await this.save();
@@ -1099,7 +1112,7 @@ export class PatchPilotStore {
     run.timeline = run.timeline.map((step) =>
       step.key === run.currentStep ? { ...step, status: "failed" } : step
     );
-    run.events.push(this.makeEvent("run.failed", `执行失败，已分类为 ${failureTypeLabel(failure.failureType)}`));
+    this.pushRunEvent(run, "run.failed", `执行失败，已分类为 ${failureTypeLabel(failure.failureType)}`);
     run.endedAt = endedAt;
     if (workItem) {
       const failedTests = failure.testRun
@@ -1139,6 +1152,7 @@ export class PatchPilotStore {
       workItem.updatedAt = endedAt;
     }
     run.status = "failed";
+    this.telemetry.endAgentRun(run, "failed");
     await this.save();
   }
 
@@ -1150,7 +1164,7 @@ export class PatchPilotStore {
       run.currentStep = event.step;
       run.timeline = advanceTimeline(run.timeline, event.step);
     }
-    run.events.push(this.makeEvent(event.type, event.message));
+    this.pushRunEvent(run, event.type, event.message);
     await this.save();
   }
 
@@ -1203,6 +1217,13 @@ export class PatchPilotStore {
     const approval = this.snapshot.approvals.find((item) => item.id === id);
     if (!approval) throw new DomainError("NOT_FOUND", `Approval not found: ${id}`);
     return approval;
+  }
+
+  private pushRunEvent(run: AgentRun, type: AgentRunEvent["type"], message: string) {
+    const event = this.makeEvent(type, message);
+    run.events.push(event);
+    this.telemetry.recordRunEvent(run, event);
+    return event;
   }
 
   private makeEvent(type: AgentRunEvent["type"], message: string): AgentRunEvent {
@@ -1347,7 +1368,7 @@ export class PatchPilotStore {
     }
 
     run.status = "running";
-    run.events.push(this.makeEvent("agent.progress", "预算审批已通过，run 继续执行"));
+    this.pushRunEvent(run, "agent.progress", "预算审批已通过，run 继续执行");
     workItem.status = "running";
     workItem.version = (workItem.version ?? 0) + 1;
     workItem.updatedAt = now;
@@ -1415,7 +1436,7 @@ export class PatchPilotStore {
     const runId = approval.runId || approval.targetId;
     const run = this.snapshot.agentRuns.find((item) => item.id === runId);
     if (!run || run.status !== "needs_approval") return undefined;
-    run.events.push(this.makeEvent("agent.progress", "预算审批被拒绝，run 继续保持暂停"));
+    this.pushRunEvent(run, "agent.progress", "预算审批被拒绝，run 继续保持暂停");
     this.addAuditEvent({
       actor,
       action: "budget.approval_denied",
@@ -2018,6 +2039,7 @@ export class PatchPilotStore {
           }
         }
       });
+      this.telemetry.recordTestRun(run, test);
     }
 
     return normalizedTests;
@@ -2568,10 +2590,12 @@ export class PatchPilotStore {
       ...(input.runId ? { runId: input.runId } : {}),
       createdAt
     };
-    this.snapshot.auditEvents.unshift({
+    const auditEvent = {
       ...eventWithoutHash,
       hash: computeAuditEventHash(eventWithoutHash)
-    });
+    };
+    this.snapshot.auditEvents.unshift(auditEvent);
+    this.telemetry.recordAuditEvent(auditEvent);
   }
 
   private latestRunForWorkItem(workItemId: string) {

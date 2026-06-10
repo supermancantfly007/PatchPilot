@@ -17,6 +17,7 @@
     "@patchpilot/codex-runner": "workspace:*",
     "@patchpilot/contracts": "workspace:*",
     "@patchpilot/domain": "workspace:*",
+    "@patchpilot/telemetry": "workspace:*",
     "fastify": "^5.8.5",
     "yaml": "^2.9.0",
     "zod": "^4.2.1"

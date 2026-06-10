@@ -27,6 +27,7 @@ describe("planDispatch", () => {
       {
         workItemId: "wi_backend",
         workItemTitle: "backend work",
+        prdId: "prd_1",
         agentId: "agent_backend",
         agentName: "backend agent",
         role: "backend"

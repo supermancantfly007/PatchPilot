@@ -27,6 +27,7 @@
     "e2e:failure-defect": "node scripts/e2e-failure-defect.mjs",
     "e2e:acceptance-gate": "node scripts/e2e-acceptance-gate.mjs",
     "e2e:professional-governance": "node scripts/e2e-professional-governance.mjs",
+    "e2e:otel": "node scripts/e2e-otel.mjs",
     "e2e:smoke": "node scripts/e2e-smoke.mjs",
     "e2e:team": "node scripts/e2e-team-worker.mjs",
     "e2e:bug": "node scripts/e2e-bug-worker.mjs",
