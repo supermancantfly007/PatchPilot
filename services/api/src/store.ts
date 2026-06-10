@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
@@ -24,14 +24,19 @@ import {
   type BugReport,
   type BugSeverity,
   type BugStatus,
+  type ContractDiffSummary,
+  type ContractRegistryMetadata,
   type EgressPolicyEvidence,
   type FailureType,
   type IntakeArtifactReference,
+  type InterfaceContract,
   type PatchPilotSnapshot,
+  type Prd,
   type PullRequestRecord,
   type Requirement,
   type ReviewRecord,
   type SecretBrokerEvidence,
+  type TestCase,
   type TestRun,
   type WorkspaceRun,
   type WorkItem,
@@ -58,7 +63,12 @@ import {
   type RuntimeConfig,
   verifyAuditChain as verifyAuditHashChain
 } from "@patchpilot/domain";
-import { createInterfaceContracts } from "@patchpilot/contracts";
+import {
+  buildContractRegistryArtifacts,
+  createContractRegistryMetadata,
+  createInterfaceContracts,
+  type ContractRegistryArtifact
+} from "@patchpilot/contracts";
 import {
   CodexRunError,
   LocalCodexRunner,
@@ -79,6 +89,7 @@ const defaultPgliteDataDir = join(
 const defaultClaimLeaseMs = 5 * 60 * 1000;
 const defaultRunCostEstimateUsd = 0.42;
 const budgetApprovalTtlMs = 24 * 60 * 60 * 1000;
+const contractApprovalTtlMs = 14 * 24 * 60 * 60 * 1000;
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const simulationDelay = (ms: number) =>
   Math.max(0, Math.round(ms * readPatchPilotConfig().dev.simulationDelayFactor));
@@ -406,15 +417,34 @@ export class PatchPilotStore {
       const existingWorkItems = this.snapshot.workItems.filter((item) => item.prdId === prdId);
       this.applyConfiguredBudgets(prd, existingWorkItems);
       let existingInterfaceContracts = this.snapshot.interfaceContracts.filter((item) => item.prdId === prdId);
+      const existingTestCases = this.ensureTestCasesForWorkItems(prd, existingWorkItems);
       if (existingInterfaceContracts.length === 0) {
-        existingInterfaceContracts = createInterfaceContracts(prd);
+        existingInterfaceContracts = await this.registerInterfaceContracts(
+          prd,
+          createInterfaceContracts(prd, "draft"),
+          existingWorkItems,
+          existingTestCases,
+          new Date().toISOString()
+        );
+        this.snapshot.interfaceContracts = [
+          ...existingInterfaceContracts,
+          ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prdId)
+        ];
+        await this.save();
+      } else if (existingInterfaceContracts.some((contract) => !contract.registry)) {
+        existingInterfaceContracts = await this.registerInterfaceContracts(
+          prd,
+          existingInterfaceContracts,
+          existingWorkItems,
+          existingTestCases,
+          new Date().toISOString()
+        );
         this.snapshot.interfaceContracts = [
           ...existingInterfaceContracts,
           ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prdId)
         ];
         await this.save();
       }
-      const existingTestCases = this.ensureTestCasesForWorkItems(prd, existingWorkItems);
       await this.save();
       return { prd, workItems: existingWorkItems, interfaceContracts: existingInterfaceContracts, testCases: existingTestCases };
     }
@@ -422,28 +452,35 @@ export class PatchPilotStore {
       prd: { id: prd.id, status: prd.status, approvedAt: prd.approvedAt || null },
       requirement: { id: prd.requirementId, status: this.findRequirement(prd.requirementId).status }
     };
+    const now = new Date().toISOString();
     prd.status = "approved";
-    prd.approvedAt = new Date().toISOString();
+    prd.approvedAt = now;
 
     const requirement = this.findRequirement(prd.requirementId);
     requirement.status = "approved";
-    requirement.updatedAt = new Date().toISOString();
+    requirement.updatedAt = now;
 
     const workItems = createWorkItems(prd);
     this.applyConfiguredBudgets(prd, workItems);
-    const interfaceContracts = createInterfaceContracts(prd);
     const testCases = createTestCasesForWorkItems(prd, workItems);
     this.snapshot.workItems = [
       ...workItems,
       ...this.snapshot.workItems.filter((item) => item.prdId !== prdId)
     ];
-    this.snapshot.interfaceContracts = [
-      ...interfaceContracts,
-      ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prdId)
-    ];
     this.snapshot.testCases = [
       ...testCases,
       ...this.snapshot.testCases.filter((item) => item.prdId !== prdId)
+    ];
+    const interfaceContracts = await this.registerInterfaceContracts(
+      prd,
+      createInterfaceContracts(prd, "draft", now),
+      workItems,
+      testCases,
+      now
+    );
+    this.snapshot.interfaceContracts = [
+      ...interfaceContracts,
+      ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prdId)
     ];
     this.addAuditEvent({
       actor: "product_agent",
@@ -1417,6 +1454,11 @@ export class PatchPilotStore {
         status === "approved"
           ? this.resumeBudgetGatedRun(approval, input.decidedBy, now)
           : this.recordBudgetApprovalDenied(approval, input.decidedBy, now);
+      if (status === "approved") {
+        this.promoteBreakingContractApproval(approval, input.decidedBy, now);
+      } else {
+        this.recordBreakingContractApprovalDenied(approval, input.decidedBy, now);
+      }
       const output = structuredClone(approval);
       await this.save();
       if (resumeRunId) this.scheduleRunExecution(resumeRunId);
@@ -1561,6 +1603,7 @@ export class PatchPilotStore {
       approval.decidedAt = approval.decidedAt || now;
       approval.updatedAt = now;
       this.addApprovalExpiredAudit(approval, now);
+      this.recordBreakingContractApprovalExpired(approval, now);
       changed = true;
     }
     return changed;
@@ -2363,6 +2406,386 @@ export class PatchPilotStore {
     this.upsertArtifactRecords(records);
   }
 
+  private async registerInterfaceContracts(
+    prd: Prd,
+    contracts: InterfaceContract[],
+    workItems: WorkItem[],
+    testCases: TestCase[],
+    now: string
+  ) {
+    const artifactsById = new Map(buildContractRegistryArtifacts().map((artifact) => [artifact.artifactId, artifact]));
+    const registered: InterfaceContract[] = [];
+    for (const contract of contracts) {
+      const artifactId = contract.registry?.artifactId ?? artifactIdFromContractId(contract.id);
+      const artifact = artifactId ? artifactsById.get(artifactId) : undefined;
+      if (!artifact) {
+        registered.push(contract);
+        continue;
+      }
+
+      const baseline = this.findLatestApprovedContractBaseline(artifact, prd.id);
+      const contentChanged = baseline?.contentHash !== artifact.contentHash;
+      const revision = baseline ? baseline.revision + (contentChanged ? 1 : 0) : 1;
+      const proposedRevisionId = baseline && !contentChanged
+        ? baseline.revisionId
+        : `cr_${artifact.artifactId}_r${revision}_${shortHash(artifact.contentHash)}`;
+      const beforeJson = contract.registry
+        ? { contract: auditInterfaceContractState(contract), registry: auditContractRegistryState(contract.registry) }
+        : null;
+      const registry = createContractRegistryMetadata({
+        baseline,
+        proposed: artifact,
+        proposedRevisionId,
+        revision,
+        now
+      });
+      if (registry.status === "approved") {
+        registry.approvedRevisionId = registry.revisionId;
+        registry.approvedAt = now;
+      }
+
+      contract.version = registry.revision;
+      contract.status = registry.status;
+      contract.providerRole = artifact.providerRole;
+      contract.consumerRoles = artifact.consumerRoles;
+      contract.specMarkdown = artifact.specMarkdown;
+      contract.testSuggestions = artifact.testSuggestions;
+      contract.registry = registry;
+      contract.updatedAt = now;
+
+      this.addAuditEvent({
+        actor: "contract_registry",
+        action: "contract.revision_proposed",
+        targetType: "interface_contract",
+        targetId: contract.id,
+        message: `${contract.name} contract revision ${registry.revision} proposed from ${artifact.sourceRef}.`,
+        requirementId: prd.requirementId,
+        prdId: prd.id,
+        createdAt: now,
+        beforeJson,
+        afterJson: {
+          contract: auditInterfaceContractState(contract),
+          registry: auditContractRegistryState(registry)
+        }
+      });
+
+      const diffArtifact = await this.recordContractDiffArtifact(prd, contract, workItems, registry.diff, now);
+      const testRun = this.createContractDiffTestRun(prd, contract, registry, workItems, testCases, diffArtifact?.id, now);
+      registry.testRunIds = [testRun.id];
+      this.upsertContractTestRun(testRun, testCases, now);
+
+      this.addAuditEvent({
+        actor: "contract_registry",
+        action: "contract.diff_completed",
+        targetType: "interface_contract",
+        targetId: contract.id,
+        message: contractDiffMessage(contract, registry.diff),
+        requirementId: prd.requirementId,
+        prdId: prd.id,
+        workItemId: testRun.workItemId,
+        createdAt: now,
+        beforeJson: null,
+        afterJson: {
+          contract: auditInterfaceContractState(contract),
+          diff: auditContractDiffState(registry.diff),
+          testRun: {
+            id: testRun.id,
+            status: testRun.status,
+            artifactIds: testRun.artifactIds ?? []
+          }
+        }
+      });
+
+      if (registry.diff?.hasBreakingChanges) {
+        const approval = this.ensureBreakingContractApproval(prd, contract, registry, testRun, now);
+        registry.approvalId = approval.id;
+        testRun.summary = `Breaking contract diff detected for ${contract.name}; approval ${approval.id} is required.`;
+      } else if (contentChanged || !baseline) {
+        this.addContractBaselinePromotedAudit(prd, contract, "contract_registry", now);
+      }
+
+      registered.push(contract);
+    }
+    return registered;
+  }
+
+  private findLatestApprovedContractBaseline(
+    artifact: ContractRegistryArtifact,
+    currentPrdId: string
+  ): ContractRegistryMetadata | undefined {
+    return this.snapshot.interfaceContracts
+      .filter((contract) =>
+        contract.prdId !== currentPrdId &&
+        contract.status === "approved" &&
+        contract.registry?.artifactId === artifact.artifactId &&
+        contract.registry.providerRole === artifact.providerRole
+      )
+      .map((contract) => contract.registry)
+      .filter((registry): registry is ContractRegistryMetadata => Boolean(registry))
+      .sort((left, right) => {
+        if (left.revision !== right.revision) return right.revision - left.revision;
+        return (right.approvedAt ?? "").localeCompare(left.approvedAt ?? "");
+      })[0];
+  }
+
+  private async recordContractDiffArtifact(
+    prd: Prd,
+    contract: InterfaceContract,
+    workItems: WorkItem[],
+    diff: ContractDiffSummary | undefined,
+    now: string
+  ) {
+    if (!diff) return undefined;
+    const workItem = this.findProviderWorkItem(workItems, contract.providerRole);
+    const artifactStore = this.getArtifactStore();
+    const record = await artifactStore.putArtifact({
+      id: `artifact_contract_diff_${shortHash(`${contract.id}:${diff.id}`)}`,
+      kind: "diff",
+      content: JSON.stringify({
+        contractId: contract.id,
+        artifactId: contract.registry?.artifactId,
+        registryRevisionId: contract.registry?.revisionId,
+        diff
+      }, null, 2),
+      contentType: "application/json",
+      extension: ".json",
+      metadata: {
+        contractId: contract.id,
+        artifactId: contract.registry?.artifactId ?? contract.id,
+        status: diff.status,
+        breaking: String(diff.hasBreakingChanges)
+      },
+      requirementId: prd.requirementId,
+      prdId: prd.id,
+      workItemId: workItem?.id,
+      createdAt: now
+    });
+    this.upsertArtifactRecords([record]);
+    return record;
+  }
+
+  private createContractDiffTestRun(
+    prd: Prd,
+    contract: InterfaceContract,
+    registry: ContractRegistryMetadata,
+    workItems: WorkItem[],
+    testCases: TestCase[],
+    diffArtifactId: string | undefined,
+    now: string
+  ): TestRun {
+    const workItem = this.findProviderWorkItem(workItems, contract.providerRole);
+    const testCase = workItem
+      ? testCases.find((candidate) => candidate.workItemId === workItem.id && candidate.kind === "contract")
+      : undefined;
+    const blocked = Boolean(registry.diff?.hasBreakingChanges);
+    return {
+      id: `test_contract_diff_${shortHash(`${contract.id}:${registry.revisionId}:${registry.diff?.id ?? "none"}`)}`,
+      testCaseId: testCase?.id,
+      prdId: prd.id,
+      workItemId: workItem?.id,
+      status: blocked ? "blocked" : "passed",
+      command: `patchpilot contract-registry diff --artifact ${registry.artifactId}`,
+      summary: blocked
+        ? `Breaking contract diff detected for ${contract.name}; approval is required.`
+        : contractDiffMessage(contract, registry.diff),
+      durationMs: 0,
+      startedAt: now,
+      endedAt: now,
+      runner: "patchpilot-contract-registry",
+      environmentImage: "local",
+      exitCode: blocked ? null : 0,
+      artifactIds: diffArtifactId ? [diffArtifactId] : [],
+      retryCount: 0,
+      attempt: 1,
+      maxAttempts: 1,
+      flakySignal: false
+    };
+  }
+
+  private upsertContractTestRun(testRun: TestRun, testCases: TestCase[], now: string) {
+    this.snapshot.testRuns = [
+      testRun,
+      ...this.snapshot.testRuns.filter((existing) => existing.id !== testRun.id)
+    ];
+    if (!testRun.testCaseId) return;
+    const linkedTestCase = testCases.find((testCase) => testCase.id === testRun.testCaseId) ??
+      this.snapshot.testCases.find((testCase) => testCase.id === testRun.testCaseId);
+    if (!linkedTestCase) return;
+    linkedTestCase.status = testCaseStatusFromTestRunStatus(testRun.status);
+    linkedTestCase.lastTestRunId = testRun.id;
+    linkedTestCase.flaky = Boolean(testRun.flakySignal);
+    linkedTestCase.updatedAt = now;
+  }
+
+  private ensureBreakingContractApproval(
+    prd: Prd,
+    contract: InterfaceContract,
+    registry: ContractRegistryMetadata,
+    testRun: TestRun,
+    now: string
+  ) {
+    const existing = this.snapshot.approvals.find((approval) =>
+      approval.kind === "breaking_contract" &&
+      approval.targetType === "interface_contract" &&
+      approval.targetId === contract.id &&
+      approval.status === "pending"
+    );
+    if (existing) return existing;
+    const approval = this.createApprovalRecord({
+      kind: "breaking_contract",
+      targetType: "interface_contract",
+      targetId: contract.id,
+      requestedBy: "contract_registry",
+      requestedReason: breakingContractApprovalReason(contract, registry),
+      riskLevel: contractRiskLevel(registry.diff),
+      expiresAt: new Date(Date.parse(now) + contractApprovalTtlMs).toISOString(),
+      requirementId: prd.requirementId,
+      prdId: prd.id,
+      workItemId: testRun.workItemId
+    }, now);
+    this.addAuditEvent({
+      actor: "contract_registry",
+      action: "contract.breaking_approval_requested",
+      targetType: "interface_contract",
+      targetId: contract.id,
+      message: `Breaking change approval requested for ${contract.name}.`,
+      requirementId: prd.requirementId,
+      prdId: prd.id,
+      workItemId: testRun.workItemId,
+      createdAt: now,
+      beforeJson: null,
+      afterJson: {
+        contract: auditInterfaceContractState(contract),
+        approval: auditApprovalState(approval),
+        diff: auditContractDiffState(registry.diff)
+      }
+    });
+    return approval;
+  }
+
+  private promoteBreakingContractApproval(approval: ApprovalRecord, actor: string, now: string) {
+    if (approval.kind !== "breaking_contract" || approval.targetType !== "interface_contract") return undefined;
+    const contract = this.snapshot.interfaceContracts.find((item) => item.id === approval.targetId);
+    if (!contract?.registry || contract.status !== "breaking_change_pending") return undefined;
+    const beforeJson = {
+      contract: auditInterfaceContractState(contract),
+      registry: auditContractRegistryState(contract.registry),
+      approval: auditApprovalState(approval)
+    };
+    contract.status = "approved";
+    contract.updatedAt = now;
+    contract.registry.status = "approved";
+    contract.registry.approvalId = approval.id;
+    contract.registry.approvedRevisionId = contract.registry.revisionId;
+    contract.registry.approvedAt = now;
+    this.markContractDiffTestRunsAfterApproval(contract, approval, now);
+    this.addContractBaselinePromotedAudit(this.findPrd(contract.prdId), contract, actor, now, beforeJson);
+    return contract.id;
+  }
+
+  private recordBreakingContractApprovalDenied(approval: ApprovalRecord, actor: string, now: string) {
+    if (approval.kind !== "breaking_contract" || approval.targetType !== "interface_contract") return undefined;
+    const contract = this.snapshot.interfaceContracts.find((item) => item.id === approval.targetId);
+    if (!contract?.registry) return undefined;
+    this.addAuditEvent({
+      actor,
+      action: "contract.breaking_approval_denied",
+      targetType: "interface_contract",
+      targetId: contract.id,
+      message: "Breaking contract approval denied; proposed revision remains blocked.",
+      requirementId: approval.requirementId,
+      prdId: approval.prdId,
+      workItemId: approval.workItemId,
+      createdAt: now,
+      beforeJson: {
+        contract: auditInterfaceContractState(contract),
+        approval: auditApprovalState(approval)
+      },
+      afterJson: {
+        contract: auditInterfaceContractState(contract),
+        approval: auditApprovalState(approval)
+      }
+    });
+    return undefined;
+  }
+
+  private recordBreakingContractApprovalExpired(approval: ApprovalRecord, now: string) {
+    if (approval.kind !== "breaking_contract" || approval.targetType !== "interface_contract") return;
+    const contract = this.snapshot.interfaceContracts.find((item) => item.id === approval.targetId);
+    if (!contract?.registry) return;
+    this.addAuditEvent({
+      actor: "scheduler",
+      action: "contract.breaking_approval_expired",
+      targetType: "interface_contract",
+      targetId: contract.id,
+      message: "Breaking contract approval expired; proposed revision remains blocked.",
+      requirementId: approval.requirementId,
+      prdId: approval.prdId,
+      workItemId: approval.workItemId,
+      createdAt: now,
+      beforeJson: {
+        contract: auditInterfaceContractState(contract),
+        approval: { id: approval.id, status: "pending" }
+      },
+      afterJson: {
+        contract: auditInterfaceContractState(contract),
+        approval: auditApprovalState(approval)
+      }
+    });
+  }
+
+  private markContractDiffTestRunsAfterApproval(
+    contract: InterfaceContract,
+    approval: ApprovalRecord,
+    now: string
+  ) {
+    for (const testRunId of contract.registry?.testRunIds ?? []) {
+      const testRun = this.snapshot.testRuns.find((candidate) => candidate.id === testRunId);
+      if (!testRun || testRun.status !== "blocked") continue;
+      testRun.status = "passed";
+      testRun.summary = `Breaking contract diff approved by ${approval.approvedBy ?? "approval"}; registry gate passed.`;
+      testRun.exitCode = 0;
+      testRun.endedAt = now;
+      if (!testRun.testCaseId) continue;
+      const testCase = this.snapshot.testCases.find((candidate) => candidate.id === testRun.testCaseId);
+      if (!testCase) continue;
+      testCase.status = "passed";
+      testCase.lastTestRunId = testRun.id;
+      testCase.flaky = Boolean(testRun.flakySignal);
+      testCase.updatedAt = now;
+    }
+  }
+
+  private addContractBaselinePromotedAudit(
+    prd: Prd,
+    contract: InterfaceContract,
+    actor: string,
+    now: string,
+    beforeJson: AuditJsonValue | null = null
+  ) {
+    this.addAuditEvent({
+      actor,
+      action: "contract.baseline_promoted",
+      targetType: "interface_contract",
+      targetId: contract.id,
+      message: `${contract.name} contract revision ${contract.registry?.revision ?? contract.version} promoted to approved baseline.`,
+      requirementId: prd.requirementId,
+      prdId: prd.id,
+      createdAt: now,
+      beforeJson,
+      afterJson: {
+        contract: auditInterfaceContractState(contract),
+        registry: contract.registry ? auditContractRegistryState(contract.registry) : null
+      }
+    });
+  }
+
+  private findProviderWorkItem(workItems: WorkItem[], providerRole: WorkItemRole) {
+    return workItems.find((workItem) => workItem.role === providerRole) ??
+      workItems.find((workItem) => workItem.role === "backend") ??
+      workItems[0];
+  }
+
   private async recordCompletedRunEvidence(
     run: AgentRun,
     workItem: WorkItem,
@@ -3057,6 +3480,93 @@ function auditApprovalState(approval: ApprovalRecord): Record<string, AuditJsonV
     decidedAt: approval.decidedAt || null,
     updatedAt: approval.updatedAt
   };
+}
+
+function auditInterfaceContractState(contract: InterfaceContract): Record<string, AuditJsonValue> {
+  return {
+    id: contract.id,
+    name: contract.name,
+    kind: contract.kind,
+    status: contract.status,
+    version: contract.version,
+    providerRole: contract.providerRole,
+    consumerRoles: contract.consumerRoles,
+    registryRevisionId: contract.registry?.revisionId ?? null,
+    approvalId: contract.registry?.approvalId ?? null,
+    updatedAt: contract.updatedAt
+  };
+}
+
+function auditContractRegistryState(registry: ContractRegistryMetadata): Record<string, AuditJsonValue> {
+  return {
+    artifactId: registry.artifactId,
+    generatorVersion: registry.generatorVersion,
+    revisionId: registry.revisionId,
+    revision: registry.revision,
+    contentHash: registry.contentHash,
+    sourceRef: registry.sourceRef,
+    providerRole: registry.providerRole,
+    consumerRoles: registry.consumerRoles,
+    status: registry.status,
+    baselineRevisionId: registry.baselineRevisionId ?? null,
+    approvedRevisionId: registry.approvedRevisionId ?? null,
+    approvalId: registry.approvalId ?? null,
+    diffId: registry.diff?.id ?? null,
+    testRunIds: registry.testRunIds ?? []
+  };
+}
+
+function auditContractDiffState(diff: ContractDiffSummary | undefined): Record<string, AuditJsonValue> | null {
+  if (!diff) return null;
+  return {
+    id: diff.id,
+    status: diff.status,
+    hasBreakingChanges: diff.hasBreakingChanges,
+    hasWarnings: diff.hasWarnings,
+    baselineRevisionId: diff.baselineRevisionId ?? null,
+    proposedRevisionId: diff.proposedRevisionId,
+    impactedProviderRole: diff.impactedProviderRole,
+    impactedConsumerRoles: diff.impactedConsumerRoles,
+    changeCount: diff.changes.length,
+    breakingChangeCount: diff.changes.filter((change) => change.severity === "breaking").length,
+    warningChangeCount: diff.changes.filter((change) => change.severity === "warning").length
+  };
+}
+
+function contractDiffMessage(contract: InterfaceContract, diff: ContractDiffSummary | undefined) {
+  if (!diff) return `${contract.name} contract registry diff did not run.`;
+  const breaking = diff.changes.filter((change) => change.severity === "breaking").length;
+  const warnings = diff.changes.filter((change) => change.severity === "warning").length;
+  const compatible = diff.changes.filter((change) => change.severity === "compatible").length;
+  return `${contract.name} contract diff ${diff.status}: ${breaking} breaking, ${warnings} warning, ${compatible} compatible changes.`;
+}
+
+function breakingContractApprovalReason(contract: InterfaceContract, registry: ContractRegistryMetadata) {
+  const diff = registry.diff;
+  const breakingChanges = diff?.changes.filter((change) => change.severity === "breaking") ?? [];
+  const summaries = breakingChanges.slice(0, 3).map((change) => change.summary).join(" ");
+  return [
+    `${contract.name} has ${breakingChanges.length} breaking contract change(s).`,
+    `Impacted consumers: ${(diff?.impactedConsumerRoles ?? contract.consumerRoles).join(", ")}.`,
+    `Revision: ${registry.revisionId}.`,
+    summaries
+  ].filter(Boolean).join(" ");
+}
+
+function contractRiskLevel(diff: ContractDiffSummary | undefined): ApprovalRecord["riskLevel"] {
+  if (!diff?.hasBreakingChanges) return "low";
+  if (diff.impactedConsumerRoles.includes("ops") && diff.impactedConsumerRoles.length >= 3) return "critical";
+  if (diff.impactedConsumerRoles.length >= 2) return "high";
+  return "medium";
+}
+
+function artifactIdFromContractId(contractId: string) {
+  const match = /_([^_]+)$/.exec(contractId);
+  return match?.[1];
+}
+
+function shortHash(value: string) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
 function auditEgressEntry(entry: EgressPolicyEvidence["recent"][number]): Record<string, AuditJsonValue> {

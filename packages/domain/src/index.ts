@@ -210,6 +210,51 @@ export type InterfaceContractKind = "http" | "event" | "schema";
 
 export type InterfaceContractStatus = "draft" | "approved" | "breaking_change_pending" | "deprecated";
 
+export type ContractDiffSeverity = "compatible" | "warning" | "breaking";
+
+export interface ContractDiffChange {
+  severity: ContractDiffSeverity;
+  path: string;
+  changeType: string;
+  summary: string;
+  providerRole: AgentRole;
+  consumerRoles: AgentRole[];
+}
+
+export interface ContractDiffSummary {
+  id: string;
+  status: ContractDiffSeverity;
+  hasBreakingChanges: boolean;
+  hasWarnings: boolean;
+  baselineRevisionId?: string;
+  proposedRevisionId: string;
+  baselineContentHash?: string;
+  proposedContentHash: string;
+  impactedProviderRole: AgentRole;
+  impactedConsumerRoles: AgentRole[];
+  changes: ContractDiffChange[];
+  createdAt: string;
+}
+
+export interface ContractRegistryMetadata {
+  artifactId: string;
+  generatorVersion: string;
+  revisionId: string;
+  revision: number;
+  contentHash: string;
+  sourceRef: string;
+  providerRole: AgentRole;
+  consumerRoles: AgentRole[];
+  status: InterfaceContractStatus;
+  normalizedContent: AuditJsonValue;
+  baselineRevisionId?: string;
+  approvedRevisionId?: string;
+  approvedAt?: string;
+  diff?: ContractDiffSummary;
+  approvalId?: string;
+  testRunIds?: string[];
+}
+
 export type ApprovalKind =
   | "prd_approval"
   | "budget_exceeded"
@@ -334,6 +379,7 @@ export interface InterfaceContract {
   consumerRoles: AgentRole[];
   specMarkdown: string;
   testSuggestions: string[];
+  registry?: ContractRegistryMetadata;
   createdAt: string;
   updatedAt: string;
 }
@@ -620,6 +666,7 @@ export interface AuditEvent {
     | "workspace_run"
     | "test_case"
     | "test_run"
+    | "interface_contract"
     | "pull_request"
     | "review_record"
     | "bug"

@@ -1288,6 +1288,7 @@
           "consumerRoles",
           "specMarkdown",
           "testSuggestions",
+          "registry",
           "createdAt",
           "updatedAt"
         ],
@@ -1361,6 +1362,9 @@
               "type": "string"
             }
           },
+          "registry": {
+            "$ref": "#/components/schemas/ContractRegistryMetadata"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -1368,6 +1372,270 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "ContractDiffChange": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "severity",
+          "path",
+          "changeType",
+          "summary",
+          "providerRole",
+          "consumerRoles"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "compatible",
+              "warning",
+              "breaking"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "changeType": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "providerRole": {
+            "type": "string",
+            "enum": [
+              "product",
+              "frontend",
+              "backend",
+              "test",
+              "ops",
+              "reviewer"
+            ]
+          },
+          "consumerRoles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "product",
+                "frontend",
+                "backend",
+                "test",
+                "ops",
+                "reviewer"
+              ]
+            }
+          }
+        }
+      },
+      "ContractDiffSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "status",
+          "hasBreakingChanges",
+          "hasWarnings",
+          "proposedRevisionId",
+          "proposedContentHash",
+          "impactedProviderRole",
+          "impactedConsumerRoles",
+          "changes",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "compatible",
+              "warning",
+              "breaking"
+            ]
+          },
+          "hasBreakingChanges": {
+            "type": "boolean"
+          },
+          "hasWarnings": {
+            "type": "boolean"
+          },
+          "baselineRevisionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "proposedRevisionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "baselineContentHash": {
+            "type": "string"
+          },
+          "proposedContentHash": {
+            "type": "string"
+          },
+          "impactedProviderRole": {
+            "type": "string",
+            "enum": [
+              "product",
+              "frontend",
+              "backend",
+              "test",
+              "ops",
+              "reviewer"
+            ]
+          },
+          "impactedConsumerRoles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "product",
+                "frontend",
+                "backend",
+                "test",
+                "ops",
+                "reviewer"
+              ]
+            }
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContractDiffChange"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ContractRegistryMetadata": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifactId",
+          "generatorVersion",
+          "revisionId",
+          "revision",
+          "contentHash",
+          "sourceRef",
+          "providerRole",
+          "consumerRoles",
+          "status",
+          "normalizedContent"
+        ],
+        "properties": {
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "generatorVersion": {
+            "type": "string"
+          },
+          "revisionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "contentHash": {
+            "type": "string"
+          },
+          "sourceRef": {
+            "type": "string"
+          },
+          "providerRole": {
+            "type": "string",
+            "enum": [
+              "product",
+              "frontend",
+              "backend",
+              "test",
+              "ops",
+              "reviewer"
+            ]
+          },
+          "consumerRoles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "product",
+                "frontend",
+                "backend",
+                "test",
+                "ops",
+                "reviewer"
+              ]
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "approved",
+              "breaking_change_pending",
+              "deprecated"
+            ]
+          },
+          "normalizedContent": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "array",
+                "items": {}
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "baselineRevisionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "approvedRevisionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "approvedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "diff": {
+            "$ref": "#/components/schemas/ContractDiffSummary"
+          },
+          "approvalId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "testRunIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         }
       },

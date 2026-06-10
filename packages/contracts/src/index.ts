@@ -1,6 +1,12 @@
+import { createHash } from "node:crypto";
 import type {
   AgentRole,
   AgentRun,
+  AuditJsonValue,
+  ContractDiffChange,
+  ContractDiffSeverity,
+  ContractDiffSummary,
+  ContractRegistryMetadata,
   FailureType,
   InterfaceContract,
   InterfaceContractStatus,
@@ -358,6 +364,9 @@ export const sharedStateContract = {
     "Prd",
     "WorkItem",
     "InterfaceContract",
+    "ContractRegistryMetadata",
+    "ContractDiffSummary",
+    "ContractDiffChange",
     "AgentRun",
     "WorkspaceRun",
     "TestCase",
@@ -384,6 +393,32 @@ export type RunEventTerminalStatus = (typeof runEventStreamContract.stream.termi
 export type SharedStateSchemaName = typeof sharedStateContract.rootSchema | (typeof sharedStateContract.schemas)[number];
 export type SharedStateSnapshot = Pick<PatchPilotSnapshot, keyof PatchPilotSnapshot>;
 type OpenApiSchema = Record<string, unknown>;
+
+export type ContractNormalizedContent = Record<string, AuditJsonValue | undefined>;
+
+export interface ContractRegistryArtifact {
+  artifactId: string;
+  kind: ContractArtifactKind;
+  version: number;
+  name: string;
+  summary: string;
+  providerRole: AgentRole;
+  consumerRoles: AgentRole[];
+  generatorVersion: string;
+  sourceRef: string;
+  normalizedContent: ContractNormalizedContent;
+  contentHash: string;
+  specMarkdown: string;
+  testSuggestions: string[];
+}
+
+export interface ContractRegistryDiffInput {
+  baseline?: ContractRegistryMetadata;
+  proposed: ContractRegistryArtifact;
+  proposedRevisionId: string;
+  revision: number;
+  now?: string;
+}
 
 export function apiRoute(operationId: ApiOperationId): ApiRoute {
   return httpApiContract.operations[operationId].path;
@@ -469,26 +504,182 @@ export function buildRunEventSchemaDocument() {
   };
 }
 
+export function buildSharedStateSchemaDocument() {
+  const schemaNames = uniqueStrings([sharedStateContract.rootSchema, ...sharedStateContract.schemas]);
+  const schemas = Object.fromEntries(
+    schemaNames.map((schemaName) => [schemaName, openApiSchemas[schemaName as keyof typeof openApiSchemas]])
+      .filter(([, schema]) => schema !== undefined)
+  );
+
+  return {
+    schemaVersion: contractVersion,
+    kind: "patchpilot.shared-state.v1",
+    id: sharedStateContract.artifactId,
+    rootSchema: sharedStateContract.rootSchema,
+    provider: sharedStateContract.providerRole,
+    consumers: [...sharedStateContract.consumerRoles],
+    schemas: schemaNames,
+    components: {
+      schemas
+    },
+    compatibilityRules: [
+      "Consumers must ignore unknown optional object fields.",
+      "Consumers must tolerate additive fields when their code path has an explicit fallback.",
+      "Removing schema fields or enum members requires breaking-contract approval."
+    ]
+  };
+}
+
+export function buildContractRegistryArtifacts(): ContractRegistryArtifact[] {
+  return contractArtifacts.map((artifact) => {
+    const normalizedContent = normalizeContractArtifact(artifact);
+    return {
+      artifactId: artifact.artifactId,
+      kind: artifact.kind,
+      version: artifact.version,
+      name: artifact.name,
+      summary: artifact.summary,
+      providerRole: artifact.providerRole as AgentRole,
+      consumerRoles: [...artifact.consumerRoles] as AgentRole[],
+      generatorVersion: contractVersion,
+      sourceRef: sourceRefFor(artifact),
+      normalizedContent,
+      contentHash: hashNormalizedContent(normalizedContent),
+      specMarkdown: renderContractMarkdown(artifact),
+      testSuggestions: testSuggestionsFor(artifact.kind)
+    };
+  });
+}
+
+export function normalizeContractArtifact(artifact: ContractArtifact): ContractNormalizedContent {
+  switch (artifact.kind) {
+    case "http":
+      return buildOpenApiDocument() as ContractNormalizedContent;
+    case "event":
+      return buildRunEventSchemaDocument() as ContractNormalizedContent;
+    case "schema":
+      return buildSharedStateSchemaDocument() as ContractNormalizedContent;
+  }
+}
+
+export function hashNormalizedContent(content: unknown): string {
+  return createHash("sha256").update(stableJson(content)).digest("hex");
+}
+
+export function createContractRegistryMetadata(input: ContractRegistryDiffInput): ContractRegistryMetadata {
+  const now = input.now ?? new Date().toISOString();
+  const diff = diffContractRegistryArtifacts({
+    baseline: input.baseline,
+    proposed: input.proposed,
+    proposedRevisionId: input.proposedRevisionId,
+    now
+  });
+  const status: InterfaceContractStatus = diff.hasBreakingChanges ? "breaking_change_pending" : "approved";
+  return {
+    artifactId: input.proposed.artifactId,
+    generatorVersion: input.proposed.generatorVersion,
+    revisionId: input.proposedRevisionId,
+    revision: input.revision,
+    contentHash: input.proposed.contentHash,
+    sourceRef: input.proposed.sourceRef,
+    providerRole: input.proposed.providerRole,
+    consumerRoles: input.proposed.consumerRoles,
+    status,
+    normalizedContent: input.proposed.normalizedContent,
+    ...(input.baseline ? {
+      baselineRevisionId: input.baseline.revisionId,
+      approvedRevisionId: input.baseline.approvedRevisionId ?? input.baseline.revisionId
+    } : {
+      approvedRevisionId: input.proposedRevisionId,
+      approvedAt: now
+    }),
+    diff,
+    testRunIds: []
+  };
+}
+
+export function diffContractRegistryArtifacts(input: {
+  baseline?: ContractRegistryMetadata;
+  proposed: ContractRegistryArtifact;
+  proposedRevisionId: string;
+  now?: string;
+}): ContractDiffSummary {
+  const now = input.now ?? new Date().toISOString();
+  const changes = input.baseline
+    ? diffNormalizedContent(input.baseline, input.proposed)
+    : [
+        makeChange(
+          "compatible",
+          "contract",
+          "contract.registered",
+          `Registered initial ${input.proposed.kind} contract baseline for ${input.proposed.artifactId}.`,
+          input.proposed.providerRole,
+          input.proposed.consumerRoles
+        )
+      ];
+  const status = summarizeDiffStatus(changes);
+  const impactedConsumerRoles = uniqueRoles(
+    changes.flatMap((change) => change.consumerRoles.length > 0 ? change.consumerRoles : input.proposed.consumerRoles)
+  );
+  return {
+    id: `diff_${input.proposed.artifactId}_${shortHash([
+      input.baseline?.contentHash ?? "none",
+      input.proposed.contentHash,
+      input.proposedRevisionId
+    ].join(":"))}`,
+    status,
+    hasBreakingChanges: status === "breaking",
+    hasWarnings: changes.some((change) => change.severity === "warning"),
+    ...(input.baseline ? {
+      baselineRevisionId: input.baseline.revisionId,
+      baselineContentHash: input.baseline.contentHash
+    } : {}),
+    proposedRevisionId: input.proposedRevisionId,
+    proposedContentHash: input.proposed.contentHash,
+    impactedProviderRole: input.proposed.providerRole,
+    impactedConsumerRoles,
+    changes,
+    createdAt: now
+  };
+}
+
 export function createInterfaceContracts(
   prd: Prd,
   status: InterfaceContractStatus = "approved",
   now = new Date().toISOString()
 ): InterfaceContract[] {
-  return contractArtifacts.map((artifact) => ({
-    id: `ic_${prd.requirementId}_${artifact.artifactId}`,
-    prdId: prd.id,
-    name: artifact.name,
-    kind: artifact.kind,
-    status,
-    version: artifact.version,
-    summary: artifact.summary,
-    providerRole: artifact.providerRole as AgentRole,
-    consumerRoles: [...artifact.consumerRoles] as AgentRole[],
-    specMarkdown: renderContractMarkdown(artifact),
-    testSuggestions: testSuggestionsFor(artifact.kind),
-    createdAt: now,
-    updatedAt: now
-  }));
+  return buildContractRegistryArtifacts().map((artifact) => ({
+      id: `ic_${prd.requirementId}_${artifact.artifactId}`,
+      prdId: prd.id,
+      name: artifact.name,
+      kind: artifact.kind,
+      status,
+      version: artifact.version,
+      summary: artifact.summary,
+      providerRole: artifact.providerRole,
+      consumerRoles: artifact.consumerRoles,
+      specMarkdown: artifact.specMarkdown,
+      testSuggestions: artifact.testSuggestions,
+      registry: {
+        artifactId: artifact.artifactId,
+        generatorVersion: artifact.generatorVersion,
+        revisionId: `cr_${prd.requirementId}_${artifact.artifactId}_r${artifact.version}`,
+        revision: artifact.version,
+        contentHash: artifact.contentHash,
+        sourceRef: artifact.sourceRef,
+        providerRole: artifact.providerRole,
+        consumerRoles: artifact.consumerRoles,
+        status,
+        normalizedContent: artifact.normalizedContent,
+        ...(status === "approved" ? {
+          approvedRevisionId: `cr_${prd.requirementId}_${artifact.artifactId}_r${artifact.version}`,
+          approvedAt: now
+        } : {}),
+        testRunIds: []
+      },
+      createdAt: now,
+      updatedAt: now
+    }));
 }
 
 export function renderContractMarkdown(artifact: ContractArtifact): string {
@@ -537,6 +728,573 @@ function testSuggestionsFor(kind: ContractArtifactKind): string[] {
     return ["SSE first packet contains the current AgentRun", "Terminal statuses close the stream", "Consumers fall back to snapshot polling"];
   }
   return ["Domain type tests cover snapshot schema", "Store migration normalizes missing arrays", "Professional UI displays contract summaries"];
+}
+
+function sourceRefFor(artifact: ContractArtifact) {
+  if (artifact.kind === "http") return "packages/contracts/openapi/patchpilot.openapi.json";
+  if (artifact.kind === "event") return "packages/contracts/events/run-events.schema.json";
+  return "packages/contracts/src/index.ts#sharedStateContract";
+}
+
+function diffNormalizedContent(
+  baseline: ContractRegistryMetadata,
+  proposed: ContractRegistryArtifact
+): ContractDiffChange[] {
+  const changes: ContractDiffChange[] = [];
+  if (baseline.artifactId !== proposed.artifactId || baseline.providerRole !== proposed.providerRole) {
+    changes.push(
+      makeChange(
+        "breaking",
+        "contract.identity",
+        "contract.identity_changed",
+        `Contract identity changed from ${baseline.artifactId}/${baseline.providerRole} to ${proposed.artifactId}/${proposed.providerRole}.`,
+        proposed.providerRole,
+        uniqueRoles([...baseline.consumerRoles, ...proposed.consumerRoles])
+      )
+    );
+    return changes;
+  }
+
+  const removedConsumers = baseline.consumerRoles.filter((role) => !proposed.consumerRoles.includes(role));
+  const addedConsumers = proposed.consumerRoles.filter((role) => !baseline.consumerRoles.includes(role));
+  if (removedConsumers.length > 0) {
+    changes.push(
+      makeChange(
+        "warning",
+        "contract.consumers",
+        "contract.consumers_removed",
+        `Consumer mapping removed roles: ${removedConsumers.join(", ")}.`,
+        proposed.providerRole,
+        removedConsumers
+      )
+    );
+  }
+  if (addedConsumers.length > 0) {
+    changes.push(
+      makeChange(
+        "compatible",
+        "contract.consumers",
+        "contract.consumers_added",
+        `Consumer mapping added roles: ${addedConsumers.join(", ")}.`,
+        proposed.providerRole,
+        addedConsumers
+      )
+    );
+  }
+
+  if (baseline.contentHash === proposed.contentHash && changes.length === 0) {
+    return [
+      makeChange(
+        "compatible",
+        "contract",
+        "contract.unchanged",
+        `No normalized ${proposed.kind} contract changes detected for ${proposed.artifactId}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    ];
+  }
+
+  if (proposed.kind === "http") {
+    changes.push(...diffHttpContract(baseline.normalizedContent, proposed));
+  } else if (proposed.kind === "event") {
+    changes.push(...diffEventContract(baseline.normalizedContent, proposed));
+  } else {
+    changes.push(...diffSharedSchemaContract(baseline.normalizedContent, proposed));
+  }
+
+  if (changes.length === 0) {
+    changes.push(
+      makeChange(
+        "compatible",
+        "contract.contentHash",
+        "contract.normalized_change",
+        `Normalized ${proposed.kind} content changed without a known breaking rule match.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+  return changes;
+}
+
+function diffHttpContract(baselineContent: unknown, proposed: ContractRegistryArtifact): ContractDiffChange[] {
+  const baselinePaths = objectRecord(readPath(baselineContent, ["paths"]));
+  const proposedPaths = objectRecord(readPath(proposed.normalizedContent, ["paths"]));
+  const baselineOperations = flattenOpenApiOperations(baselinePaths);
+  const proposedOperations = flattenOpenApiOperations(proposedPaths);
+  const changes: ContractDiffChange[] = [];
+
+  for (const [key, baselineOperation] of baselineOperations) {
+    const proposedOperation = proposedOperations.get(key);
+    if (!proposedOperation) {
+      changes.push(
+        makeChange(
+          "breaking",
+          `paths.${baselineOperation.path}.${baselineOperation.method}`,
+          "http.operation_removed",
+          `Removed ${baselineOperation.method.toUpperCase()} ${baselineOperation.path}.`,
+          proposed.providerRole,
+          proposed.consumerRoles
+        )
+      );
+      continue;
+    }
+    const baselineOperationId = readString(baselineOperation.operation, ["operationId"]);
+    const proposedOperationId = readString(proposedOperation.operation, ["operationId"]);
+    if (baselineOperationId && proposedOperationId && baselineOperationId !== proposedOperationId) {
+      changes.push(
+        makeChange(
+          "breaking",
+          `paths.${baselineOperation.path}.${baselineOperation.method}.operationId`,
+          "http.operation_id_changed",
+          `Changed operationId for ${baselineOperation.method.toUpperCase()} ${baselineOperation.path} from ${baselineOperationId} to ${proposedOperationId}.`,
+          proposed.providerRole,
+          proposed.consumerRoles
+        )
+      );
+    }
+    changes.push(
+      ...diffResponseStatuses(baselineOperation.operation, proposedOperation.operation, proposed, baselineOperation)
+    );
+  }
+
+  for (const [key, proposedOperation] of proposedOperations) {
+    if (baselineOperations.has(key)) continue;
+    changes.push(
+      makeChange(
+        "compatible",
+        `paths.${proposedOperation.path}.${proposedOperation.method}`,
+        "http.operation_added",
+        `Added ${proposedOperation.method.toUpperCase()} ${proposedOperation.path}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+
+  changes.push(
+    ...diffSchemaComponents(
+      objectRecord(readPath(baselineContent, ["components", "schemas"])),
+      objectRecord(readPath(proposed.normalizedContent, ["components", "schemas"])),
+      proposed,
+      "components.schemas"
+    )
+  );
+  return changes;
+}
+
+function diffResponseStatuses(
+  baselineOperation: Record<string, unknown>,
+  proposedOperation: Record<string, unknown>,
+  proposed: ContractRegistryArtifact,
+  operation: { method: string; path: string }
+) {
+  const changes: ContractDiffChange[] = [];
+  const baselineResponses = objectRecord(readPath(baselineOperation, ["responses"]));
+  const proposedResponses = objectRecord(readPath(proposedOperation, ["responses"]));
+  for (const statusCode of Object.keys(baselineResponses)) {
+    if (statusCode in proposedResponses) continue;
+    changes.push(
+      makeChange(
+        "breaking",
+        `paths.${operation.path}.${operation.method}.responses.${statusCode}`,
+        "http.response_status_removed",
+        `Removed ${statusCode} response from ${operation.method.toUpperCase()} ${operation.path}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+  for (const statusCode of Object.keys(proposedResponses)) {
+    if (statusCode in baselineResponses) continue;
+    changes.push(
+      makeChange(
+        "compatible",
+        `paths.${operation.path}.${operation.method}.responses.${statusCode}`,
+        "http.response_status_added",
+        `Added ${statusCode} response to ${operation.method.toUpperCase()} ${operation.path}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+  return changes;
+}
+
+function flattenOpenApiOperations(paths: Record<string, unknown>) {
+  const operations = new Map<string, { path: string; method: string; operation: Record<string, unknown> }>();
+  for (const [path, pathItem] of Object.entries(paths)) {
+    const methods = objectRecord(pathItem);
+    for (const [method, operation] of Object.entries(methods)) {
+      if (!["get", "post", "put", "patch", "delete"].includes(method)) continue;
+      operations.set(`${method.toUpperCase()} ${path}`, {
+        path,
+        method,
+        operation: objectRecord(operation)
+      });
+    }
+  }
+  return operations;
+}
+
+function diffEventContract(baselineContent: unknown, proposed: ContractRegistryArtifact): ContractDiffChange[] {
+  const changes: ContractDiffChange[] = [];
+  const baselineRequired = readStringArray(baselineContent, ["envelope", "message", "requiredFields"]);
+  const proposedRequired = readStringArray(proposed.normalizedContent, ["envelope", "message", "requiredFields"]);
+  const baselineOptional = readStringArray(baselineContent, ["envelope", "message", "optionalFields"]);
+  const proposedOptional = readStringArray(proposed.normalizedContent, ["envelope", "message", "optionalFields"]);
+  const baselineTerminalStatuses = readStringArray(baselineContent, ["terminalStatuses"]);
+  const proposedTerminalStatuses = readStringArray(proposed.normalizedContent, ["terminalStatuses"]);
+
+  for (const field of baselineRequired) {
+    if (proposedRequired.includes(field)) continue;
+    changes.push(
+      makeChange(
+        "breaking",
+        `event.requiredFields.${field}`,
+        "event.required_field_removed",
+        `Removed required event payload field ${field}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+  for (const field of proposedRequired) {
+    if (baselineRequired.includes(field)) continue;
+    changes.push(
+      makeChange(
+        baselineOptional.includes(field) ? "breaking" : "warning",
+        `event.requiredFields.${field}`,
+        "event.required_field_added",
+        `Added required event payload field ${field}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+  for (const field of baselineOptional) {
+    if (proposedOptional.includes(field) || proposedRequired.includes(field)) continue;
+    changes.push(
+      makeChange(
+        "breaking",
+        `event.optionalFields.${field}`,
+        "event.payload_field_removed",
+        `Removed optional event payload field ${field}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+  for (const field of proposedOptional) {
+    if (baselineOptional.includes(field) || baselineRequired.includes(field)) continue;
+    changes.push(
+      makeChange(
+        "compatible",
+        `event.optionalFields.${field}`,
+        "event.optional_field_added",
+        `Added optional event payload field ${field}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+  for (const status of baselineTerminalStatuses) {
+    if (proposedTerminalStatuses.includes(status)) continue;
+    changes.push(
+      makeChange(
+        "breaking",
+        `event.terminalStatuses.${status}`,
+        "event.terminal_status_removed",
+        `Removed terminal event status ${status}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+  for (const status of proposedTerminalStatuses) {
+    if (baselineTerminalStatuses.includes(status)) continue;
+    changes.push(
+      makeChange(
+        "warning",
+        `event.terminalStatuses.${status}`,
+        "event.terminal_status_added",
+        `Added terminal event status ${status}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+
+  changes.push(
+    ...diffSchemaComponents(
+      objectRecord(readPath(baselineContent, ["components", "schemas"])),
+      objectRecord(readPath(proposed.normalizedContent, ["components", "schemas"])),
+      proposed,
+      "event.components.schemas"
+    )
+  );
+  return changes;
+}
+
+function diffSharedSchemaContract(baselineContent: unknown, proposed: ContractRegistryArtifact): ContractDiffChange[] {
+  return diffSchemaComponents(
+    objectRecord(readPath(baselineContent, ["components", "schemas"])),
+    objectRecord(readPath(proposed.normalizedContent, ["components", "schemas"])),
+    proposed,
+    "shared.components.schemas"
+  );
+}
+
+function diffSchemaComponents(
+  baselineSchemas: Record<string, unknown>,
+  proposedSchemas: Record<string, unknown>,
+  proposed: ContractRegistryArtifact,
+  basePath: string
+) {
+  const changes: ContractDiffChange[] = [];
+  for (const [schemaName, baselineSchema] of Object.entries(baselineSchemas)) {
+    if (!(schemaName in proposedSchemas)) {
+      changes.push(
+        makeChange(
+          "breaking",
+          `${basePath}.${schemaName}`,
+          "schema.removed",
+          `Removed schema ${schemaName}.`,
+          proposed.providerRole,
+          proposed.consumerRoles
+        )
+      );
+      continue;
+    }
+    changes.push(
+      ...diffJsonSchema(
+        baselineSchema,
+        proposedSchemas[schemaName],
+        `${basePath}.${schemaName}`,
+        proposed
+      )
+    );
+  }
+  for (const schemaName of Object.keys(proposedSchemas)) {
+    if (schemaName in baselineSchemas) continue;
+    changes.push(
+      makeChange(
+        "compatible",
+        `${basePath}.${schemaName}`,
+        "schema.added",
+        `Added schema ${schemaName}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+  return changes;
+}
+
+function diffJsonSchema(
+  baselineSchema: unknown,
+  proposedSchema: unknown,
+  path: string,
+  proposed: ContractRegistryArtifact
+): ContractDiffChange[] {
+  const changes: ContractDiffChange[] = [];
+  const baseline = objectRecord(baselineSchema);
+  const next = objectRecord(proposedSchema);
+  const baselineType = readSchemaType(baseline);
+  const proposedType = readSchemaType(next);
+  if (baselineType && proposedType && baselineType !== proposedType) {
+    changes.push(
+      makeChange(
+        "breaking",
+        `${path}.type`,
+        "schema.type_changed",
+        `Changed schema type from ${baselineType} to ${proposedType}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+
+  const baselineEnum = readStringArray(baseline, ["enum"]);
+  const proposedEnum = readStringArray(next, ["enum"]);
+  for (const value of baselineEnum) {
+    if (proposedEnum.includes(value)) continue;
+    changes.push(
+      makeChange(
+        "breaking",
+        `${path}.enum.${value}`,
+        "schema.enum_removed",
+        `Removed enum value ${value}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+  for (const value of proposedEnum) {
+    if (baselineEnum.includes(value)) continue;
+    changes.push(
+      makeChange(
+        "warning",
+        `${path}.enum.${value}`,
+        "schema.enum_added",
+        `Added enum value ${value}; consumers may need exhaustive handling updates.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+
+  const baselineRequired = readStringArray(baseline, ["required"]);
+  const proposedRequired = readStringArray(next, ["required"]);
+  for (const field of baselineRequired) {
+    if (proposedRequired.includes(field)) continue;
+    changes.push(
+      makeChange(
+        "breaking",
+        `${path}.required.${field}`,
+        "schema.required_field_removed",
+        `Removed required schema field ${field}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+  for (const field of proposedRequired) {
+    if (baselineRequired.includes(field)) continue;
+    changes.push(
+      makeChange(
+        "breaking",
+        `${path}.required.${field}`,
+        "schema.required_field_added",
+        `Made schema field ${field} required.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+
+  const baselineProperties = objectRecord(baseline.properties);
+  const proposedProperties = objectRecord(next.properties);
+  for (const [field, baselineProperty] of Object.entries(baselineProperties)) {
+    if (!(field in proposedProperties)) {
+      changes.push(
+        makeChange(
+          "breaking",
+          `${path}.properties.${field}`,
+          "schema.field_removed",
+          `Removed schema field ${field}.`,
+          proposed.providerRole,
+          proposed.consumerRoles
+        )
+      );
+      continue;
+    }
+    const baselinePropertyType = readSchemaType(objectRecord(baselineProperty));
+    const proposedPropertyType = readSchemaType(objectRecord(proposedProperties[field]));
+    if (baselinePropertyType && proposedPropertyType && baselinePropertyType !== proposedPropertyType) {
+      changes.push(
+        makeChange(
+          "breaking",
+          `${path}.properties.${field}.type`,
+          "schema.field_type_changed",
+          `Changed schema field ${field} type from ${baselinePropertyType} to ${proposedPropertyType}.`,
+          proposed.providerRole,
+          proposed.consumerRoles
+        )
+      );
+    }
+  }
+  for (const field of Object.keys(proposedProperties)) {
+    if (field in baselineProperties) continue;
+    changes.push(
+      makeChange(
+        proposedRequired.includes(field) ? "breaking" : "compatible",
+        `${path}.properties.${field}`,
+        proposedRequired.includes(field) ? "schema.required_field_added" : "schema.optional_field_added",
+        proposedRequired.includes(field)
+          ? `Added required schema field ${field}.`
+          : `Added optional schema field ${field}.`,
+        proposed.providerRole,
+        proposed.consumerRoles
+      )
+    );
+  }
+  return changes;
+}
+
+function makeChange(
+  severity: ContractDiffSeverity,
+  path: string,
+  changeType: string,
+  summary: string,
+  providerRole: AgentRole,
+  consumerRoles: AgentRole[]
+): ContractDiffChange {
+  return {
+    severity,
+    path,
+    changeType,
+    summary,
+    providerRole,
+    consumerRoles
+  };
+}
+
+function summarizeDiffStatus(changes: ContractDiffChange[]): ContractDiffSeverity {
+  if (changes.some((change) => change.severity === "breaking")) return "breaking";
+  if (changes.some((change) => change.severity === "warning")) return "warning";
+  return "compatible";
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function readPath(value: unknown, path: string[]): unknown {
+  let cursor: unknown = value;
+  for (const segment of path) {
+    cursor = objectRecord(cursor)[segment];
+  }
+  return cursor;
+}
+
+function readString(value: unknown, path: string[]): string | undefined {
+  const result = readPath(value, path);
+  return typeof result === "string" ? result : undefined;
+}
+
+function readStringArray(value: unknown, path: string[]): string[] {
+  const result = readPath(value, path);
+  return Array.isArray(result) ? result.filter((item): item is string => typeof item === "string") : [];
+}
+
+function readSchemaType(schema: Record<string, unknown>): string | undefined {
+  const type = schema.type;
+  if (typeof type === "string") return type;
+  if (Array.isArray(type)) return type.filter((item): item is string => typeof item === "string").sort().join("|");
+  return undefined;
+}
+
+function uniqueStrings(values: readonly string[]) {
+  return [...new Set(values)];
+}
+
+function uniqueRoles(values: readonly AgentRole[]) {
+  return [...new Set(values)];
+}
+
+function shortHash(value: string) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
 function hasRequestSchema(operation: (typeof httpApiContract.operations)[ApiOperationId]): operation is (typeof httpApiContract.operations)[ApiOperationId] & { request: string } {
@@ -644,6 +1402,7 @@ const approvalKind = enumSchema(approvalKinds);
 const approvalStatus = enumSchema(["pending", "approved", "denied", "expired"]);
 const approvalTargetType = enumSchema(approvalTargetTypes);
 const approvalRiskLevel = enumSchema(approvalRiskLevels);
+const contractDiffSeverity = enumSchema(["compatible", "warning", "breaking"]);
 const failureType = enumSchema(failureTypes);
 const jsonValue = {
   anyOf: [
@@ -933,9 +1692,72 @@ export const openApiSchemas = {
     consumerRoles: arrayOf(agentRole),
     specMarkdown: markdown,
     testSuggestions: arrayOf({ type: "string" }),
+    registry: schemaRef("ContractRegistryMetadata"),
     createdAt: isoDate,
     updatedAt: isoDate
   }),
+  ContractDiffChange: objectSchema({
+    severity: contractDiffSeverity,
+    path: { type: "string" },
+    changeType: { type: "string" },
+    summary: { type: "string" },
+    providerRole: agentRole,
+    consumerRoles: arrayOf(agentRole)
+  }),
+  ContractDiffSummary: objectSchema({
+    id,
+    status: contractDiffSeverity,
+    hasBreakingChanges: { type: "boolean" },
+    hasWarnings: { type: "boolean" },
+    baselineRevisionId: id,
+    proposedRevisionId: id,
+    baselineContentHash: { type: "string" },
+    proposedContentHash: { type: "string" },
+    impactedProviderRole: agentRole,
+    impactedConsumerRoles: arrayOf(agentRole),
+    changes: arrayOf(schemaRef("ContractDiffChange")),
+    createdAt: isoDate
+  }, [
+    "id",
+    "status",
+    "hasBreakingChanges",
+    "hasWarnings",
+    "proposedRevisionId",
+    "proposedContentHash",
+    "impactedProviderRole",
+    "impactedConsumerRoles",
+    "changes",
+    "createdAt"
+  ]),
+  ContractRegistryMetadata: objectSchema({
+    artifactId: id,
+    generatorVersion: { type: "string" },
+    revisionId: id,
+    revision: { type: "integer", minimum: 1 },
+    contentHash: { type: "string" },
+    sourceRef: { type: "string" },
+    providerRole: agentRole,
+    consumerRoles: arrayOf(agentRole),
+    status: enumSchema(["draft", "approved", "breaking_change_pending", "deprecated"]),
+    normalizedContent: jsonValue,
+    baselineRevisionId: id,
+    approvedRevisionId: id,
+    approvedAt: isoDate,
+    diff: schemaRef("ContractDiffSummary"),
+    approvalId: id,
+    testRunIds: arrayOf(id)
+  }, [
+    "artifactId",
+    "generatorVersion",
+    "revisionId",
+    "revision",
+    "contentHash",
+    "sourceRef",
+    "providerRole",
+    "consumerRoles",
+    "status",
+    "normalizedContent"
+  ]),
   AgentProfile: objectSchema({
     id,
     name: { type: "string" },
