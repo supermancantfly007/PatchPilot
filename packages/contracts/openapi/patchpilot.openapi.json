@@ -69,6 +69,27 @@
         }
       }
     },
+    "/api/audit/verify": {
+      "get": {
+        "operationId": "verifyAudit",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "GET /api/audit/verify",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditChainVerification"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agents": {
       "get": {
         "operationId": "agents",
@@ -629,6 +650,41 @@
         "properties": {
           "message": {
             "type": "string"
+          }
+        }
+      },
+      "AuditChainVerification": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "valid",
+          "checkedEvents",
+          "headHash",
+          "errors"
+        ],
+        "properties": {
+          "valid": {
+            "type": "boolean"
+          },
+          "checkedEvents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "headHash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -2635,11 +2691,17 @@
         "required": [
           "id",
           "traceId",
-          "actor",
+          "actorType",
+          "actorId",
           "action",
           "targetType",
           "targetId",
           "message",
+          "beforeJson",
+          "afterJson",
+          "metadataJson",
+          "hash",
+          "previousHash",
           "createdAt"
         ],
         "properties": {
@@ -2648,6 +2710,13 @@
             "minLength": 1
           },
           "traceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "actorType": {
+            "type": "string"
+          },
+          "actorId": {
             "type": "string",
             "minLength": 1
           },
@@ -2666,6 +2735,109 @@
           },
           "message": {
             "type": "string"
+          },
+          "beforeJson": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "array",
+                "items": {}
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "afterJson": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "array",
+                "items": {}
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metadataJson": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "array",
+                "items": {}
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "previousHash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requirementId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1
           },
           "createdAt": {
             "type": "string",

@@ -14,6 +14,7 @@ import {
   type AgentRunEvent,
   type ArtifactRecord,
   type AuditEvent,
+  type AuditJsonValue,
   type BugReport,
   type BugSeverity,
   type BugStatus,
@@ -27,6 +28,7 @@ import {
   type WorkItem,
   advanceTimeline,
   completeTimeline,
+  computeAuditEventHash,
   createBugFixWorkItem,
   createBugPrd,
   createBugRequirement,
@@ -41,8 +43,10 @@ import {
   emptySnapshot,
   generateClarificationQuestions,
   makeSimpleSummary,
+  normalizeAuditActor,
   testCaseStatusFromTestRunStatus,
-  type RuntimeConfig
+  type RuntimeConfig,
+  verifyAuditChain as verifyAuditHashChain
 } from "@patchpilot/domain";
 import { createInterfaceContracts } from "@patchpilot/contracts";
 import {
@@ -93,6 +97,26 @@ interface RunFailureDetails {
   testRun?: TestRun;
 }
 
+type AddAuditEventInput = Pick<AuditEvent, "action" | "targetType" | "targetId" | "message"> &
+  Partial<
+    Pick<
+      AuditEvent,
+      | "actor"
+      | "actorType"
+      | "actorId"
+      | "traceId"
+      | "requirementId"
+      | "prdId"
+      | "workItemId"
+      | "runId"
+      | "createdAt"
+    >
+  > & {
+    beforeJson?: AuditJsonValue | null;
+    afterJson?: AuditJsonValue | null;
+    metadataJson?: AuditJsonValue | null;
+  };
+
 export class PatchPilotStore {
   private snapshot: PatchPilotSnapshot = emptySnapshot();
   private loaded = false;
@@ -140,6 +164,11 @@ export class PatchPilotStore {
   async getAgents() {
     await this.load();
     return structuredClone(this.snapshot.agents);
+  }
+
+  async verifyAuditChain() {
+    await this.load();
+    return verifyAuditHashChain(this.snapshot.auditEvents);
   }
 
   async createApproval(
@@ -302,6 +331,10 @@ export class PatchPilotStore {
       await this.save();
       return { prd, workItems: existingWorkItems, interfaceContracts: existingInterfaceContracts, testCases: existingTestCases };
     }
+    const beforeJson = {
+      prd: { id: prd.id, status: prd.status, approvedAt: prd.approvedAt || null },
+      requirement: { id: prd.requirementId, status: this.findRequirement(prd.requirementId).status }
+    };
     prd.status = "approved";
     prd.approvedAt = new Date().toISOString();
 
@@ -332,7 +365,15 @@ export class PatchPilotStore {
       targetId: prd.id,
       message: "PRD 已批准，工作项、接口契约和测试用例已生成。",
       requirementId: prd.requirementId,
-      prdId: prd.id
+      prdId: prd.id,
+      beforeJson,
+      afterJson: {
+        prd: { id: prd.id, status: prd.status, approvedAt: prd.approvedAt || null },
+        requirement: { id: requirement.id, status: requirement.status },
+        workItemIds: workItems.map((item) => item.id),
+        interfaceContractIds: interfaceContracts.map((contract) => contract.id),
+        testCaseIds: testCases.map((testCase) => testCase.id)
+      }
     });
     await this.save();
     return { prd, workItems, interfaceContracts, testCases };
@@ -425,7 +466,14 @@ export class PatchPilotStore {
       message: "用户提交 bug，平台已创建测试 agent 复现任务。",
       requirementId,
       prdId: prd.id,
-      workItemId: workItem.id
+      workItemId: workItem.id,
+      beforeJson: null,
+      afterJson: {
+        bug: { id: bug.id, status: bug.status, severity: bug.severity },
+        requirementId,
+        prdId: prd.id,
+        workItemId: workItem.id
+      }
     });
     await this.save();
     return { bug, requirement, prd, workItem };
@@ -452,6 +500,10 @@ export class PatchPilotStore {
         this.releaseAgentAssignment(workItem.assignedAgentId, now);
       }
 
+      const beforeJson = {
+        workItem: auditWorkItemState(workItem),
+        agent: { id: agent.id, status: agent.status, currentWorkItemId: agent.currentWorkItemId || null }
+      };
       const claimToken = randomUUID();
       const leaseDurationMs = options.leaseDurationMs ?? defaultClaimLeaseMs;
       workItem.status = "claimed";
@@ -482,7 +534,13 @@ export class PatchPilotStore {
         message: `${agent.name} 已领取 ${workItem.title}，lease 到期时间 ${workItem.leaseExpiresAt}。`,
         prdId: workItem.prdId,
         workItemId: workItem.id,
-        createdAt: now
+        createdAt: now,
+        beforeJson,
+        afterJson: {
+          workItem: auditWorkItemState(workItem),
+          agent: { id: agent.id, status: agent.status, currentWorkItemId: agent.currentWorkItemId || null },
+          bug: bug ? { id: bug.id, status: bug.status } : null
+        }
       });
 
       await this.save();
@@ -503,6 +561,10 @@ export class PatchPilotStore {
         ? this.snapshot.agents.find((item) => item.id === workItem.assignedAgentId)
         : undefined;
       const now = new Date().toISOString();
+      const beforeJson = {
+        workItem: auditWorkItemState(workItem),
+        agent: agent ? { id: agent.id, status: agent.status, currentWorkItemId: agent.currentWorkItemId || null } : null
+      };
       workItem.status = "ready";
       this.clearClaim(workItem);
       workItem.version = (workItem.version ?? 0) + 1;
@@ -520,7 +582,12 @@ export class PatchPilotStore {
         message: `${workItem.title} 已释放回 ready 队列。`,
         prdId: workItem.prdId,
         workItemId: workItem.id,
-        createdAt: now
+        createdAt: now,
+        beforeJson,
+        afterJson: {
+          workItem: auditWorkItemState(workItem),
+          agent: agent ? { id: agent.id, status: agent.status, currentWorkItemId: agent.currentWorkItemId || null } : null
+        }
       });
       await this.save();
       return { workItem, agent };
@@ -590,6 +657,7 @@ export class PatchPilotStore {
       this.applyConfiguredBudgets(prd, [workItem], budgetConfig);
       const budgetCheck = this.evaluateBudget(prd, workItem, defaultRunCostEstimateUsd, budgetConfig);
       const needsBudgetApproval = budgetCheck.hardExceeded.length > 0;
+      const beforeWorkItemJson = auditWorkItemState(workItem);
 
       if (workItem.status === "claimed") {
         if (this.isClaimExpired(workItem, now)) {
@@ -670,7 +738,12 @@ export class PatchPilotStore {
         requirementId: run.requirementId,
         prdId: run.prdId,
         workItemId: workItem.id,
-        runId: run.id
+        runId: run.id,
+        beforeJson: { workItem: beforeWorkItemJson },
+        afterJson: {
+          workItem: auditWorkItemState(workItem),
+          run: { id: run.id, status: run.status, runner: run.runner }
+        }
       });
       this.addAuditEvent({
         actor: "workspace_manager",
@@ -681,7 +754,16 @@ export class PatchPilotStore {
         requirementId: run.requirementId,
         prdId: run.prdId,
         workItemId: workItem.id,
-        runId: run.id
+        runId: run.id,
+        beforeJson: null,
+        afterJson: {
+          workspaceRun: {
+            id: workspaceRun.id,
+            status: workspaceRun.status,
+            isolation: workspaceRun.isolation,
+            path: workspaceRun.path
+          }
+        }
       });
       await this.save();
 
@@ -702,6 +784,10 @@ export class PatchPilotStore {
       throw new DomainError("INVALID_STATE", "Run was rejected and needs a new rework run");
     }
     const now = new Date().toISOString();
+    const beforeJson = {
+      acceptance: existing ? { runId: existing.runId, status: existing.status, reason: existing.reason || null } : null,
+      workItem: auditWorkItemState(workItem)
+    };
     const decision: AcceptanceDecision = {
       runId,
       status,
@@ -725,7 +811,12 @@ export class PatchPilotStore {
       requirementId: run.requirementId,
       prdId: run.prdId,
       workItemId: run.workItemId,
-      runId
+      runId,
+      beforeJson,
+      afterJson: {
+        acceptance: { runId: decision.runId, status: decision.status, reason: decision.reason || null },
+        workItem: auditWorkItemState(workItem)
+      }
     });
     await this.save();
     return decision;
@@ -758,13 +849,17 @@ export class PatchPilotStore {
     for (const [workItemId, run] of runsByWorkItem) {
       if (run.status !== "succeeded") continue;
       const workItem = this.findWorkItem(workItemId);
+      const existing = this.snapshot.acceptances.find((item) => item.runId === run.id);
+      const beforeJson = {
+        acceptance: existing ? { runId: existing.runId, status: existing.status, reason: existing.reason || null } : null,
+        workItem: auditWorkItemState(workItem)
+      };
       const decision: AcceptanceDecision = {
         runId: run.id,
         status,
         reason,
         decidedAt: now
       };
-      const existing = this.snapshot.acceptances.find((item) => item.runId === run.id);
       if (existing) Object.assign(existing, decision);
       else this.snapshot.acceptances.unshift(decision);
       if (status === "accepted") {
@@ -782,7 +877,12 @@ export class PatchPilotStore {
         requirementId: run.requirementId,
         prdId: run.prdId,
         workItemId,
-        runId: run.id
+        runId: run.id,
+        beforeJson,
+        afterJson: {
+          acceptance: { runId: decision.runId, status: decision.status, reason: decision.reason || null },
+          workItem: auditWorkItemState(workItem)
+        }
       });
       decisions.push(decision);
     }
@@ -985,7 +1085,20 @@ export class PatchPilotStore {
         requirementId: run.requirementId,
         prdId: run.prdId,
         workItemId: run.workItemId,
-        runId: run.id
+        runId: run.id,
+        beforeJson: {
+          run: { id: run.id, status: "running" },
+          workItem: auditWorkItemState(workItem)
+        },
+        afterJson: {
+          run: {
+            id: run.id,
+            status: "failed",
+            failureType: failure.failureType,
+            failureSummary: run.failureSummary || null
+          },
+          workItem: { ...auditWorkItemState(workItem), status: "blocked", updatedAt: endedAt }
+        }
       });
       this.completeAgentAssignment(workItem.id, endedAt);
       workItem.status = "blocked";
@@ -1108,7 +1221,11 @@ export class PatchPilotStore {
       prdId: approval.prdId,
       workItemId: approval.workItemId,
       runId: approval.runId,
-      createdAt: now
+      createdAt: now,
+      beforeJson: null,
+      afterJson: {
+        approval: auditApprovalState(approval)
+      }
     });
     if (isExpired) this.addApprovalExpiredAudit(approval, now);
     return approval;
@@ -1144,7 +1261,16 @@ export class PatchPilotStore {
         requirementId: approval.requirementId,
         prdId: approval.prdId,
         workItemId: approval.workItemId,
-        runId: approval.runId
+        runId: approval.runId,
+        beforeJson: {
+          approval: {
+            id: approval.id,
+            status: "pending"
+          }
+        },
+        afterJson: {
+          approval: auditApprovalState(approval)
+        }
       });
 
       const resumeRunId =
@@ -1164,6 +1290,11 @@ export class PatchPilotStore {
     const run = this.snapshot.agentRuns.find((item) => item.id === runId);
     if (!run || run.status !== "needs_approval") return undefined;
     const workItem = this.findWorkItem(run.workItemId);
+    const beforeJson = {
+      run: { id: run.id, status: run.status },
+      workItem: auditWorkItemState(workItem),
+      approval: auditApprovalState(approval)
+    };
 
     if (!workItem.assignedAgentId) {
       const agent = this.findAvailableAgentForRole(workItem.role);
@@ -1213,7 +1344,13 @@ export class PatchPilotStore {
       prdId: run.prdId,
       workItemId: run.workItemId,
       runId: run.id,
-      createdAt: now
+      createdAt: now,
+      beforeJson,
+      afterJson: {
+        run: { id: run.id, status: run.status },
+        workItem: auditWorkItemState(workItem),
+        approval: auditApprovalState(approval)
+      }
     });
     this.addAuditEvent({
       actor: "workspace_manager",
@@ -1225,7 +1362,16 @@ export class PatchPilotStore {
       prdId: run.prdId,
       workItemId: run.workItemId,
       runId: run.id,
-      createdAt: now
+      createdAt: now,
+      beforeJson: null,
+      afterJson: {
+        workspaceRun: {
+          id: workspaceRun.id,
+          status: workspaceRun.status,
+          isolation: workspaceRun.isolation,
+          path: workspaceRun.path
+        }
+      }
     });
     return run.id;
   }
@@ -1246,7 +1392,15 @@ export class PatchPilotStore {
       prdId: run.prdId,
       workItemId: run.workItemId,
       runId: run.id,
-      createdAt: now
+      createdAt: now,
+      beforeJson: {
+        run: { id: run.id, status: run.status },
+        approval: auditApprovalState(approval)
+      },
+      afterJson: {
+        run: { id: run.id, status: run.status },
+        approval: auditApprovalState(approval)
+      }
     });
     return undefined;
   }
@@ -1276,7 +1430,16 @@ export class PatchPilotStore {
       prdId: approval.prdId,
       workItemId: approval.workItemId,
       runId: approval.runId,
-      createdAt: now
+      createdAt: now,
+      beforeJson: {
+        approval: {
+          id: approval.id,
+          status: "pending"
+        }
+      },
+      afterJson: {
+        approval: auditApprovalState(approval)
+      }
     });
   }
 
@@ -1373,7 +1536,14 @@ export class PatchPilotStore {
       prdId: run.prdId,
       workItemId: run.workItemId,
       runId: run.id,
-      createdAt: now
+      createdAt: now,
+      beforeJson: {
+        run: { id: run.id, status: "queued" }
+      },
+      afterJson: {
+        run: { id: run.id, status: run.status, budgetApprovalId: run.budgetApprovalId || null }
+      },
+      metadataJson: { hardExceeded: budgetCheck.hardExceeded.map(auditBudgetScope) }
     });
   }
 
@@ -1389,7 +1559,10 @@ export class PatchPilotStore {
         prdId: run.prdId,
         workItemId: run.workItemId,
         runId: run.id,
-        createdAt: now
+        createdAt: now,
+        beforeJson: null,
+        afterJson: { run: { id: run.id, status: run.status } },
+        metadataJson: { softExceeded: [auditBudgetScope(scope)] }
       });
     }
   }
@@ -1458,7 +1631,7 @@ export class PatchPilotStore {
     this.snapshot.artifacts ||= [];
     this.snapshot.pullRequests ||= [];
     this.snapshot.reviewRecords ||= [];
-    this.snapshot.auditEvents ||= [];
+    this.snapshot.auditEvents = this.normalizeAuditEvents(this.snapshot.auditEvents || [], now);
     this.snapshot.acceptances ||= [];
     this.snapshot.approvals ||= [];
     this.snapshot.bugs ||= [];
@@ -1495,6 +1668,66 @@ export class PatchPilotStore {
       updatedAt: item.updatedAt || now
     }));
     this.rebuildAgentBusyState(now);
+  }
+
+  private normalizeAuditEvents(events: Array<Partial<AuditEvent> & { actor?: string }>, now: string): AuditEvent[] {
+    let needsMigration = false;
+    const normalized = events.map((event) => {
+      const actor = normalizeAuditActor(event.actorId || event.actor);
+      if (
+        !event.actorType ||
+        !event.actorId ||
+        !("beforeJson" in event) ||
+        !("afterJson" in event) ||
+        !("metadataJson" in event) ||
+        !("previousHash" in event) ||
+        !event.hash
+      ) {
+        needsMigration = true;
+      }
+
+      return {
+        id: event.id || `audit_${randomUUID()}`,
+        traceId: event.traceId || event.runId || event.prdId || event.requirementId || event.targetId || "trace_legacy",
+        actorType: event.actorType || actor.actorType,
+        actorId: event.actorId || actor.actorId,
+        actor: event.actor || event.actorId || actor.actorId,
+        action: event.action || "audit.legacy",
+        targetType: event.targetType || "requirement",
+        targetId: event.targetId || "legacy",
+        message: event.message || "Legacy audit event migrated into the formal audit schema.",
+        beforeJson: "beforeJson" in event ? event.beforeJson ?? null : null,
+        afterJson: "afterJson" in event ? event.afterJson ?? null : null,
+        metadataJson:
+          "metadataJson" in event
+            ? event.metadataJson ?? {}
+            : {
+              migratedFromLegacy: true,
+              legacyActor: event.actor || null
+            },
+        hash: event.hash || "",
+        previousHash: "previousHash" in event ? event.previousHash ?? null : null,
+        ...(event.requirementId ? { requirementId: event.requirementId } : {}),
+        ...(event.prdId ? { prdId: event.prdId } : {}),
+        ...(event.workItemId ? { workItemId: event.workItemId } : {}),
+        ...(event.runId ? { runId: event.runId } : {}),
+        createdAt: event.createdAt || now
+      };
+    }) satisfies AuditEvent[];
+
+    if (!needsMigration) return normalized;
+
+    let previousHash: string | null = null;
+    const migratedOldestFirst = [...normalized].reverse().map((event) => {
+      const migratedEvent = {
+        ...event,
+        previousHash
+      };
+      migratedEvent.hash = computeAuditEventHash(migratedEvent);
+      previousHash = migratedEvent.hash;
+      return migratedEvent;
+    });
+    return migratedOldestFirst.reverse();
   }
 
   private mergeDefaultAgents(existing: AgentProfile[], now: string) {
@@ -1596,6 +1829,7 @@ export class PatchPilotStore {
 
   private requestWorkItemRework(workItem: WorkItem, run: AgentRun, reason: string | undefined, now: string) {
     const normalizedReason = reason?.trim() || "用户要求修改，但没有填写原因。";
+    const beforeJson = { workItem: auditWorkItemState(workItem) };
     workItem.status = "ready";
     this.clearClaim(workItem);
     workItem.version = (workItem.version ?? 0) + 1;
@@ -1612,7 +1846,10 @@ export class PatchPilotStore {
       prdId: run.prdId,
       workItemId: workItem.id,
       runId: run.id,
-      createdAt: now
+      createdAt: now,
+      beforeJson,
+      afterJson: { workItem: auditWorkItemState(workItem) },
+      metadataJson: { reason: normalizedReason }
     });
   }
 
@@ -1720,7 +1957,17 @@ export class PatchPilotStore {
         prdId: run.prdId,
         workItemId: workItem.id,
         runId: run.id,
-        createdAt: test.endedAt || endedAt
+        createdAt: test.endedAt || endedAt,
+        beforeJson: null,
+        afterJson: {
+          testRun: {
+            id: test.id,
+            status: test.status,
+            command: test.command,
+            durationMs: test.durationMs,
+            artifactIds: test.artifactIds || []
+          }
+        }
       });
     }
 
@@ -1871,7 +2118,17 @@ export class PatchPilotStore {
       prdId: run.prdId,
       workItemId: workItem.id,
       runId: run.id,
-      createdAt: endedAt
+      createdAt: endedAt,
+      beforeJson: null,
+      afterJson: {
+        pullRequest: {
+          id: pullRequest.id,
+          status: pullRequest.status,
+          provider: pullRequest.provider,
+          branchName: pullRequest.branchName,
+          url: pullRequest.url
+        }
+      }
     });
 
     const reviewRecord = this.recordReview(run, workItem, pullRequest, endedAt);
@@ -1885,7 +2142,16 @@ export class PatchPilotStore {
       prdId: run.prdId,
       workItemId: workItem.id,
       runId: run.id,
-      createdAt: endedAt
+      createdAt: endedAt,
+      beforeJson: null,
+      afterJson: {
+        reviewRecord: {
+          id: reviewRecord.id,
+          status: reviewRecord.status,
+          linkedPullRequestId: reviewRecord.linkedPullRequestId,
+          riskLevel: reviewRecord.riskLevel
+        }
+      }
     });
 
     this.addAuditEvent({
@@ -1898,7 +2164,17 @@ export class PatchPilotStore {
       prdId: run.prdId,
       workItemId: workItem.id,
       runId: run.id,
-      createdAt: endedAt
+      createdAt: endedAt,
+      beforeJson: null,
+      afterJson: {
+        run: {
+          id: run.id,
+          status: finalRunStatus,
+          currentStep: run.currentStep,
+          artifactIds: run.artifactIds || []
+        },
+        workItem: auditWorkItemState(workItem)
+      }
     });
   }
 
@@ -1958,7 +2234,18 @@ export class PatchPilotStore {
       prdId: run.prdId,
       workItemId: workItem.id,
       runId: run.id,
-      createdAt: now
+      createdAt: now,
+      beforeJson: null,
+      afterJson: {
+        bug: {
+          id: defect.id,
+          status: defect.status,
+          severity: defect.severity,
+          sourceRunId: defect.sourceRunId || null,
+          sourceTestRunId: defect.sourceTestRunId || null,
+          sourceFailureType: defect.sourceFailureType || null
+        }
+      }
     });
     return defect;
   }
@@ -2119,18 +2406,35 @@ export class PatchPilotStore {
     if (status === "archived") workspaceRun.archivedAt = now;
   }
 
-  private addAuditEvent(
-    input: Omit<AuditEvent, "id" | "traceId" | "createdAt"> & {
-      traceId?: string;
-      createdAt?: string;
-    }
-  ) {
-    const { traceId, createdAt, ...event } = input;
-    this.snapshot.auditEvents.unshift({
+  private addAuditEvent(input: AddAuditEventInput) {
+    const createdAt = input.createdAt || new Date().toISOString();
+    const actor = input.actorType && input.actorId
+      ? { actorType: input.actorType, actorId: input.actorId }
+      : normalizeAuditActor(input.actor || input.actorId);
+    const previousHash = this.snapshot.auditEvents[0]?.hash ?? null;
+    const eventWithoutHash: Omit<AuditEvent, "hash"> = {
       id: `audit_${randomUUID()}`,
-      ...event,
-      traceId: traceId || input.runId || input.prdId || input.requirementId || input.targetId,
-      createdAt: createdAt || new Date().toISOString()
+      traceId: input.traceId || input.runId || input.prdId || input.requirementId || input.targetId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      actor: input.actor || actor.actorId,
+      action: input.action,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      message: input.message,
+      beforeJson: input.beforeJson ?? null,
+      afterJson: input.afterJson ?? null,
+      metadataJson: input.metadataJson ?? {},
+      previousHash,
+      ...(input.requirementId ? { requirementId: input.requirementId } : {}),
+      ...(input.prdId ? { prdId: input.prdId } : {}),
+      ...(input.workItemId ? { workItemId: input.workItemId } : {}),
+      ...(input.runId ? { runId: input.runId } : {}),
+      createdAt
+    };
+    this.snapshot.auditEvents.unshift({
+      ...eventWithoutHash,
+      hash: computeAuditEventHash(eventWithoutHash)
     });
   }
 
@@ -2223,6 +2527,7 @@ export class PatchPilotStore {
     if (!bug) return;
     const run = this.latestRunForWorkItem(workItem.id);
     if (workItem.role === "test") {
+      const beforeStatus = bug.status;
       bug.status = "reproduced";
       bug.updatedAt = now;
       this.ensureBugFixWorkItem(bug, workItem, now);
@@ -2236,10 +2541,13 @@ export class PatchPilotStore {
         prdId: bug.prdId,
         workItemId: workItem.id,
         runId: run?.id,
-        createdAt: now
+        createdAt: now,
+        beforeJson: { bug: { id: bug.id, status: beforeStatus } },
+        afterJson: { bug: { id: bug.id, status: bug.status } }
       });
       return;
     }
+    const beforeStatus = bug.status;
     bug.status = "verifying";
     bug.updatedAt = now;
     this.addAuditEvent({
@@ -2252,8 +2560,11 @@ export class PatchPilotStore {
       prdId: bug.prdId,
       workItemId: workItem.id,
       runId: run?.id,
-      createdAt: now
+      createdAt: now,
+      beforeJson: { bug: { id: bug.id, status: beforeStatus } },
+      afterJson: { bug: { id: bug.id, status: bug.status } }
     });
+    const verifyingStatus = bug.status;
     bug.status = "closed";
     bug.updatedAt = now;
     this.addAuditEvent({
@@ -2266,7 +2577,9 @@ export class PatchPilotStore {
       prdId: bug.prdId,
       workItemId: workItem.id,
       runId: run?.id,
-      createdAt: now
+      createdAt: now,
+      beforeJson: { bug: { id: bug.id, status: verifyingStatus } },
+      afterJson: { bug: { id: bug.id, status: bug.status } }
     });
   }
 
@@ -2319,6 +2632,40 @@ function slugSegment(value: string) {
 
 function uniqueStrings(values: Array<string | undefined>) {
   return [...new Set(values.filter((value): value is string => Boolean(value)))];
+}
+
+function auditWorkItemState(workItem: WorkItem): Record<string, AuditJsonValue> {
+  return {
+    id: workItem.id,
+    status: workItem.status,
+    assignedAgentId: workItem.assignedAgentId || null,
+    leaseExpiresAt: workItem.leaseExpiresAt || null,
+    version: workItem.version ?? null,
+    reworkCount: workItem.reworkCount ?? null,
+    updatedAt: workItem.updatedAt || null
+  };
+}
+
+function auditApprovalState(approval: ApprovalRecord): Record<string, AuditJsonValue> {
+  return {
+    id: approval.id,
+    kind: approval.kind,
+    status: approval.status,
+    targetType: approval.targetType,
+    targetId: approval.targetId,
+    riskLevel: approval.riskLevel,
+    decidedAt: approval.decidedAt || null,
+    updatedAt: approval.updatedAt
+  };
+}
+
+function auditBudgetScope(scope: BudgetScopeCheck): Record<string, AuditJsonValue> {
+  return {
+    type: scope.type,
+    limitUsd: scope.limitUsd,
+    spentUsd: scope.spentUsd,
+    nextSpendUsd: scope.nextSpendUsd
+  };
 }
 
 function buildRunDiffSummary(

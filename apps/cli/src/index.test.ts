@@ -189,11 +189,18 @@ const snapshot: PatchPilotSnapshot = {
   auditEvents: [
     {
       id: "audit_1",
+      actorType: "system",
+      actorId: "cli",
       actor: "cli",
       action: "acceptance.accepted",
       targetType: "prd",
       targetId: "prd_1",
       message: "Accepted",
+      beforeJson: null,
+      afterJson: null,
+      metadataJson: {},
+      hash: "0".repeat(64),
+      previousHash: null,
       requirementId: "req_1",
       prdId: "prd_1",
       traceId: "prd_1",

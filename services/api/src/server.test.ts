@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CodexRunError, type CodexRunner } from "@patchpilot/codex-runner";
 import { contractVersion } from "@patchpilot/contracts";
-import type { AgentRun, ArtifactRecord, TestRun } from "@patchpilot/domain";
+import { emptySnapshot, verifyAuditChain, type AgentRun, type ArtifactRecord, type TestRun } from "@patchpilot/domain";
 import { buildServer } from "./server";
 import { PatchPilotStore } from "./store";
 
@@ -185,6 +185,108 @@ describe("PatchPilot API", () => {
     );
 
     await app.close();
+  });
+
+  it("writes formal audit events and verifies the hash chain", async () => {
+    const app = await buildServer({ store: new PatchPilotStore() });
+    await createApprovedWorkItem(app, "验证正式审计事件包含 before/after/hash chain 字段");
+
+    const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const auditEvents = snapshot.json().auditEvents;
+    const prdApproved = auditEvents.find((event: { action: string }) => event.action === "prd.approved");
+    expect(prdApproved).toMatchObject({
+      actorType: "agent",
+      actorId: "product_agent",
+      targetType: "prd",
+      beforeJson: expect.objectContaining({
+        prd: expect.objectContaining({ status: "draft" })
+      }),
+      afterJson: expect.objectContaining({
+        prd: expect.objectContaining({ status: "approved" })
+      }),
+      metadataJson: {},
+      hash: expect.stringMatching(/^[a-f0-9]{64}$/)
+    });
+    expect(verifyAuditChain(auditEvents)).toMatchObject({
+      valid: true,
+      checkedEvents: auditEvents.length,
+      headHash: auditEvents[0].hash
+    });
+
+    const verification = await app.inject({ method: "GET", url: "/api/audit/verify" });
+    expect(verification.statusCode).toBe(200);
+    expect(verification.json()).toMatchObject({
+      valid: true,
+      checkedEvents: auditEvents.length,
+      headHash: auditEvents[0].hash,
+      errors: []
+    });
+
+    await app.close();
+  });
+
+  it("migrates legacy audit events into a verifiable hash chain", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "patchpilot-audit-migration-"));
+    const dataFilePath = join(dataDir, "patchpilot-store.json");
+    const legacySnapshot = emptySnapshot() as unknown as {
+      auditEvents: Array<Record<string, unknown>>;
+      agents: unknown[];
+    };
+    legacySnapshot.agents = [];
+    legacySnapshot.auditEvents = [
+      {
+        id: "audit_legacy_newer",
+        traceId: "trace_legacy",
+        actor: "runner",
+        action: "agent_run.succeeded",
+        targetType: "agent_run",
+        targetId: "run_1",
+        message: "Legacy run succeeded.",
+        runId: "run_1",
+        createdAt: "2026-06-10T00:00:02.000Z"
+      },
+      {
+        id: "audit_legacy_older",
+        traceId: "trace_legacy",
+        actor: "agent_backend",
+        action: "work_item.started",
+        targetType: "work_item",
+        targetId: "wi_1",
+        message: "Legacy work item started.",
+        workItemId: "wi_1",
+        createdAt: "2026-06-10T00:00:01.000Z"
+      }
+    ];
+    await writeFile(dataFilePath, JSON.stringify(legacySnapshot, null, 2));
+    const app = await buildServer({ store: new PatchPilotStore({ dataFilePath }) });
+
+    try {
+      const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      const events = snapshot.json().auditEvents;
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({
+        id: "audit_legacy_older",
+        actorType: "agent",
+        actorId: "agent_backend",
+        previousHash: null,
+        metadataJson: expect.objectContaining({ migratedFromLegacy: true }),
+        hash: expect.stringMatching(/^[a-f0-9]{64}$/)
+      });
+      expect(events[0]).toMatchObject({
+        id: "audit_legacy_newer",
+        actorType: "runner",
+        actorId: "runner",
+        previousHash: events[1].hash,
+        hash: expect.stringMatching(/^[a-f0-9]{64}$/)
+      });
+      expect(verifyAuditChain(events)).toMatchObject({ valid: true, checkedEvents: 2 });
+
+      const verification = await app.inject({ method: "GET", url: "/api/audit/verify" });
+      expect(verification.json()).toMatchObject({ valid: true, checkedEvents: 2, headHash: events[0].hash });
+    } finally {
+      await app.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("pauses over-budget runs and records budget approval evidence", async () => {

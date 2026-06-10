@@ -77,6 +77,15 @@ assertEqual(completed.testRuns.length, expectedRoles.length, "worker should reco
 assertEqual(completed.artifacts.length, expectedRoles.length * 5, "worker should record five artifacts per run");
 assertEqual(completed.pullRequests.length, expectedRoles.length, "worker should create one PR record per run");
 assertEqual(completed.reviewRecords.length, expectedRoles.length, "worker should create one review record per run");
+assertEqual(
+  completed.auditEvents.every((event) =>
+    event.actorType && event.actorId && event.hash && Object.hasOwn(event, "previousHash") &&
+    Object.hasOwn(event, "beforeJson") && Object.hasOwn(event, "afterJson") && Object.hasOwn(event, "metadataJson")
+  ),
+  true,
+  "audit events should expose formal actor, before/after, metadata, and hash fields"
+);
+await assertAuditChainValid();
 
 const firstRunIds = new Set(completed.runs.map((run) => run.id));
 const rejection = await requestJson(`/api/prds/${prd.id}/acceptance`, {
@@ -126,6 +135,7 @@ const reworked = await poll(async () => {
 
 assertEqual(reworked.runs.length, expectedRoles.length * 2, "rework should create a fresh run per team work item");
 assertEqual(reworked.latestRuns.length, expectedRoles.length, "latest team run set should still have one run per work item");
+await assertAuditChainValid();
 
 console.log("PatchPilot team worker E2E passed");
 
@@ -163,6 +173,14 @@ async function requestJson(path, init = {}) {
     throw new Error(`${init.method || "GET"} ${path} failed: ${response.status} ${await response.text()}`);
   }
   return response.json();
+}
+
+async function assertAuditChainValid() {
+  const verification = await requestJson("/api/audit/verify");
+  assertEqual(verification.valid, true, `audit chain should verify (${verification.errors?.join("; ") || "no errors"})`);
+  if (!verification.checkedEvents || !verification.headHash) {
+    throw new Error("audit verifier should report checked events and head hash");
+  }
 }
 
 async function poll(read, timeoutMs) {

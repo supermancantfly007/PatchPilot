@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   advanceTimeline,
   completeTimeline,
+  computeAuditEventHash,
   createPrd,
   createBugFixWorkItem,
   createBugWorkItem,
@@ -13,6 +14,8 @@ import {
   generateClarificationQuestions,
   makeSimpleSummary,
   testCaseStatusFromTestRunStatus,
+  verifyAuditChain,
+  type AuditEvent,
   type Requirement
 } from "./index";
 
@@ -99,4 +102,63 @@ describe("domain helpers", () => {
   it("initializes approval records in empty snapshots", () => {
     expect(emptySnapshot().approvals).toEqual([]);
   });
+
+  it("computes stable audit hashes for equivalent JSON payloads", () => {
+    const base = auditEvent({
+      beforeJson: { status: "ready", nested: { b: 2, a: 1 } },
+      afterJson: { nested: { z: false, a: true }, status: "running" }
+    });
+    const reordered = auditEvent({
+      beforeJson: { nested: { a: 1, b: 2 }, status: "ready" },
+      afterJson: { status: "running", nested: { a: true, z: false } }
+    });
+
+    expect(computeAuditEventHash(base)).toBe(computeAuditEventHash(reordered));
+  });
+
+  it("verifies audit hash chains and detects tampering", () => {
+    const first = auditEvent({ id: "audit_1", action: "work_item.claimed" });
+    first.hash = computeAuditEventHash(first);
+    const second = auditEvent({
+      id: "audit_2",
+      action: "work_item.started",
+      previousHash: first.hash
+    });
+    second.hash = computeAuditEventHash(second);
+
+    const valid = verifyAuditChain([second, first]);
+    expect(valid).toMatchObject({
+      valid: true,
+      checkedEvents: 2,
+      headHash: second.hash,
+      errors: []
+    });
+
+    const tampered = { ...second, afterJson: { status: "tampered" } };
+    expect(verifyAuditChain([tampered, first])).toMatchObject({
+      valid: false,
+      checkedEvents: 2
+    });
+  });
 });
+
+function auditEvent(input: Partial<AuditEvent> = {}): AuditEvent {
+  return {
+    id: "audit_1",
+    traceId: "trace_1",
+    actorType: "agent",
+    actorId: "agent_backend",
+    actor: "agent_backend",
+    action: "work_item.updated",
+    targetType: "work_item",
+    targetId: "wi_1",
+    message: "Work item changed.",
+    beforeJson: null,
+    afterJson: null,
+    metadataJson: {},
+    previousHash: null,
+    hash: "",
+    createdAt: "2026-06-10T00:00:00.000Z",
+    ...input
+  };
+}
