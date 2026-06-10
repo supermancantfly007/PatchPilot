@@ -11,6 +11,7 @@ import {
 } from "@patchpilot/domain";
 
 export const egressProxyHost = "patchpilot-egress-proxy";
+export const privateEgressAuditLogPath = "private://egress-audit.jsonl";
 
 export function defaultEgressPolicyConfig(): EgressPolicyRuntimeConfig {
   return {
@@ -98,14 +99,15 @@ export function resolveEgressAuditLogPath(workspacePath: string, auditLogPath: s
 export async function readEgressPolicyEvidence(
   config: EgressPolicyRuntimeConfig,
   workspacePath: string,
-  allowedHosts: string[] = config.allowedHosts
+  allowedHosts: string[] = config.allowedHosts,
+  auditLogHostPath?: string
 ): Promise<EgressPolicyEvidence> {
   if (!config.enabled) {
     return {
       enabled: false,
       mode: "disabled",
       allowedHosts: normalizeAllowedHosts(allowedHosts),
-      auditLogPath: config.auditLogPath,
+      auditLogPath: auditLogHostPath ? privateEgressAuditLogPath : config.auditLogPath,
       allowedCount: 0,
       deniedCount: 0,
       denied: [],
@@ -113,16 +115,41 @@ export async function readEgressPolicyEvidence(
     };
   }
 
-  const entries = await readEgressAuditEntries(resolveEgressAuditLogPath(workspacePath, config.auditLogPath));
+  const entries = await readEgressAuditEntries(
+    auditLogHostPath ?? resolveEgressAuditLogPath(workspacePath, config.auditLogPath)
+  );
   const recent = entries.slice(-25);
   const denied = entries.filter((entry) => entry.decision === "denied").slice(-25);
   return {
     enabled: true,
     mode: "proxy_sidecar",
     allowedHosts: normalizeAllowedHosts(allowedHosts),
-    auditLogPath: config.auditLogPath,
+    auditLogPath: auditLogHostPath ? privateEgressAuditLogPath : config.auditLogPath,
     allowedCount: entries.filter((entry) => entry.decision === "allowed").length,
     deniedCount: entries.filter((entry) => entry.decision === "denied").length,
+    denied,
+    recent
+  };
+}
+
+export function mergeEgressPolicyEvidence(
+  entries: EgressPolicyEvidence[],
+  allowedHosts: string[]
+): EgressPolicyEvidence | undefined {
+  const enabledEntries = entries.filter((entry) => entry.enabled);
+  if (enabledEntries.length === 0) return undefined;
+  const recent = enabledEntries.flatMap((entry) => entry.recent).slice(-25);
+  const denied = enabledEntries.flatMap((entry) => entry.denied).slice(-25);
+  return {
+    enabled: true,
+    mode: "proxy_sidecar",
+    allowedHosts: normalizeAllowedHosts([
+      ...allowedHosts,
+      ...enabledEntries.flatMap((entry) => entry.allowedHosts)
+    ]),
+    auditLogPath: privateEgressAuditLogPath,
+    allowedCount: enabledEntries.reduce((sum, entry) => sum + entry.allowedCount, 0),
+    deniedCount: enabledEntries.reduce((sum, entry) => sum + entry.deniedCount, 0),
     denied,
     recent
   };

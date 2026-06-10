@@ -80,7 +80,7 @@ security:
     allowGitRemotes: true
     proxyImage: node:24-alpine
     proxyPort: 3128
-    auditLogPath: .patchpilot/egress-audit.jsonl
+    auditLogPath: .patchpilot/egress-audit.jsonl # logical fallback for non-sandbox proxy tests; sandbox runs use a private sidecar-only host log
 budget:
   codexTimeoutMs: 600000
   maxCostUsd: 0
@@ -286,7 +286,7 @@ The Codex runner does not auto-merge or publish. It creates an isolated worktree
 
 Set `security.containerSandbox.enabled=true` to run Codex and the configured test command through a Docker or Podman container. The sandbox runs as a non-root UID/GID, never uses `--privileged`, drops Linux capabilities, sets `no-new-privileges`, does not mount the Docker socket or host home, mounts only the worktree at `/workspace` with write access, uses a read-only root filesystem, bounds `/tmp` and container home with tmpfs, applies CPU/memory/pid limits, and enforces the existing Codex/test timeout plus a workspace disk-usage limit from the API process. The container image must already include the tools your configured commands need.
 
-When the container sandbox is enabled, `security.egressPolicy.enabled=true` adds the TD-212 network boundary. PatchPilot starts an audited egress proxy sidecar, runs the command container on an internal network, injects HTTP(S)/Git/npm proxy settings, allows only configured Git remote hosts, package registries, and OpenAI/Codex endpoint host patterns, and denies private networks plus cloud metadata endpoints. Egress decisions are written to `.patchpilot/egress-audit.jsonl`, surfaced in run/test evidence, and recorded as `network.egress_policy.enforced` plus `network.egress_denied` audit events when prohibited endpoints are blocked.
+When the container sandbox is enabled, `security.egressPolicy.enabled=true` adds the TD-212 network boundary. PatchPilot starts an audited egress proxy sidecar, runs the command container on an internal network, injects HTTP(S)/Git/npm proxy settings, allows only configured Git remote hosts, package registries, and OpenAI/Codex endpoint host patterns, and denies private networks plus cloud metadata endpoints. Raw egress decisions are written to a per-run private host path mounted only into the proxy sidecar, not into the task container's writable workspace; after collection, only summarized evidence is surfaced in run/test evidence and recorded as `network.egress_policy.enforced` plus `network.egress_denied` audit events when prohibited endpoints are blocked.
 
 Codex prompts are intentionally short. PatchPilot sends the task title, task file path, required skill (`/tdd` or `/diagnose`), and safety boundary; detailed context lives in `PATCHPILOT_TASK.md`, `AGENTS.md`, and the repo tests.
 

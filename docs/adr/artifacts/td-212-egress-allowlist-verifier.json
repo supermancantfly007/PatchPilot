@@ -1,6 +1,6 @@
 {
   "workItem": "TD-212 network egress allowlist",
-  "generatedAt": "2026-06-10T19:25:50.106Z",
+  "generatedAt": "2026-06-10T19:42:01.553Z",
   "verifier": "scripts/e2e-egress-allowlist.mjs",
   "allowedRequest": {
     "target": "http://registry.npmjs.org/-/ping",
@@ -11,18 +11,23 @@
     "statusCode": 403,
     "responseExcerpt": "PatchPilot egress policy denied http://169.254.169.254/latest/meta-data: metadata_endpoint\n"
   },
+  "auditSource": {
+    "mode": "private_host_path",
+    "taskWorkspacePath": "<temp-task-workspace>",
+    "taskWritable": false
+  },
   "evidence": {
     "enabled": true,
     "mode": "proxy_sidecar",
     "allowedHosts": [
       "registry.npmjs.org"
     ],
-    "auditLogPath": ".patchpilot/egress-audit.jsonl",
+    "auditLogPath": "private://egress-audit.jsonl",
     "allowedCount": 1,
     "deniedCount": 1,
     "denied": [
       {
-        "at": "2026-06-10T19:25:50.104Z",
+        "at": "2026-06-10T19:42:01.551Z",
         "decision": "denied",
         "protocol": "http",
         "host": "169.254.169.254",
@@ -33,7 +38,7 @@
     ],
     "recent": [
       {
-        "at": "2026-06-10T19:25:49.618Z",
+        "at": "2026-06-10T19:42:01.065Z",
         "decision": "allowed",
         "reason": "allowlisted",
         "protocol": "http",
@@ -45,7 +50,7 @@
         ]
       },
       {
-        "at": "2026-06-10T19:25:50.104Z",
+        "at": "2026-06-10T19:42:01.551Z",
         "decision": "denied",
         "protocol": "http",
         "host": "169.254.169.254",

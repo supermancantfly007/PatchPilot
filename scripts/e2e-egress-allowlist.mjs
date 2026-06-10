@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -14,7 +14,8 @@ const {
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const workspace = await mkdtemp(join(tmpdir(), "patchpilot-egress-e2e-"));
-const auditLogPath = join(workspace, ".patchpilot", "egress-audit.jsonl");
+const privateAuditDir = await mkdtemp(join(tmpdir(), "patchpilot-egress-private-audit-"));
+const auditLogPath = join(privateAuditDir, "egress-audit.jsonl");
 const artifactPath = resolve(repoRoot, "docs/adr/artifacts/td-212-egress-allowlist-verifier.json");
 const proxyPort = await reservePort();
 const allowedHosts = ["registry.npmjs.org"];
@@ -52,7 +53,7 @@ try {
     allowedHosts,
     proxyPort,
     auditLogPath: ".patchpilot/egress-audit.jsonl"
-  }, workspace, allowedHosts);
+  }, workspace, allowedHosts, auditLogPath);
 
   assert(evidence.allowedCount >= 1, "evidence should include at least one allowed request");
   assert(evidence.deniedCount >= 1, "evidence should include at least one denied request");
@@ -74,6 +75,11 @@ try {
       statusCode: denied.statusCode,
       responseExcerpt: denied.body.slice(0, 160)
     },
+    auditSource: {
+      mode: "private_host_path",
+      taskWorkspacePath: "<temp-task-workspace>",
+      taskWritable: false
+    },
     evidence
   };
   await mkdir(dirname(artifactPath), { recursive: true });
@@ -88,6 +94,8 @@ try {
   if (proxy.exitCode && proxy.exitCode !== 0 && proxyOutput.trim()) {
     console.error(proxyOutput.trim());
   }
+  await rm(privateAuditDir, { recursive: true, force: true });
+  await rm(workspace, { recursive: true, force: true });
 }
 
 function requestThroughProxy(port, target) {

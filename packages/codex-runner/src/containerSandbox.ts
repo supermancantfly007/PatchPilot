@@ -1,12 +1,16 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { EgressPolicyEvidence, EgressPolicyRuntimeConfig } from "@patchpilot/domain";
 import {
   buildEffectiveEgressAllowedHosts,
   buildEgressProxyNodeEvalScript,
   defaultEgressPolicyConfig,
   egressProxyHost,
+  mergeEgressPolicyEvidence,
   readEgressPolicyEvidence
 } from "./egressPolicy";
 
@@ -62,6 +66,9 @@ interface EgressProxyContext {
   networkName: string;
   proxyName: string;
   allowedHosts: string[];
+  auditLogHostDir: string;
+  auditLogHostPath: string;
+  auditLogContainerPath: string;
 }
 
 interface EgressProxyRunArgsInput {
@@ -69,11 +76,18 @@ interface EgressProxyRunArgsInput {
   runtime: Exclude<ContainerRuntimeKind, "auto">;
   proxyName: string;
   networkName: string;
-  workspacePath: string;
   allowedHosts: string[];
+  auditLogHostDir: string;
+  auditLogContainerPath: string;
 }
 
+const egressAuditContainerDir = "/patchpilot-egress-audit";
+const egressAuditFileName = "egress-audit.jsonl";
+const egressAuditContainerPath = `${egressAuditContainerDir}/${egressAuditFileName}`;
+
 export class RootlessContainerSandbox {
+  private readonly collectedEgressPolicyEvidence: EgressPolicyEvidence[] = [];
+
   constructor(private readonly config: RootlessContainerSandboxConfig) {}
 
   async run(options: SandboxedCommandOptions): Promise<SandboxedCommandResult> {
@@ -172,8 +186,13 @@ export class RootlessContainerSandbox {
           diskLimitExceeded = sizeBytes > this.config.workspaceDiskMb * 1024 * 1024;
         }
         const egressPolicyEvidence = egressProxy
-          ? await this.collectEgressPolicyEvidence(options.workspacePath, egressProxy.allowedHosts)
+          ? await this.collectEgressPolicyEvidence(
+              options.workspacePath,
+              egressProxy.allowedHosts,
+              egressProxy.auditLogHostPath
+            )
           : undefined;
+        if (egressPolicyEvidence) this.collectedEgressPolicyEvidence.push(egressPolicyEvidence);
         await cleanupEgressProxy(runtime, egressProxy);
         resolve({
           timedOut,
@@ -187,11 +206,20 @@ export class RootlessContainerSandbox {
     return { child, done };
   }
 
-  collectEgressPolicyEvidence(workspacePath: string, allowedHosts?: string[]) {
+  collectEgressPolicyEvidence(workspacePath: string, allowedHosts?: string[], auditLogHostPath?: string) {
+    if (!auditLogHostPath && this.collectedEgressPolicyEvidence.length > 0) {
+      return Promise.resolve(
+        mergeEgressPolicyEvidence(
+          this.collectedEgressPolicyEvidence,
+          allowedHosts ?? this.config.egressPolicy.allowedHosts
+        )
+      );
+    }
     return readEgressPolicyEvidence(
       this.config.egressPolicy,
       workspacePath,
-      allowedHosts ?? this.config.egressPolicy.allowedHosts
+      allowedHosts ?? this.config.egressPolicy.allowedHosts,
+      auditLogHostPath
     );
   }
 
@@ -202,16 +230,28 @@ export class RootlessContainerSandbox {
   ): Promise<EgressProxyContext> {
     const networkName = `${containerName.slice(0, 31)}-net`;
     const proxyName = `${containerName.slice(0, 25)}-egress`;
-    const allowedHosts = await buildEffectiveEgressAllowedHosts(this.config.egressPolicy, workspacePath);
-    await runRuntimeCommand(runtime, ["network", "create", "--internal", networkName], 10_000);
+    const auditLogHostDir = await mkdtemp(join(tmpdir(), "patchpilot-egress-audit-"));
+    const auditLogHostPath = join(auditLogHostDir, egressAuditFileName);
+    const context = {
+      networkName,
+      proxyName,
+      allowedHosts: [] as string[],
+      auditLogHostDir,
+      auditLogHostPath,
+      auditLogContainerPath: egressAuditContainerPath
+    };
     try {
+      const allowedHosts = await buildEffectiveEgressAllowedHosts(this.config.egressPolicy, workspacePath);
+      context.allowedHosts = allowedHosts;
+      await runRuntimeCommand(runtime, ["network", "create", "--internal", networkName], 10_000);
       const proxyArgs = buildEgressProxyRunArgs({
         config: this.config,
         runtime,
         proxyName,
         networkName,
-        workspacePath,
-        allowedHosts
+        allowedHosts,
+        auditLogHostDir,
+        auditLogContainerPath: egressAuditContainerPath
       });
       await runRuntimeCommand(runtime, proxyArgs, 20_000);
       await runRuntimeCommand(
@@ -220,9 +260,9 @@ export class RootlessContainerSandbox {
         10_000
       );
       await waitForEgressProxy(runtime, proxyName, this.config.egressPolicy.proxyPort);
-      return { networkName, proxyName, allowedHosts };
+      return context;
     } catch (error) {
-      await cleanupEgressProxy(runtime, { networkName, proxyName, allowedHosts });
+      await cleanupEgressProxy(runtime, context);
       throw error;
     }
   }
@@ -293,7 +333,7 @@ export function buildEgressProxyRunArgs(input: EgressProxyRunArgsInput) {
     "--name",
     input.proxyName,
     "--workdir",
-    "/workspace",
+    "/",
     "--user",
     `${input.config.uid}:${input.config.gid}`,
     "--cap-drop",
@@ -310,11 +350,11 @@ export function buildEgressProxyRunArgs(input: EgressProxyRunArgsInput) {
     "--tmpfs",
     `/tmp:rw,nosuid,nodev,size=${Math.min(input.config.tmpfsMb, 128)}m`,
     "--mount",
-    `type=bind,src=${input.workspacePath},dst=/workspace`,
+    `type=bind,src=${input.auditLogHostDir},dst=${egressAuditContainerDir}`,
     "--env",
     `PP_EGRESS_PROXY_PORT=${input.config.egressPolicy.proxyPort}`,
     "--env",
-    `PP_EGRESS_AUDIT_LOG=/workspace/${input.config.egressPolicy.auditLogPath}`,
+    `PP_EGRESS_AUDIT_LOG=${input.auditLogContainerPath}`,
     "--env",
     `PP_EGRESS_ALLOWED_HOSTS=${JSON.stringify(input.allowedHosts)}`,
     input.config.egressPolicy.proxyImage,
@@ -431,6 +471,7 @@ async function cleanupEgressProxy(
   if (!context) return;
   await runRuntimeCommand(runtime, ["kill", context.proxyName], 5_000, true);
   await runRuntimeCommand(runtime, ["network", "rm", context.networkName], 10_000, true);
+  await rm(context.auditLogHostDir, { recursive: true, force: true });
 }
 
 function commandExists(command: string) {

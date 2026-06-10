@@ -97,4 +97,56 @@ describe("egress policy", () => {
         ]
       });
   });
+
+  it("reads evidence from an explicit private host audit path instead of configured workspace paths", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "patchpilot-egress-workspace-audit-"));
+    const privateAuditDir = await mkdtemp(join(tmpdir(), "patchpilot-egress-private-audit-"));
+    const privateAuditPath = join(privateAuditDir, "egress-audit.jsonl");
+    await mkdir(join(workspace, ".patchpilot"), { recursive: true });
+    await writeFile(
+      join(workspace, ".patchpilot", "egress-audit.jsonl"),
+      JSON.stringify({
+        at: "2026-06-11T00:00:00.000Z",
+        decision: "allowed",
+        reason: "tampered_workspace_log",
+        protocol: "https",
+        host: "example.com",
+        port: 443,
+        target: "https://example.com/"
+      }),
+      "utf8"
+    );
+    await writeFile(
+      privateAuditPath,
+      JSON.stringify({
+        at: "2026-06-11T00:00:01.000Z",
+        decision: "denied",
+        reason: "metadata_endpoint",
+        protocol: "http",
+        host: "169.254.169.254",
+        port: 80,
+        target: "http://169.254.169.254/latest/meta-data"
+      }),
+      "utf8"
+    );
+
+    await expect(readEgressPolicyEvidence({
+      ...defaultEgressPolicyConfig(),
+      auditLogPath: "/absolute/path/that/the/proxy/does/not/use.jsonl"
+    }, workspace, ["registry.npmjs.org"], privateAuditPath)).resolves.toMatchObject({
+      enabled: true,
+      deniedCount: 1,
+      denied: [
+        {
+          reason: "metadata_endpoint",
+          target: "http://169.254.169.254/latest/meta-data"
+        }
+      ],
+      recent: [
+        {
+          reason: "metadata_endpoint"
+        }
+      ]
+    });
+  });
 });

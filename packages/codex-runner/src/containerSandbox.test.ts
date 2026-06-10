@@ -104,6 +104,9 @@ describe("RootlessContainerSandbox", () => {
       egressProxy: {
         networkName: "patchpilot-test-net",
         proxyName: "patchpilot-test-egress",
+        auditLogHostDir: "/tmp/patchpilot-private-egress-audit",
+        auditLogHostPath: "/tmp/patchpilot-private-egress-audit/egress-audit.jsonl",
+        auditLogContainerPath: "/patchpilot-egress-audit/egress-audit.jsonl",
         allowedHosts: ["registry.npmjs.org"]
       }
     });
@@ -138,7 +141,8 @@ describe("RootlessContainerSandbox", () => {
       runtime: "docker",
       proxyName: "patchpilot-test-egress",
       networkName: "patchpilot-test-net",
-      workspacePath: "/tmp/workspace",
+      auditLogHostDir: "/tmp/patchpilot-private-egress-audit",
+      auditLogContainerPath: "/patchpilot-egress-audit/egress-audit.jsonl",
       allowedHosts: ["api.openai.com", "registry.npmjs.org"]
     });
 
@@ -154,11 +158,11 @@ describe("RootlessContainerSandbox", () => {
       "ALL",
       "--read-only",
       "--mount",
-      "type=bind,src=/tmp/workspace,dst=/workspace",
+      "type=bind,src=/tmp/patchpilot-private-egress-audit,dst=/patchpilot-egress-audit",
       "--env",
       "PP_EGRESS_PROXY_PORT=43128",
       "--env",
-      "PP_EGRESS_AUDIT_LOG=/workspace/.patchpilot/egress-audit.jsonl",
+      "PP_EGRESS_AUDIT_LOG=/patchpilot-egress-audit/egress-audit.jsonl",
       "--env",
       "PP_EGRESS_ALLOWED_HOSTS=[\"api.openai.com\",\"registry.npmjs.org\"]",
       "node:egress-test",
@@ -166,6 +170,7 @@ describe("RootlessContainerSandbox", () => {
       "-e"
     ]));
     expect(args).not.toContain("--privileged");
+    expect(args).not.toContain("type=bind,src=/tmp/workspace,dst=/workspace");
   });
 
   it("maps host workspace paths to the container workspace", () => {
