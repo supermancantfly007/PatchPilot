@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { apiPath } from "@patchpilot/contracts";
 import type { AgentRunnerKind, PatchPilotSnapshot } from "@patchpilot/domain";
+import { getTelemetry, type PatchPilotTelemetry } from "@patchpilot/telemetry";
 import { planDispatch, type DispatchAssignment } from "./dispatch";
 
 interface WorkerConfig {
@@ -9,6 +10,7 @@ interface WorkerConfig {
   once: boolean;
   runner?: AgentRunnerKind;
   silent?: boolean;
+  telemetry?: PatchPilotTelemetry;
 }
 
 export interface WorkerTickResult {
@@ -70,6 +72,8 @@ export async function runWorkerTick(
 
     if (plan.length === 0) {
       log(config, "idle");
+      getWorkerTelemetry(config).recordWorkerTick({ planned: 0, dispatched: 0, failed: 0 });
+      await getWorkerTelemetry(config).forceFlush();
       return { planned: 0, dispatched: 0, failed: 0, errors: [] };
     }
 
@@ -90,14 +94,20 @@ export async function runWorkerTick(
       }
     }
 
+    getWorkerTelemetry(config).recordWorkerTick(result);
+    await getWorkerTelemetry(config).forceFlush();
     if (options.throwOnError && result.failed > 0) {
-      throw new Error(`Worker tick failed for ${result.failed}/${result.planned} assignment(s): ${result.errors.join("; ")}`);
+      return Promise.reject(
+        new Error(`Worker tick failed for ${result.failed}/${result.planned} assignment(s): ${result.errors.join("; ")}`)
+      );
     }
 
     return result;
   } catch (error) {
     const message = formatError(error);
     log(config, `error ${message}`);
+    getWorkerTelemetry(config).recordWorkerTick({ planned: 0, dispatched: 0, failed: 1 });
+    await getWorkerTelemetry(config).forceFlush();
     if (options.throwOnError) throw error;
     return { planned: 0, dispatched: 0, failed: 1, errors: [message] };
   }
@@ -113,7 +123,15 @@ async function dispatchAssignment(
   config: WorkerConfig,
   assignment: DispatchAssignment
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  const telemetry = getWorkerTelemetry(config);
   try {
+    telemetry.recordWorkerDispatch({
+      workItemId: assignment.workItemId,
+      prdId: assignment.prdId,
+      agentId: assignment.agentId,
+      role: assignment.role,
+      status: "started"
+    });
     log(config, `dispatch ${assignment.workItemId} -> ${assignment.agentId}`);
     const claim = await requestJson<{ claimToken?: string }>(
       `${config.apiBaseUrl}${apiPath("claimWorkItem", { id: assignment.workItemId })}`,
@@ -130,12 +148,31 @@ async function dispatchAssignment(
       })
     });
     log(config, `started ${assignment.workItemId}`);
+    telemetry.recordWorkerDispatch({
+      workItemId: assignment.workItemId,
+      prdId: assignment.prdId,
+      agentId: assignment.agentId,
+      role: assignment.role,
+      status: "succeeded"
+    });
     return { ok: true };
   } catch (error) {
     const message = `skip ${assignment.workItemId}: ${formatError(error)}`;
     log(config, message);
+    telemetry.recordWorkerDispatch({
+      workItemId: assignment.workItemId,
+      prdId: assignment.prdId,
+      agentId: assignment.agentId,
+      role: assignment.role,
+      status: "failed",
+      error: message
+    });
     return { ok: false, error: message };
   }
+}
+
+function getWorkerTelemetry(config: WorkerConfig) {
+  return config.telemetry ?? getTelemetry({ serviceName: "patchpilot-worker" });
 }
 
 async function requestJson<T = unknown>(url: string, init: RequestInit): Promise<T> {

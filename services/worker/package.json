@@ -17,7 +17,8 @@
   },
   "dependencies": {
     "@patchpilot/contracts": "workspace:*",
-    "@patchpilot/domain": "workspace:*"
+    "@patchpilot/domain": "workspace:*",
+    "@patchpilot/telemetry": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

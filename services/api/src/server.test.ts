@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CodexRunError, type CodexRunner } from "@patchpilot/codex-runner";
 import { contractVersion } from "@patchpilot/contracts";
+import { createInMemoryTelemetry } from "@patchpilot/telemetry";
 import {
   emptySnapshot,
   verifyAuditChain,
@@ -771,6 +772,47 @@ artifacts:
     expect(doneWorkItem.status).toBe("done");
 
     await app.close();
+  });
+
+  it("emits correlated OpenTelemetry signals for a completed run", async () => {
+    const telemetry = createInMemoryTelemetry("patchpilot-api-test");
+    const app = await buildServer({ telemetry });
+
+    try {
+      const run = await startSimulatedRun(app, "验证一次 run 会写入可关联的 OpenTelemetry trace");
+      const completedRun = await pollRun(app, run.id);
+      await telemetry.forceFlush();
+
+      const runSpan = telemetry.getFinishedSpans().find((span) => span.name === "patchpilot.agent_run");
+      const testSpan = telemetry.getFinishedSpans().find((span) => span.name === "patchpilot.test_run");
+      expect(runSpan?.attributes).toMatchObject({
+        "patchpilot.requirement.id": completedRun.requirementId,
+        "patchpilot.prd.id": completedRun.prdId,
+        "patchpilot.workflow.id": completedRun.prdId,
+        "patchpilot.workflow.proxy": "prd",
+        "patchpilot.work_item.id": completedRun.workItemId,
+        "patchpilot.agent_run.id": completedRun.id,
+        "patchpilot.agent_run.status": "succeeded"
+      });
+      expect(runSpan?.events.map((event) => event.name)).toEqual(
+        expect.arrayContaining(["requirement.understood", "acceptance.waiting", "audit.agent_run.succeeded"])
+      );
+      expect(testSpan?.attributes).toMatchObject({
+        "patchpilot.agent_run.id": completedRun.id,
+        "patchpilot.test_run.id": completedRun.result.tests[0].id,
+        "patchpilot.test_run.status": "passed"
+      });
+      expect(telemetry.getFinishedLogRecords().map((record) => record.eventName)).toEqual(
+        expect.arrayContaining([
+          "requirement.understood",
+          "patchpilot.test_run.passed",
+          "audit.agent_run.succeeded",
+          "patchpilot.agent_run.succeeded"
+        ])
+      );
+    } finally {
+      await app.close();
+    }
   });
 
   it("blocks accepted decisions when the acceptance quality gate is unmet", async () => {

@@ -151,6 +151,17 @@ PATCHPILOT_WORKER_INTERVAL_MS=5000
 PATCHPILOT_WORKER_ONCE=false
 ```
 
+OpenTelemetry environment:
+
+```bash
+PATCHPILOT_OTEL_ENABLED=true
+PATCHPILOT_OTEL_EXPORTER=otlp
+PATCHPILOT_OTEL_SERVICE_NAME=patchpilot-api
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+```
+
+When enabled, the API emits AgentRun traces, metrics, and logs with `patchpilot.requirement.id`, `patchpilot.prd.id`, `patchpilot.workflow.id`, `patchpilot.work_item.id`, `patchpilot.agent_run.id`, and `patchpilot.test_run.id` attributes where those IDs exist in the MVP. The worker emits dispatch/tick telemetry with WorkItem and PRD correlation. `pnpm e2e:otel` starts a lightweight local OTLP HTTP test collector and proves one simulated run exports telemetry without requiring Docker.
+
 Codex runner environment:
 
 ```bash
@@ -201,4 +212,5 @@ pnpm e2e:smoke
 pnpm e2e:cli
 pnpm e2e:budget
 pnpm e2e:failure-defect
+pnpm e2e:otel
 ```

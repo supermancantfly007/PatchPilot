@@ -3,6 +3,7 @@ import type { AgentProfile, AgentRole, AgentRun, PatchPilotSnapshot, WorkItem } 
 export interface DispatchAssignment {
   workItemId: string;
   workItemTitle: string;
+  prdId: string;
   agentId: string;
   agentName: string;
   role: AgentRole;
@@ -35,6 +36,7 @@ export function planDispatch(snapshot: PatchPilotSnapshot, options: { now?: Date
     assignments.push({
       workItemId: workItem.id,
       workItemTitle: workItem.title,
+      prdId: workItem.prdId,
       agentId: agent.id,
       agentName: agent.name,
       role: workItem.role
