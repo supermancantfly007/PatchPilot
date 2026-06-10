@@ -1,7 +1,6 @@
 "use client";
 
 import type { IntakeArtifactReference } from "@patchpilot/domain";
-import { artifactKindLabel } from "@patchpilot/domain";
 import { FileText, Image, Link as LinkIcon, Video, X } from "lucide-react";
 import { StatusNotice } from "@/components/StatusNotice";
 
@@ -17,6 +16,16 @@ function ArtifactIcon({ kind }: { kind: IntakeArtifactReference["kind"] }) {
   if (kind === "recording") return <Video size={16} />;
   if (kind === "link") return <LinkIcon size={16} />;
   return <FileText size={16} />;
+}
+
+function artifactKindLabel(kind: IntakeArtifactReference["kind"]) {
+  const labels: Record<IntakeArtifactReference["kind"], string> = {
+    file: "文件",
+    screenshot: "截图",
+    recording: "录屏",
+    link: "链接"
+  };
+  return labels[kind];
 }
 
 function formatBytes(value: number) {
