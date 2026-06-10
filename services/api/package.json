@@ -19,6 +19,7 @@
     "@patchpilot/db": "workspace:*",
     "@patchpilot/domain": "workspace:*",
     "@patchpilot/policy": "workspace:*",
+    "@patchpilot/security": "workspace:*",
     "@patchpilot/telemetry": "workspace:*",
     "fastify": "^5.8.5",
     "yaml": "^2.9.0",

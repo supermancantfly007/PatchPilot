@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -167,6 +167,37 @@ describe("GitWorkspaceManager", () => {
 
       await manager.cleanupWorkspace(workspace);
       expect(existsSync(workspace.path)).toBe(false);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts secrets from task prompts and collected summaries", async () => {
+    const fixture = await createGitFixture();
+    const previousCwd = process.cwd();
+    process.chdir(fixture.repo);
+    const manager = new GitWorkspaceManager();
+    const context = makeContext();
+    context.requirement.rawInput = "Build with patchpilot_fixture_secret_task_123";
+    context.prd.bodyMarkdown = "## PRD\nUse token=patchpilot_fixture_secret_prd_123";
+    context.workItem.title = "Backend patchpilot_fixture_secret_title_123 slice";
+
+    try {
+      const workspace = await manager.prepareWorkspace(context, {
+        workspaceRoot: fixture.workspaceRoot
+      });
+      const taskPrompt = await readFile(workspace.taskFilePath, "utf8");
+      expect(taskPrompt).not.toContain("patchpilot_fixture_secret_task_123");
+      expect(taskPrompt).not.toContain("patchpilot_fixture_secret_prd_123");
+      expect(workspace.branchName).not.toContain("patchpilot_fixture_secret_title_123");
+
+      const summaryPath = join(workspace.path, ".patchpilot-codex-summary.md");
+      await writeFile(summaryPath, "done patchpilot_fixture_secret_summary_123");
+      const artifacts = await manager.collectArtifacts(workspace, { summaryPath });
+
+      expect(artifacts.summary).toBe("done [REDACTED:token]");
+      await manager.cleanupWorkspace(workspace);
     } finally {
       process.chdir(previousCwd);
       await rm(fixture.root, { recursive: true, force: true });

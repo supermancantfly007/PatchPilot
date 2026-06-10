@@ -151,6 +151,37 @@ describe("TestRunner", () => {
     }
   });
 
+  it("redacts secrets from returned command and output summaries", async () => {
+    const fixtureSecret = "patchpilot_fixture_secret_test_log_123";
+    const run = await runTestCommand({
+      command: nodeCommand(`console.log('${fixtureSecret}')`),
+      cwd: process.cwd(),
+      timeoutMs: 5000,
+      collectGitMetadata: false
+    });
+
+    expect(JSON.stringify(run)).not.toContain(fixtureSecret);
+    expect(run.command).toContain("[REDACTED:token]");
+    expect(run.summary).toContain("[REDACTED:token]");
+  });
+
+  it("redacts known secret env values from output even when they are short", async () => {
+    const run = await runTestCommand({
+      command: nodeCommand("console.log(process.env.GITHUB_TOKEN)"),
+      cwd: process.cwd(),
+      timeoutMs: 5000,
+      collectGitMetadata: false,
+      inheritEnv: false,
+      env: {
+        PATH: process.env.PATH,
+        GITHUB_TOKEN: "ci-token-value"
+      }
+    });
+
+    expect(JSON.stringify(run)).not.toContain("ci-token-value");
+    expect(run.summary).toContain("[REDACTED:secret]");
+  });
+
   it("fails timed out commands", async () => {
     const run = await runTestCommand({
       command: nodeCommand("setTimeout(() => {}, 1000)"),

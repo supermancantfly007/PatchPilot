@@ -3,6 +3,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type { ArtifactKind, ArtifactRecord, ArtifactStorageProvider } from "@patchpilot/domain";
+import {
+  redactRecordValues,
+  redactSecrets,
+  secretRedactionPolicyVersion
+} from "@patchpilot/security";
 
 export type ArtifactContent = string | Uint8Array;
 
@@ -145,11 +150,13 @@ export function createArtifactStore(config: ArtifactStoreConfig): ArtifactStore 
 }
 
 function prepareArtifactInput(input: PutArtifactInput, storage: ArtifactStorageProvider, prefix = "") {
-  const bytes = toBytes(input.content);
+  const preparedContent = prepareArtifactContent(input.content);
+  const bytes = toBytes(preparedContent.content);
   const id = safeSegment(input.id || `artifact_${input.kind}_${randomUUID()}`);
   const extension = normalizeExtension(input.extension || extensionFor(input.contentType));
   const relativePath = posix.join(prefix, input.kind, `${id}${extension}`);
   const checksumSha256 = createHash("sha256").update(bytes).digest("hex");
+  const metadata = prepareArtifactMetadata(input.metadata, preparedContent.redactionCount);
   const record: ArtifactRecord = {
     id,
     kind: input.kind,
@@ -158,7 +165,7 @@ function prepareArtifactInput(input: PutArtifactInput, storage: ArtifactStorageP
     contentType: input.contentType || "application/octet-stream",
     sizeBytes: bytes.byteLength,
     checksumSha256,
-    ...(input.metadata ? { metadata: input.metadata } : {}),
+    ...(metadata ? { metadata } : {}),
     ...(input.requirementId ? { requirementId: input.requirementId } : {}),
     ...(input.prdId ? { prdId: input.prdId } : {}),
     ...(input.workItemId ? { workItemId: input.workItemId } : {}),
@@ -167,6 +174,27 @@ function prepareArtifactInput(input: PutArtifactInput, storage: ArtifactStorageP
     createdAt: input.createdAt || new Date().toISOString()
   };
   return { bytes, relativePath, record };
+}
+
+function prepareArtifactContent(content: ArtifactContent) {
+  if (typeof content !== "string") return { content, redactionCount: 0 };
+  const result = redactSecrets(content);
+  return {
+    content: result.redacted,
+    redactionCount: result.findings.length
+  };
+}
+
+function prepareArtifactMetadata(metadata: Record<string, string> | undefined, contentRedactionCount: number) {
+  const redactedMetadata = redactRecordValues(metadata) ?? {};
+  const metadataRedacted = JSON.stringify(redactedMetadata) !== JSON.stringify(metadata ?? {});
+  const redactionCount = contentRedactionCount + (metadataRedacted ? 1 : 0);
+  if (redactionCount > 0) {
+    redactedMetadata.redactionStatus = "redacted";
+    redactedMetadata.redactionPolicyVersion = secretRedactionPolicyVersion;
+    redactedMetadata.redactionFindingCount = String(redactionCount);
+  }
+  return Object.keys(redactedMetadata).length > 0 ? redactedMetadata : undefined;
 }
 
 function toBytes(content: ArtifactContent) {

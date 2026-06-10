@@ -1313,6 +1313,121 @@ artifacts:
     }
   });
 
+  it("redacts fixture secrets from Codex run API responses and stored artifacts", async () => {
+    const fixtureSecret = "patchpilot_fixture_secret_api_123";
+    const brokerSecret = "ci-token-value";
+    const restoreEnv = setSecretBrokerEnv({
+      PATCHPILOT_SECRET_BROKER_ENABLED: "true",
+      PATCHPILOT_SECRET_BROKER_ALLOWED_SECRETS: JSON.stringify([
+        {
+          id: "github-ci-token",
+          envVar: "GITHUB_TOKEN",
+          sourceEnv: "PATCHPILOT_CI_GITHUB_TOKEN",
+          environment: "ci"
+        }
+      ]),
+      PATCHPILOT_CI_GITHUB_TOKEN: brokerSecret
+    });
+    let app: Awaited<ReturnType<typeof buildServer>> | undefined;
+    try {
+      const fakeCodexRunner: CodexRunner = {
+        isAvailable: async () => true,
+        isGitWorkspaceAvailable: async () => true,
+        run: async (_context, emit) => {
+          await emit({
+            step: "developing",
+            type: "codex.output",
+            message: `runner saw ${fixtureSecret} and ${brokerSecret}`
+          });
+          return {
+            summary: `summary contains ${fixtureSecret} and ${brokerSecret}`,
+            previewUrl: `http://fake-preview.local?token=${fixtureSecret}`,
+            riskLevel: "low",
+            changedFiles: [`src/${fixtureSecret}.ts`],
+            tests: [
+              {
+                id: "test_secret_redaction",
+                status: "passed",
+                command: `echo GITHUB_TOKEN=${brokerSecret}`,
+                summary: `test output ${fixtureSecret} ${brokerSecret}`,
+                durationMs: 10
+              }
+            ],
+            reviewerSummary: `reviewer saw ${fixtureSecret} ${brokerSecret}`,
+            runner: "codex",
+            agentMessages: [`agent message ${fixtureSecret} ${brokerSecret}`],
+            reasoningSummaries: [`reasoning ${fixtureSecret} ${brokerSecret}`],
+            toolCalls: [
+              {
+                id: "tool_secret_redaction",
+                name: "exec_command",
+                status: "completed",
+                summary: `tool output ${fixtureSecret} ${brokerSecret}`,
+                command: `curl https://example.com/hook?token=${fixtureSecret}`,
+                exitCode: 0,
+                durationMs: 3
+              }
+            ],
+            diffSummary: {
+              changedFileCount: 1,
+              changedFiles: [`src/${fixtureSecret}.ts`],
+              hasChanges: true,
+              branchName: `patchpilot/${fixtureSecret}`,
+              baseBranch: "main",
+              baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            testOutputSummary: `passed with ${fixtureSecret} ${brokerSecret}`,
+            workspacePath: `fake://${fixtureSecret}`,
+            branchName: `patchpilot/${fixtureSecret}`,
+            baseBranch: "main",
+            baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            codexSessionId: "fake-session"
+          };
+        }
+      };
+      const store = new PatchPilotStore({ codexRunner: fakeCodexRunner });
+      app = await buildServer({ store });
+      const workItem = await createApprovedWorkItem(app, "验证 secret redaction acceptance");
+      await setWorkItemCapabilities(store, workItem.id, ["secret:github-ci-token"]);
+
+      const start = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/start`,
+        payload: { runner: "codex" }
+      });
+      expect(start.statusCode).toBe(201);
+
+      const completedRun = await pollRun(app, start.json().id);
+      expect(completedRun.status).toBe("succeeded");
+      const runResponse = await app.inject({ method: "GET", url: `/api/runs/${completedRun.id}` });
+      const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      const runBody = JSON.stringify(runResponse.json());
+      const snapshotBody = JSON.stringify(snapshot.json());
+
+      expect(runBody).not.toContain(fixtureSecret);
+      expect(runBody).not.toContain(brokerSecret);
+      expect(snapshotBody).not.toContain(fixtureSecret);
+      expect(snapshotBody).not.toContain(brokerSecret);
+      expect(runBody).toContain("[REDACTED:");
+
+      const runArtifacts = snapshot
+        .json()
+        .artifacts.filter((artifact: ArtifactRecord) => artifact.runId === completedRun.id);
+      expect(runArtifacts).toHaveLength(5);
+      for (const artifact of runArtifacts) {
+        if (!artifact.uri.startsWith("file://")) continue;
+        const content = await readFile(fileURLToPath(artifact.uri), "utf8");
+        expect(content).not.toContain(fixtureSecret);
+        expect(content).not.toContain(brokerSecret);
+      }
+    } finally {
+      await app?.close();
+      restoreEnv();
+    }
+  });
+
   it("classifies failed codex test runs and creates defect evidence", async () => {
     const failedTestRun: TestRun = {
       id: "test_fake_codex_failed",

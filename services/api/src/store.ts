@@ -18,6 +18,7 @@ import {
   type AgentRun,
   type AgentRunDiffSummary,
   type AgentRunEvent,
+  type AgentRunResult,
   type ArtifactRecord,
   type AuditEvent,
   type AuditJsonValue,
@@ -72,6 +73,7 @@ import {
   summarizeCapabilityManifest,
   type CapabilityManifest
 } from "@patchpilot/policy";
+import { redactJsonValue, redactRecordValues, redactSecrets, type SecretRedactionOptions } from "@patchpilot/security";
 import { getTelemetry, type PatchPilotTelemetry } from "@patchpilot/telemetry";
 import { readPatchPilotConfig } from "./config";
 
@@ -224,11 +226,11 @@ export class PatchPilotStore {
   }
 
   async importJsonSnapshot(snapshot: PatchPilotSnapshot) {
-    this.snapshot = structuredClone(snapshot);
+    this.snapshot = redactJsonValue(structuredClone(snapshot));
     this.normalizeSnapshot();
     this.loaded = true;
     await this.save();
-    return structuredClone(this.snapshot);
+    return this.redactedSnapshot();
   }
 
   async importJsonFile(filePath: string) {
@@ -246,12 +248,16 @@ export class PatchPilotStore {
   async getSnapshot() {
     await this.load();
     if (this.expireOverdueApprovals()) await this.save();
-    return structuredClone(this.snapshot);
+    return this.redactedSnapshot();
   }
 
   async getAgents() {
     await this.load();
     return structuredClone(this.snapshot.agents);
+  }
+
+  private redactedSnapshot() {
+    return redactJsonValue(structuredClone(this.snapshot));
   }
 
   async verifyAuditChain() {
@@ -301,17 +307,18 @@ export class PatchPilotStore {
     await this.load();
     const now = new Date().toISOString();
     const id = `req_${randomUUID()}`;
+    const rawInput = redactSecrets(input.rawInput).redacted;
     const artifactReferences = this.prepareIntakeArtifactReferences(input.artifactReferences ?? [], id, now);
     const requirement: Requirement = {
       id,
-      title: makeSimpleSummary(input.rawInput, input.template),
-      rawInput: input.rawInput,
+      title: makeSimpleSummary(rawInput, input.template),
+      rawInput,
       template: input.template,
       status: "clarifying",
-      simpleSummary: makeSimpleSummary(input.rawInput, input.template),
+      simpleSummary: makeSimpleSummary(rawInput, input.template),
       artifactReferences,
-      clarificationQuestions: generateClarificationQuestions(input.rawInput, input.template),
-      clarificationTurns: [createInitialClarificationTurn(input.rawInput, input.template, now)],
+      clarificationQuestions: generateClarificationQuestions(rawInput, input.template),
+      clarificationTurns: [createInitialClarificationTurn(rawInput, input.template, now)],
       createdAt: now,
       updatedAt: now
     };
@@ -330,7 +337,7 @@ export class PatchPilotStore {
     }
     requirement.clarificationQuestions = requirement.clarificationQuestions.map((question) => ({
       ...question,
-      answer: answers[question.id] || question.recommendedAnswer
+      answer: redactSecrets(answers[question.id] || question.recommendedAnswer).redacted
     }));
     requirement.status = "prd_draft";
     requirement.updatedAt = new Date().toISOString();
@@ -354,10 +361,11 @@ export class PatchPilotStore {
       throw new DomainError("INVALID_STATE", "Requirement is not waiting for clarification");
     }
     const now = new Date().toISOString();
+    const safeMessage = redactSecrets(message).redacted;
     requirement.clarificationTurns.push({
       id: `turn_${randomUUID()}`,
       speaker: "user",
-      message,
+      message: safeMessage,
       createdAt: now
     });
 
@@ -510,14 +518,15 @@ export class PatchPilotStore {
     const now = new Date().toISOString();
     const bugId = `bug_${randomUUID()}`;
     const requirementId = `req_${bugId}`;
-    const artifactReferences = this.prepareIntakeArtifactReferences(input.artifactReferences ?? [], requirementId, now);
+    const safeBugInput = redactJsonValue(input);
+    const artifactReferences = this.prepareIntakeArtifactReferences(safeBugInput.artifactReferences ?? [], requirementId, now);
     const requirement = createBugRequirement({
       id: requirementId,
-      title: input.title,
-      description: input.description,
-      reproductionSteps: input.reproductionSteps,
-      expectedBehavior: input.expectedBehavior,
-      actualBehavior: input.actualBehavior,
+      title: safeBugInput.title,
+      description: safeBugInput.description,
+      reproductionSteps: safeBugInput.reproductionSteps,
+      expectedBehavior: safeBugInput.expectedBehavior,
+      actualBehavior: safeBugInput.actualBehavior,
       artifactReferences,
       now
     });
@@ -526,20 +535,20 @@ export class PatchPilotStore {
       bugId,
       requirementId,
       prdId: prd.id,
-      title: input.title,
+      title: safeBugInput.title,
       now
     });
     this.applyConfiguredBudgets(prd, [workItem]);
     const bug: BugReport = {
       id: bugId,
-      title: input.title,
-      description: input.description,
-      reproductionSteps: input.reproductionSteps,
-      expectedBehavior: input.expectedBehavior,
-      actualBehavior: input.actualBehavior,
-      severity: input.severity,
+      title: safeBugInput.title,
+      description: safeBugInput.description,
+      reproductionSteps: safeBugInput.reproductionSteps,
+      expectedBehavior: safeBugInput.expectedBehavior,
+      actualBehavior: safeBugInput.actualBehavior,
+      severity: safeBugInput.severity,
       status: "reported",
-      reporter: input.reporter?.trim() || "human",
+      reporter: safeBugInput.reporter?.trim() || "human",
       requirementId,
       prdId: prd.id,
       workItemId: workItem.id,
@@ -1015,7 +1024,7 @@ export class PatchPilotStore {
 
   async getRun(runId: string) {
     await this.load();
-    return this.findRun(runId);
+    return redactJsonValue(structuredClone(this.findRun(runId)));
   }
 
   async getRequirementBundle(requirementId: string) {
@@ -1026,7 +1035,7 @@ export class PatchPilotStore {
     const interfaceContracts = prd
       ? this.snapshot.interfaceContracts.filter((item) => item.prdId === prd.id)
       : [];
-    return { requirement, prd, workItems, interfaceContracts };
+    return redactJsonValue({ requirement, prd, workItems, interfaceContracts });
   }
 
   private async executeRun(runId: string) {
@@ -1090,21 +1099,28 @@ export class PatchPilotStore {
       config.security.secretBroker,
       capabilityManifest
     );
-    const result = await this.codexRunner.run(
-      { runId, requirement, prd, workItem },
-      (event) => this.appendRunEvent(runId, event),
-      {
-        ...config,
-        policyManifest: capabilityManifest,
-        security: {
-          ...config.security,
-          secretEnv: secretBrokerResolution.env
+    const redactionOptions = { knownSecrets: Object.values(secretBrokerResolution.env) };
+    let result: AgentRunResult;
+    try {
+      result = await this.codexRunner.run(
+        { runId, requirement, prd, workItem },
+        (event) => this.appendRunEvent(runId, event, redactionOptions),
+        {
+          ...config,
+          policyManifest: capabilityManifest,
+          security: {
+            ...config.security,
+            secretEnv: secretBrokerResolution.env
+          }
         }
-      }
-    );
+      );
+    } catch (error) {
+      throw redactRunError(error, redactionOptions);
+    }
     if (secretBrokerResolution.evidence.requestedSecretIds.length > 0) {
       result.secretBrokerEvidence = secretBrokerResolution.evidence;
     }
+    const redactedResult = redactJsonValue(result, redactionOptions);
 
     await this.load();
     const completedRun = this.findRun(runId);
@@ -1113,13 +1129,13 @@ export class PatchPilotStore {
     completedRun.currentStep = "confirming";
     this.pushRunEvent(completedRun, "review.completed", "Reviewer agent 已整理执行证据，等待你确认");
     this.pushRunEvent(completedRun, "acceptance.waiting", "执行完成，请查看证据摘要并确认");
-    completedRun.result = result;
+    completedRun.result = redactedResult;
     completedRun.costActualUsd = 0;
     completedRun.endedAt = new Date().toISOString();
     completedWorkItem.status = "review";
     completedWorkItem.updatedAt = completedRun.endedAt;
     this.completeAgentAssignment(completedWorkItem.id, completedRun.endedAt);
-    await this.recordCompletedRunEvidence(completedRun, completedWorkItem, result.tests, completedRun.endedAt, "succeeded");
+    await this.recordCompletedRunEvidence(completedRun, completedWorkItem, redactedResult.tests, completedRun.endedAt, "succeeded", redactionOptions);
     completedRun.status = "succeeded";
     this.telemetry.endAgentRun(completedRun, "succeeded");
     this.completeBugIfNeeded(completedWorkItem, completedRun.endedAt);
@@ -1279,7 +1295,11 @@ export class PatchPilotStore {
     await this.save();
   }
 
-  private async appendRunEvent(runId: string, event: CodexRunnerEvent) {
+  private async appendRunEvent(
+    runId: string,
+    event: CodexRunnerEvent,
+    redactionOptions: SecretRedactionOptions = {}
+  ) {
     await this.load();
     const run = this.snapshot.agentRuns.find((item) => item.id === runId);
     if (!run || run.status !== "running") return;
@@ -1287,7 +1307,7 @@ export class PatchPilotStore {
       run.currentStep = event.step;
       run.timeline = advanceTimeline(run.timeline, event.step);
     }
-    this.pushRunEvent(run, event.type, event.message);
+    this.pushRunEvent(run, event.type, event.message, redactionOptions);
     await this.save();
   }
 
@@ -1342,8 +1362,13 @@ export class PatchPilotStore {
     return approval;
   }
 
-  private pushRunEvent(run: AgentRun, type: AgentRunEvent["type"], message: string) {
-    const event = this.makeEvent(type, message);
+  private pushRunEvent(
+    run: AgentRun,
+    type: AgentRunEvent["type"],
+    message: string,
+    redactionOptions: SecretRedactionOptions = {}
+  ) {
+    const event = this.makeEvent(type, redactSecrets(message, redactionOptions).redacted);
     run.events.push(event);
     this.telemetry.recordRunEvent(run, event);
     return event;
@@ -2101,14 +2126,19 @@ export class PatchPilotStore {
     workItem: WorkItem,
     tests: TestRun[],
     endedAt: string,
-    options: { workspaceStatus: WorkspaceRun["status"]; workspacePath?: string; finalRunStatus?: AgentRun["status"] }
+    options: {
+      workspaceStatus: WorkspaceRun["status"];
+      workspacePath?: string;
+      finalRunStatus?: AgentRun["status"];
+      redactionOptions?: SecretRedactionOptions;
+    }
   ) {
     const prd = this.findPrd(run.prdId);
     const testCase = this.ensureTestCasesForWorkItems(prd, [workItem], endedAt)[0];
     const normalizedTests: TestRun[] = tests.map((test) => {
       const logArtifactId = test.logArtifactId || `artifact_test_log_${test.id}`;
       const workspacePath = test.workspacePath || options.workspacePath || run.result?.workspacePath || `simulated://${run.id}`;
-      return {
+      return redactJsonValue({
         ...test,
         testCaseId: test.testCaseId || testCase?.id,
         runId: run.id,
@@ -2128,14 +2158,14 @@ export class PatchPilotStore {
         flakySignal: test.flakySignal ?? false,
         logArtifactId,
         artifactIds: test.artifactIds || [logArtifactId]
-      };
+      }, options.redactionOptions);
     });
 
     if (run.result) {
       run.result.tests = normalizedTests;
     }
 
-    await this.recordRunArtifacts(run, workItem, normalizedTests, endedAt, options.finalRunStatus);
+    await this.recordRunArtifacts(run, workItem, normalizedTests, endedAt, options.finalRunStatus, options.redactionOptions);
 
     for (const test of normalizedTests) {
       const linkedTestCase = this.snapshot.testCases.find((item) => item.id === test.testCaseId);
@@ -2193,7 +2223,8 @@ export class PatchPilotStore {
     workItem: WorkItem,
     tests: TestRun[],
     endedAt: string,
-    finalRunStatus = run.status
+    finalRunStatus = run.status,
+    redactionOptions: SecretRedactionOptions = {}
   ) {
     const artifactStore = this.getArtifactStore();
     const common = {
@@ -2210,11 +2241,11 @@ export class PatchPilotStore {
       const logRecord = await artifactStore.putArtifact({
         id: logArtifactId,
         kind: "log",
-        content: renderTestLog(test),
+        content: redactSecrets(renderTestLog(test), redactionOptions).redacted,
         contentType: "text/plain",
         extension: ".log",
         metadata: {
-          command: test.command,
+          command: redactSecrets(test.command, redactionOptions).redacted,
           status: test.status
         },
         ...common,
@@ -2223,11 +2254,11 @@ export class PatchPilotStore {
       const reportRecord = await artifactStore.putArtifact({
         id: `artifact_test_report_${test.id}`,
         kind: "test_report",
-        content: JSON.stringify(test, null, 2),
+        content: JSON.stringify(redactJsonValue(test, redactionOptions), null, 2),
         contentType: "application/json",
         extension: ".json",
         metadata: {
-          command: test.command,
+          command: redactSecrets(test.command, redactionOptions).redacted,
           status: test.status
         },
         ...common,
@@ -2241,7 +2272,7 @@ export class PatchPilotStore {
     const traceRecord = await artifactStore.putArtifact({
       id: `artifact_trace_${run.id}`,
       kind: "trace",
-      content: JSON.stringify({
+      content: JSON.stringify(redactJsonValue({
         runId: run.id,
         status: finalRunStatus,
         currentStep: run.currentStep,
@@ -2256,7 +2287,7 @@ export class PatchPilotStore {
           egressPolicyEvidence: run.result?.egressPolicyEvidence,
           secretBrokerEvidence: run.result?.secretBrokerEvidence
         }
-      }, null, 2),
+      }, redactionOptions), null, 2),
       contentType: "application/json",
       extension: ".json",
       metadata: {
@@ -2268,14 +2299,14 @@ export class PatchPilotStore {
     const diffRecord = await artifactStore.putArtifact({
       id: `artifact_diff_${run.id}`,
       kind: "diff",
-      content: JSON.stringify({
+      content: JSON.stringify(redactJsonValue({
         diffSummary: run.result?.diffSummary ?? buildRunDiffSummary(run.result?.changedFiles ?? [], run.result),
         changedFiles: run.result?.changedFiles ?? [],
         branchName: run.result?.branchName,
         baseBranch: run.result?.baseBranch,
         baseCommit: run.result?.baseCommit,
         headCommit: run.result?.headCommit
-      }, null, 2),
+      }, redactionOptions), null, 2),
       contentType: "application/json",
       extension: ".json",
       metadata: {
@@ -2286,11 +2317,11 @@ export class PatchPilotStore {
     const previewRecord = await artifactStore.putArtifact({
       id: `artifact_preview_${run.id}`,
       kind: "preview_metadata",
-      content: JSON.stringify({
+      content: JSON.stringify(redactJsonValue({
         previewUrl: run.result?.previewUrl,
         workspacePath: run.result?.workspacePath,
         runner: run.runner
-      }, null, 2),
+      }, redactionOptions), null, 2),
       contentType: "application/json",
       extension: ".json",
       metadata: {
@@ -2310,7 +2341,7 @@ export class PatchPilotStore {
     run.artifactIds = runArtifactIds;
     if (run.result) {
       run.result.artifactIds = uniqueStrings([...(run.result.artifactIds ?? []), ...runArtifactIds]);
-      run.result.tests = tests;
+      run.result.tests = redactJsonValue(tests, redactionOptions);
     }
   }
 
@@ -2328,9 +2359,9 @@ export class PatchPilotStore {
         return {
           id,
           kind: reference.kind,
-          label: reference.label.trim(),
-          ...(reference.uri?.trim() ? { uri: reference.uri.trim() } : {}),
-          ...(reference.contentType?.trim() ? { contentType: reference.contentType.trim() } : {}),
+          label: redactSecrets(reference.label.trim()).redacted,
+          ...(reference.uri?.trim() ? { uri: redactSecrets(reference.uri.trim()).redacted } : {}),
+          ...(reference.contentType?.trim() ? { contentType: redactSecrets(reference.contentType.trim()).redacted } : {}),
           ...(typeof reference.sizeBytes === "number" ? { sizeBytes: reference.sizeBytes } : {}),
           artifactId: reference.artifactId?.trim() || `artifact_intake_${id}`,
           ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
@@ -2353,9 +2384,9 @@ export class PatchPilotStore {
         return {
           id,
           kind: normalizeIntakeArtifactKind(reference.kind),
-          label: reference.label.trim(),
-          ...(reference.uri?.trim() ? { uri: reference.uri.trim() } : {}),
-          ...(reference.contentType?.trim() ? { contentType: reference.contentType.trim() } : {}),
+          label: redactSecrets(reference.label.trim()).redacted,
+          ...(reference.uri?.trim() ? { uri: redactSecrets(reference.uri.trim()).redacted } : {}),
+          ...(reference.contentType?.trim() ? { contentType: redactSecrets(reference.contentType.trim()).redacted } : {}),
           ...(typeof reference.sizeBytes === "number" ? { sizeBytes: reference.sizeBytes } : {}),
           artifactId: reference.artifactId?.trim() || `artifact_intake_${id}`,
           ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
@@ -2406,12 +2437,17 @@ export class PatchPilotStore {
     workItem: WorkItem,
     tests: TestRun[],
     endedAt: string,
-    finalRunStatus: AgentRun["status"]
+    finalRunStatus: AgentRun["status"],
+    redactionOptions: SecretRedactionOptions = {}
   ) {
-    await this.recordRunTestEvidence(run, workItem, tests, endedAt, { workspaceStatus: "archived", finalRunStatus });
+    await this.recordRunTestEvidence(run, workItem, tests, endedAt, {
+      workspaceStatus: "archived",
+      finalRunStatus,
+      redactionOptions
+    });
     this.recordEgressPolicyAudit(run, workItem, run.result?.egressPolicyEvidence, endedAt);
 
-    const pullRequest = this.recordPullRequest(run, workItem, endedAt);
+    const pullRequest = this.recordPullRequest(run, workItem, endedAt, redactionOptions);
     this.addAuditEvent({
       actor: "pr_adapter",
       action: "pull_request.ready_for_review",
@@ -2435,7 +2471,7 @@ export class PatchPilotStore {
       }
     });
 
-    const reviewRecord = this.recordReview(run, workItem, pullRequest, endedAt);
+    const reviewRecord = this.recordReview(run, workItem, pullRequest, endedAt, redactionOptions);
     this.addAuditEvent({
       actor: "reviewer_agent",
       action: "review.approved",
@@ -2688,7 +2724,12 @@ export class PatchPilotStore {
     return defect;
   }
 
-  private recordPullRequest(run: AgentRun, workItem: WorkItem, now: string): PullRequestRecord {
+  private recordPullRequest(
+    run: AgentRun,
+    workItem: WorkItem,
+    now: string,
+    redactionOptions: SecretRedactionOptions = {}
+  ): PullRequestRecord {
     const existing = this.snapshot.pullRequests.find((item) => item.runId === run.id);
     const result = run.result;
     const tests = result?.tests ?? [];
@@ -2696,7 +2737,10 @@ export class PatchPilotStore {
       tests.length > 0
         ? tests.map((test) => `${test.status}: ${test.command} (${test.durationMs}ms)`).join("\n")
         : "No test evidence recorded.";
-    const reviewerSummary = result?.reviewerSummary || "Reviewer agent 尚未返回摘要。";
+    const reviewerSummary = redactSecrets(
+      result?.reviewerSummary || "Reviewer agent 尚未返回摘要。",
+      redactionOptions
+    ).redacted;
     const branchName = result?.branchName || existing?.branchName || buildFallbackBranchName(workItem, run.id);
     const baseBranch = result?.baseBranch || existing?.baseBranch || "main";
     const baseCommit = result?.baseCommit || existing?.baseCommit;
@@ -2705,7 +2749,7 @@ export class PatchPilotStore {
       id: existing?.id || `pr_${run.id}`,
       provider: "local",
       status: "ready_for_review",
-      title: `[PatchPilot] ${workItem.title}`,
+      title: redactSecrets(`[PatchPilot] ${workItem.title}`, redactionOptions).redacted,
       requirementId: run.requirementId,
       prdId: run.prdId,
       workItemId: workItem.id,
@@ -2715,14 +2759,14 @@ export class PatchPilotStore {
       ...(baseCommit ? { baseCommit } : {}),
       ...(headCommit ? { headCommit } : {}),
       url: existing?.url || `local://pull-requests/${run.id}`,
-      bodyMarkdown: this.buildPullRequestBody(run, workItem, testSummary, reviewerSummary, {
+      bodyMarkdown: redactSecrets(this.buildPullRequestBody(run, workItem, testSummary, reviewerSummary, {
         branchName,
         baseBranch,
         baseCommit,
         headCommit
-      }),
+      }), redactionOptions).redacted,
       reviewerSummary,
-      testSummary,
+      testSummary: redactSecrets(testSummary, redactionOptions).redacted,
       createdAt: existing?.createdAt || now,
       updatedAt: now
     };
@@ -2736,12 +2780,16 @@ export class PatchPilotStore {
     run: AgentRun,
     workItem: WorkItem,
     pullRequest: PullRequestRecord,
-    now: string
+    now: string,
+    redactionOptions: SecretRedactionOptions = {}
   ): ReviewRecord {
     const existing = this.snapshot.reviewRecords.find((item) => item.runId === run.id);
     const tests = run.result?.tests ?? [];
     const allTestsPassed = tests.length > 0 && tests.every((test) => test.status === "passed");
-    const reviewerSummary = run.result?.reviewerSummary || "Reviewer agent 尚未返回摘要。";
+    const reviewerSummary = redactSecrets(
+      run.result?.reviewerSummary || "Reviewer agent 尚未返回摘要。",
+      redactionOptions
+    ).redacted;
     const testSummary =
       tests.length > 0
         ? tests.map((test) => `${test.status}: ${test.command} (${test.summary})`).join("\n")
@@ -2755,8 +2803,8 @@ export class PatchPilotStore {
       runId: run.id,
       linkedPullRequestId: pullRequest.id,
       reviewerAgentId: "agent_reviewer",
-      summary: `Reviewer agent 摘要：${reviewerSummary}`,
-      testSummary,
+      summary: redactSecrets(`Reviewer agent 摘要：${reviewerSummary}`, redactionOptions).redacted,
+      testSummary: redactSecrets(testSummary, redactionOptions).redacted,
       riskLevel: run.result?.riskLevel || "medium",
       findings: allTestsPassed
         ? ["测试证据通过", "PR 交付记录已生成", "未发现阻断验收的高风险问题"]
@@ -2849,6 +2897,10 @@ export class PatchPilotStore {
     const actor = input.actorType && input.actorId
       ? { actorType: input.actorType, actorId: input.actorId }
       : normalizeAuditActor(input.actor || input.actorId);
+    const message = redactSecrets(input.message).redacted;
+    const beforeJson = redactJsonValue(input.beforeJson ?? null);
+    const afterJson = redactJsonValue(input.afterJson ?? null);
+    const metadataJson = redactJsonValue(input.metadataJson ?? {});
     const previousHash = this.snapshot.auditEvents[0]?.hash ?? null;
     const eventWithoutHash: Omit<AuditEvent, "hash"> = {
       id: `audit_${randomUUID()}`,
@@ -2859,10 +2911,10 @@ export class PatchPilotStore {
       action: input.action,
       targetType: input.targetType,
       targetId: input.targetId,
-      message: input.message,
-      beforeJson: input.beforeJson ?? null,
-      afterJson: input.afterJson ?? null,
-      metadataJson: input.metadataJson ?? {},
+      message,
+      beforeJson,
+      afterJson,
+      metadataJson,
       previousHash,
       ...(input.requirementId ? { requirementId: input.requirementId } : {}),
       ...(input.prdId ? { prdId: input.prdId } : {}),
@@ -3147,7 +3199,7 @@ function safeReferenceSegment(value: string) {
 
 function sanitizeReferenceMetadata(metadata: Record<string, string> | undefined) {
   const output: Record<string, string> = {};
-  for (const [key, value] of Object.entries(metadata ?? {})) {
+  for (const [key, value] of Object.entries(redactRecordValues(metadata) ?? {})) {
     const normalizedKey = key.trim();
     const normalizedValue = value.trim();
     if (!normalizedKey || !normalizedValue) continue;
@@ -3183,10 +3235,10 @@ function buildRunDiffSummary(
 
 function summarizeRunTestOutput(tests: TestRun[]) {
   if (!tests.length) return "No test output captured.";
-  return tests.map((test) => {
+  return redactSecrets(tests.map((test) => {
     const failure = test.failureSummary ? ` Failure: ${test.failureSummary}` : "";
     return `${test.status}: ${test.command} (${test.durationMs}ms). ${test.summary}${failure}`;
-  }).join("\n");
+  }).join("\n")).redacted;
 }
 
 function renderTestLog(test: TestRun) {
@@ -3229,7 +3281,7 @@ function scopeLabel(scope: BudgetScopeType) {
 }
 
 function extractRunFailureDetails(error: unknown): RunFailureDetails {
-  const failureSummary = error instanceof Error ? error.message : String(error);
+  const failureSummary = redactSecrets(error instanceof Error ? error.message : String(error)).redacted;
   const record = asRecord(error);
   const rawFailureType =
     error instanceof CodexRunError
@@ -3238,9 +3290,9 @@ function extractRunFailureDetails(error: unknown): RunFailureDetails {
         ? record.failureType
         : undefined;
   const testRun = error instanceof CodexRunError
-    ? error.testRun
+    ? redactJsonValue(error.testRun)
     : record
-      ? asTestRun(record.testRun)
+      ? redactJsonValue(asTestRun(record.testRun))
       : undefined;
   const egressPolicyEvidence = error instanceof CodexRunError
     ? error.egressPolicyEvidence
@@ -3263,6 +3315,37 @@ function extractRunFailureDetails(error: unknown): RunFailureDetails {
   };
 }
 
+function redactRunError(error: unknown, redactionOptions: SecretRedactionOptions) {
+  if (error instanceof CodexRunError) {
+    return new CodexRunError(
+      redactSecrets(error.message, redactionOptions).redacted,
+      error.failureType,
+      error.testRun ? redactJsonValue(error.testRun, redactionOptions) : undefined,
+      error.egressPolicyEvidence ? redactJsonValue(error.egressPolicyEvidence, redactionOptions) : undefined,
+      error.secretBrokerEvidence ? redactJsonValue(error.secretBrokerEvidence, redactionOptions) : undefined
+    );
+  }
+  if (error instanceof Error) {
+    const redacted = new Error(redactSecrets(error.message, redactionOptions).redacted) as Error & {
+      failureType?: FailureType;
+      testRun?: TestRun;
+      egressPolicyEvidence?: EgressPolicyEvidence;
+      secretBrokerEvidence?: SecretBrokerEvidence;
+    };
+    redacted.name = error.name;
+    const record = asRecord(error);
+    if (record && isFailureType(record.failureType)) redacted.failureType = record.failureType;
+    const testRun = record ? asTestRun(record.testRun) : undefined;
+    const egressPolicyEvidence = record ? asEgressPolicyEvidence(record.egressPolicyEvidence) : undefined;
+    const secretBrokerEvidence = record ? asSecretBrokerEvidence(record.secretBrokerEvidence) : undefined;
+    if (testRun) redacted.testRun = redactJsonValue(testRun, redactionOptions);
+    if (egressPolicyEvidence) redacted.egressPolicyEvidence = redactJsonValue(egressPolicyEvidence, redactionOptions);
+    if (secretBrokerEvidence) redacted.secretBrokerEvidence = redactJsonValue(secretBrokerEvidence, redactionOptions);
+    return redacted;
+  }
+  return new Error(redactSecrets(String(error), redactionOptions).redacted);
+}
+
 function createRunFailureError(
   message: string,
   failureType: FailureType,
@@ -3276,10 +3359,11 @@ function createRunFailureError(
     egressPolicyEvidence?: EgressPolicyEvidence;
     secretBrokerEvidence?: SecretBrokerEvidence;
   };
+  error.message = redactSecrets(error.message).redacted;
   error.failureType = failureType;
-  if (testRun) error.testRun = testRun;
-  if (egressPolicyEvidence) error.egressPolicyEvidence = egressPolicyEvidence;
-  if (secretBrokerEvidence) error.secretBrokerEvidence = secretBrokerEvidence;
+  if (testRun) error.testRun = redactJsonValue(testRun);
+  if (egressPolicyEvidence) error.egressPolicyEvidence = redactJsonValue(egressPolicyEvidence);
+  if (secretBrokerEvidence) error.secretBrokerEvidence = redactJsonValue(secretBrokerEvidence);
   return error;
 }
 

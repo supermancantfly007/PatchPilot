@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "@patchpilot/domain": "workspace:*",
-    "@patchpilot/policy": "workspace:*"
+    "@patchpilot/policy": "workspace:*",
+    "@patchpilot/security": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
