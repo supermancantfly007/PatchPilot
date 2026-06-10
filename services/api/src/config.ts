@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import type { AgentRunnerKind } from "@patchpilot/domain";
+import type { AgentRunnerKind, ArtifactStorageProvider } from "@patchpilot/domain";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
@@ -25,6 +25,15 @@ export interface PatchPilotConfigEnv extends NodeJS.ProcessEnv {
   PATCHPILOT_CODEX_SANDBOX?: string;
   PATCHPILOT_CODEX_BYPASS?: string;
   PATCHPILOT_PREVIEW_URL?: string;
+  PATCHPILOT_ARTIFACT_STORE?: string;
+  PATCHPILOT_ARTIFACT_ROOT?: string;
+  PATCHPILOT_ARTIFACT_S3_ENDPOINT?: string;
+  PATCHPILOT_ARTIFACT_S3_REGION?: string;
+  PATCHPILOT_ARTIFACT_S3_BUCKET?: string;
+  PATCHPILOT_ARTIFACT_S3_ACCESS_KEY_ID?: string;
+  PATCHPILOT_ARTIFACT_S3_SECRET_ACCESS_KEY?: string;
+  PATCHPILOT_ARTIFACT_S3_FORCE_PATH_STYLE?: string;
+  PATCHPILOT_ARTIFACT_S3_PREFIX?: string;
 }
 
 export interface ResolvedPatchPilotConfig {
@@ -66,6 +75,19 @@ export interface ResolvedPatchPilotConfig {
     runUsd: number;
     softThresholdRatio: number;
   };
+  artifacts: {
+    provider: ArtifactStorageProvider;
+    localRoot: string;
+    s3: {
+      endpoint?: string;
+      region: string;
+      bucket: string;
+      accessKeyId: string;
+      secretAccessKey: string;
+      forcePathStyle: boolean;
+      prefix: string;
+    };
+  };
 }
 
 interface ReadConfigOptions {
@@ -75,6 +97,7 @@ interface ReadConfigOptions {
 }
 
 const configuredRunnerSchema = z.enum(["auto", "simulated", "codex"]);
+const artifactProviderSchema = z.enum(["local_fs", "s3"]);
 const stringArraySchema = z.preprocess(
   (value) => (typeof value === "string" ? [value] : value),
   z.array(z.string())
@@ -116,6 +139,19 @@ const rawConfigSchema = z.object({
     workItemUsd: z.number().nonnegative().optional(),
     runUsd: z.number().nonnegative().optional(),
     softThresholdRatio: z.number().min(0).max(1).optional()
+  }).optional(),
+  artifacts: z.object({
+    provider: artifactProviderSchema.optional(),
+    localRoot: z.string().optional(),
+    s3: z.object({
+      endpoint: z.string().optional(),
+      region: z.string().optional(),
+      bucket: z.string().optional(),
+      accessKeyId: z.string().optional(),
+      secretAccessKey: z.string().optional(),
+      forcePathStyle: z.boolean().optional(),
+      prefix: z.string().optional()
+    }).optional()
   }).optional()
 }).partial();
 
@@ -134,6 +170,12 @@ export function readPatchPilotConfig(options: ReadConfigOptions = {}): ResolvedP
   const devPreviewUrl = pickString(env.PATCHPILOT_PREVIEW_URL, raw.dev?.previewUrl, "http://localhost:3000");
   const testTimeoutMs = pickNumber(env.PATCHPILOT_TEST_TIMEOUT_MS, raw.test?.timeoutMs, 2 * 60 * 1000);
   const maxCostUsd = pickNumber(env.PATCHPILOT_BUDGET_MAX_COST_USD, raw.budget?.maxCostUsd, 0);
+  const localArtifactRoot = pickString(
+    env.PATCHPILOT_ARTIFACT_ROOT,
+    raw.artifacts?.localRoot ? resolveRelativePath(configRoot, raw.artifacts.localRoot) : undefined,
+    join(cwd, ".patchpilot", "artifacts")
+  );
+  const s3Endpoint = pickString(env.PATCHPILOT_ARTIFACT_S3_ENDPOINT, raw.artifacts?.s3?.endpoint, "");
 
   return {
     configSource,
@@ -181,6 +223,27 @@ export function readPatchPilotConfig(options: ReadConfigOptions = {}): ResolvedP
       workItemUsd: pickNumber(env.PATCHPILOT_BUDGET_WORK_ITEM_USD, raw.budget?.workItemUsd, 0),
       runUsd: pickNumber(env.PATCHPILOT_BUDGET_RUN_USD, raw.budget?.runUsd, 0),
       softThresholdRatio: pickNumber(env.PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO, raw.budget?.softThresholdRatio, 0.8)
+    },
+    artifacts: {
+      provider: pickArtifactProvider(env.PATCHPILOT_ARTIFACT_STORE, raw.artifacts?.provider, "local_fs"),
+      localRoot: localArtifactRoot,
+      s3: {
+        ...(s3Endpoint ? { endpoint: s3Endpoint } : {}),
+        region: pickString(env.PATCHPILOT_ARTIFACT_S3_REGION, raw.artifacts?.s3?.region, "us-east-1"),
+        bucket: pickString(env.PATCHPILOT_ARTIFACT_S3_BUCKET, raw.artifacts?.s3?.bucket, "patchpilot"),
+        accessKeyId: pickString(env.PATCHPILOT_ARTIFACT_S3_ACCESS_KEY_ID, raw.artifacts?.s3?.accessKeyId, "patchpilot"),
+        secretAccessKey: pickString(
+          env.PATCHPILOT_ARTIFACT_S3_SECRET_ACCESS_KEY,
+          raw.artifacts?.s3?.secretAccessKey,
+          "patchpilot123"
+        ),
+        forcePathStyle: pickBoolean(
+          env.PATCHPILOT_ARTIFACT_S3_FORCE_PATH_STYLE,
+          raw.artifacts?.s3?.forcePathStyle,
+          true
+        ),
+        prefix: pickString(env.PATCHPILOT_ARTIFACT_S3_PREFIX, raw.artifacts?.s3?.prefix, "patchpilot")
+      }
     }
   };
 }
@@ -250,5 +313,14 @@ function pickRunner(
   defaultValue: ConfiguredRunner
 ): ConfiguredRunner {
   if (envValue === "auto" || envValue === "simulated" || envValue === "codex") return envValue;
+  return configValue ?? defaultValue;
+}
+
+function pickArtifactProvider(
+  envValue: string | undefined,
+  configValue: ArtifactStorageProvider | undefined,
+  defaultValue: ArtifactStorageProvider
+): ArtifactStorageProvider {
+  if (envValue === "local_fs" || envValue === "s3") return envValue;
   return configValue ?? defaultValue;
 }

@@ -318,6 +318,7 @@ export const sharedStateContract = {
     "WorkspaceRun",
     "TestCase",
     "TestRun",
+    "ArtifactRecord",
     "PullRequestRecord",
     "ReviewRecord",
     "ApprovalRecord",
@@ -667,8 +668,9 @@ export const openApiSchemas = {
     e2e: schemaRef("RuntimeE2eConfig"),
     dev: schemaRef("RuntimeDevConfig"),
     security: schemaRef("RuntimeSecurityConfig"),
-    budget: schemaRef("RuntimeBudgetConfig")
-  }, ["configuredRunner", "activeRunner", "codexAvailable", "gitWorkspaceAvailable", "testCommand", "workspaceRoot", "previewUrl", "configSource", "setup", "test", "smoke", "e2e", "dev", "security", "budget"]),
+    budget: schemaRef("RuntimeBudgetConfig"),
+    artifacts: schemaRef("RuntimeArtifactsConfig")
+  }, ["configuredRunner", "activeRunner", "codexAvailable", "gitWorkspaceAvailable", "testCommand", "workspaceRoot", "previewUrl", "configSource", "setup", "test", "smoke", "e2e", "dev", "security", "budget", "artifacts"]),
   RuntimeSetupConfig: objectSchema({
     commands: arrayOf({ type: "string" })
   }),
@@ -705,6 +707,18 @@ export const openApiSchemas = {
     runUsd: { type: "number" },
     softThresholdRatio: { type: "number" }
   }),
+  RuntimeArtifactsConfig: objectSchema({
+    provider: enumSchema(["local_fs", "s3"]),
+    localRoot: { type: "string" },
+    s3: schemaRef("RuntimeS3ArtifactConfig")
+  }, ["provider"]),
+  RuntimeS3ArtifactConfig: objectSchema({
+    endpoint: { type: "string" },
+    region: { type: "string" },
+    bucket: { type: "string" },
+    forcePathStyle: { type: "boolean" },
+    prefix: { type: "string" }
+  }, ["region", "bucket", "forcePathStyle", "prefix"]),
   Requirement: looseObjectSchema({
     id,
     title: { type: "string" },
@@ -808,6 +822,7 @@ export const openApiSchemas = {
     budgetApprovalId: id,
     costEstimateUsd: { type: "number" },
     costActualUsd: { type: "number" },
+    artifactIds: arrayOf(id),
     startedAt: isoDate,
     endedAt: isoDate
   }, ["id", "requirementId", "prdId", "workItemId", "runner", "status", "currentStep", "timeline", "events", "costEstimateUsd", "startedAt"]),
@@ -836,7 +851,8 @@ export const openApiSchemas = {
     baseBranch: { type: "string" },
     baseCommit: { type: "string" },
     headCommit: { type: "string" },
-    codexSessionId: { type: "string" }
+    codexSessionId: { type: "string" },
+    artifactIds: arrayOf(id)
   }, ["summary", "previewUrl", "riskLevel", "changedFiles", "tests", "reviewerSummary", "runner"]),
   WorkspaceRun: looseObjectSchema({
     id,
@@ -894,6 +910,22 @@ export const openApiSchemas = {
     maxAttempts: { type: "number" },
     flakySignal: { type: "boolean" }
   }, ["id", "status", "command", "summary", "durationMs"]),
+  ArtifactRecord: objectSchema({
+    id,
+    kind: enumSchema(["log", "trace", "diff", "test_report", "screenshot", "preview_metadata"]),
+    storage: enumSchema(["local_fs", "s3"]),
+    uri: { type: "string" },
+    contentType: { type: "string" },
+    sizeBytes: { type: "number" },
+    checksumSha256: { type: "string" },
+    metadata: { type: "object", additionalProperties: { type: "string" } },
+    requirementId: id,
+    prdId: id,
+    workItemId: id,
+    runId: id,
+    testRunId: id,
+    createdAt: isoDate
+  }, ["id", "kind", "storage", "uri", "contentType", "sizeBytes", "checksumSha256", "createdAt"]),
   PullRequestRecord: looseObjectSchema({
     id,
     provider: enumSchema(["local", "github"]),
@@ -1048,6 +1080,7 @@ export const openApiSchemas = {
     workspaceRuns: arrayOf(schemaRef("WorkspaceRun")),
     testCases: arrayOf(schemaRef("TestCase")),
     testRuns: arrayOf(schemaRef("TestRun")),
+    artifacts: arrayOf(schemaRef("ArtifactRecord")),
     pullRequests: arrayOf(schemaRef("PullRequestRecord")),
     reviewRecords: arrayOf(schemaRef("ReviewRecord")),
     auditEvents: arrayOf(schemaRef("AuditEvent")),

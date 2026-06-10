@@ -119,6 +119,7 @@ const snapshot: PatchPilotSnapshot = {
     }
   ],
   workspaceRuns: [],
+  artifacts: [],
   agentRuns: [
     {
       id: "run_1",

@@ -2,11 +2,16 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
+  createArtifactStore,
+  type ArtifactStore
+} from "@patchpilot/artifacts";
+import {
   type AcceptanceDecision,
   type ApprovalRecord,
   type AgentProfile,
   type AgentRun,
   type AgentRunEvent,
+  type ArtifactRecord,
   type AuditEvent,
   type BugReport,
   type BugSeverity,
@@ -91,11 +96,13 @@ export class PatchPilotStore {
   private snapshot: PatchPilotSnapshot = emptySnapshot();
   private loaded = false;
   private readonly codexRunner: CodexRunner;
+  private readonly artifactStore?: ArtifactStore;
   private readonly dataFilePath: string | undefined;
   private mutationQueue: Promise<void> = Promise.resolve();
 
-  constructor(options: { codexRunner?: CodexRunner; dataFilePath?: string | false } = {}) {
+  constructor(options: { codexRunner?: CodexRunner; dataFilePath?: string | false; artifactStore?: ArtifactStore } = {}) {
     this.codexRunner = options.codexRunner ?? new LocalCodexRunner();
+    this.artifactStore = options.artifactStore;
     this.dataFilePath =
       options.dataFilePath === false
         ? undefined
@@ -539,7 +546,22 @@ export class PatchPilotStore {
       e2e: config.e2e,
       dev: config.dev,
       security: config.security,
-      budget: config.budget
+      budget: config.budget,
+      artifacts: {
+        provider: config.artifacts.provider,
+        ...(config.artifacts.provider === "local_fs" ? { localRoot: config.artifacts.localRoot } : {}),
+        ...(config.artifacts.provider === "s3"
+          ? {
+              s3: {
+                endpoint: config.artifacts.s3.endpoint,
+                region: config.artifacts.s3.region,
+                bucket: config.artifacts.s3.bucket,
+                forcePathStyle: config.artifacts.s3.forcePathStyle,
+                prefix: config.artifacts.s3.prefix
+              }
+            }
+          : {})
+      }
     };
   }
 
@@ -824,7 +846,6 @@ export class PatchPilotStore {
     await this.load();
     const completedRun = this.findRun(runId);
     const completedWorkItem = this.findWorkItem(completedRun.workItemId);
-    completedRun.status = "succeeded";
     completedRun.timeline = completeTimeline(completedRun.timeline);
     completedRun.currentStep = "confirming";
     completedRun.events.push(this.makeEvent("review.completed", "Reviewer agent 已整理执行证据，等待你确认"));
@@ -834,7 +855,8 @@ export class PatchPilotStore {
     completedRun.endedAt = new Date().toISOString();
     completedWorkItem.status = "review";
     completedWorkItem.updatedAt = completedRun.endedAt;
-    this.recordCompletedRunEvidence(completedRun, completedWorkItem, result.tests, completedRun.endedAt);
+    await this.recordCompletedRunEvidence(completedRun, completedWorkItem, result.tests, completedRun.endedAt, "succeeded");
+    completedRun.status = "succeeded";
     this.completeAgentAssignment(completedWorkItem.id, completedRun.endedAt);
     this.completeBugIfNeeded(completedWorkItem, completedRun.endedAt);
     await this.save();
@@ -891,7 +913,6 @@ export class PatchPilotStore {
         );
       }
       const tests: TestRun[] = [this.makeSimulatedTestRun(workItem)];
-      run.status = "succeeded";
       run.timeline = completeTimeline(run.timeline);
       run.currentStep = "confirming";
       run.events.push(this.makeEvent("acceptance.waiting", "执行完成，请查看证据摘要并确认"));
@@ -908,7 +929,8 @@ export class PatchPilotStore {
       run.endedAt = new Date().toISOString();
       workItem.status = "review";
       workItem.updatedAt = run.endedAt;
-      this.recordCompletedRunEvidence(run, workItem, tests, run.endedAt);
+      await this.recordCompletedRunEvidence(run, workItem, tests, run.endedAt, "succeeded");
+      run.status = "succeeded";
       this.completeAgentAssignment(workItem.id, run.endedAt);
       this.completeBugIfNeeded(workItem, run.endedAt);
       await this.save();
@@ -924,7 +946,6 @@ export class PatchPilotStore {
     const workItem = this.snapshot.workItems.find((item) => item.id === run.workItemId);
     const failure = extractRunFailureDetails(error);
     const endedAt = new Date().toISOString();
-    run.status = "failed";
     run.failureType = failure.failureType;
     run.failureSummary = failure.failureSummary;
     run.timeline = run.timeline.map((step) =>
@@ -932,11 +953,12 @@ export class PatchPilotStore {
     );
     run.events.push(this.makeEvent("run.failed", `执行失败，已分类为 ${failureTypeLabel(failure.failureType)}`));
     run.endedAt = endedAt;
-    if (workItem) workItem.status = "blocked";
     if (workItem) {
-      workItem.updatedAt = endedAt;
       const failedTests = failure.testRun
-        ? this.recordRunTestEvidence(run, workItem, [failure.testRun], endedAt, { workspaceStatus: "failed" })
+        ? await this.recordRunTestEvidence(run, workItem, [failure.testRun], endedAt, {
+            workspaceStatus: "failed",
+            finalRunStatus: "failed"
+          })
         : [];
       if (failedTests.length === 0) this.markWorkspaceRun(run.id, "failed", endedAt);
       this.recordFailureDefect(run, workItem, failure, failedTests[0], endedAt);
@@ -952,7 +974,10 @@ export class PatchPilotStore {
         runId: run.id
       });
       this.completeAgentAssignment(workItem.id, endedAt);
+      workItem.status = "blocked";
+      workItem.updatedAt = endedAt;
     }
+    run.status = "failed";
     await this.save();
   }
 
@@ -1374,6 +1399,24 @@ export class PatchPilotStore {
       .reduce((total, run) => total + (run.costActualUsd ?? run.costEstimateUsd ?? 0), 0);
   }
 
+  private getArtifactStore() {
+    if (this.artifactStore) return this.artifactStore;
+    const artifacts = readPatchPilotConfig().artifacts;
+    return createArtifactStore({
+      provider: artifacts.provider,
+      localRoot: artifacts.localRoot,
+      s3: artifacts.s3
+    });
+  }
+
+  private upsertArtifactRecords(records: ArtifactRecord[]) {
+    const byId = new Map(this.snapshot.artifacts.map((artifact) => [artifact.id, artifact]));
+    for (const record of records) byId.set(record.id, record);
+    this.snapshot.artifacts = [...byId.values()].sort(
+      (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+    );
+  }
+
   private isApprovalExpired(expiresAt: string, now: string) {
     const expiresAtMs = Date.parse(expiresAt);
     const nowMs = Date.parse(now);
@@ -1398,6 +1441,7 @@ export class PatchPilotStore {
     this.snapshot.workspaceRuns ||= [];
     this.snapshot.testCases ||= [];
     this.snapshot.testRuns ||= [];
+    this.snapshot.artifacts ||= [];
     this.snapshot.pullRequests ||= [];
     this.snapshot.reviewRecords ||= [];
     this.snapshot.auditEvents ||= [];
@@ -1416,6 +1460,11 @@ export class PatchPilotStore {
       status: normalizeBugStatus(item.status),
       createdAt: item.createdAt || now,
       updatedAt: item.updatedAt || item.createdAt || now
+    }));
+    this.snapshot.artifacts = this.snapshot.artifacts.map((item) => ({
+      ...item,
+      storage: item.storage || "local_fs",
+      createdAt: item.createdAt || now
     }));
     this.snapshot.requirements = this.snapshot.requirements.map((item) => ({
       ...item,
@@ -1583,12 +1632,12 @@ export class PatchPilotStore {
     };
   }
 
-  private recordRunTestEvidence(
+  private async recordRunTestEvidence(
     run: AgentRun,
     workItem: WorkItem,
     tests: TestRun[],
     endedAt: string,
-    options: { workspaceStatus: WorkspaceRun["status"]; workspacePath?: string }
+    options: { workspaceStatus: WorkspaceRun["status"]; workspacePath?: string; finalRunStatus?: AgentRun["status"] }
   ) {
     const prd = this.findPrd(run.prdId);
     const testCase = this.ensureTestCasesForWorkItems(prd, [workItem], endedAt)[0];
@@ -1621,6 +1670,8 @@ export class PatchPilotStore {
     if (run.result) {
       run.result.tests = normalizedTests;
     }
+
+    await this.recordRunArtifacts(run, workItem, normalizedTests, endedAt, options.finalRunStatus);
 
     for (const test of normalizedTests) {
       const linkedTestCase = this.snapshot.testCases.find((item) => item.id === test.testCaseId);
@@ -1662,8 +1713,130 @@ export class PatchPilotStore {
     return normalizedTests;
   }
 
-  private recordCompletedRunEvidence(run: AgentRun, workItem: WorkItem, tests: TestRun[], endedAt: string) {
-    this.recordRunTestEvidence(run, workItem, tests, endedAt, { workspaceStatus: "archived" });
+  private async recordRunArtifacts(
+    run: AgentRun,
+    workItem: WorkItem,
+    tests: TestRun[],
+    endedAt: string,
+    finalRunStatus = run.status
+  ) {
+    const artifactStore = this.getArtifactStore();
+    const common = {
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id,
+      createdAt: endedAt
+    };
+    const records: ArtifactRecord[] = [];
+
+    for (const test of tests) {
+      const logArtifactId = test.logArtifactId || `artifact_test_log_${test.id}`;
+      const logRecord = await artifactStore.putArtifact({
+        id: logArtifactId,
+        kind: "log",
+        content: renderTestLog(test),
+        contentType: "text/plain",
+        extension: ".log",
+        metadata: {
+          command: test.command,
+          status: test.status
+        },
+        ...common,
+        testRunId: test.id
+      });
+      const reportRecord = await artifactStore.putArtifact({
+        id: `artifact_test_report_${test.id}`,
+        kind: "test_report",
+        content: JSON.stringify(test, null, 2),
+        contentType: "application/json",
+        extension: ".json",
+        metadata: {
+          command: test.command,
+          status: test.status
+        },
+        ...common,
+        testRunId: test.id
+      });
+      test.logArtifactId = logRecord.id;
+      test.artifactIds = uniqueStrings([...(test.artifactIds ?? []), logRecord.id, reportRecord.id]);
+      records.push(logRecord, reportRecord);
+    }
+
+    const traceRecord = await artifactStore.putArtifact({
+      id: `artifact_trace_${run.id}`,
+      kind: "trace",
+      content: JSON.stringify({
+        runId: run.id,
+        status: finalRunStatus,
+        currentStep: run.currentStep,
+        timeline: run.timeline,
+        events: run.events
+      }, null, 2),
+      contentType: "application/json",
+      extension: ".json",
+      metadata: {
+        status: finalRunStatus,
+        runner: run.runner
+      },
+      ...common
+    });
+    const diffRecord = await artifactStore.putArtifact({
+      id: `artifact_diff_${run.id}`,
+      kind: "diff",
+      content: JSON.stringify({
+        changedFiles: run.result?.changedFiles ?? [],
+        branchName: run.result?.branchName,
+        baseBranch: run.result?.baseBranch,
+        baseCommit: run.result?.baseCommit,
+        headCommit: run.result?.headCommit
+      }, null, 2),
+      contentType: "application/json",
+      extension: ".json",
+      metadata: {
+        changedFileCount: String(run.result?.changedFiles.length ?? 0)
+      },
+      ...common
+    });
+    const previewRecord = await artifactStore.putArtifact({
+      id: `artifact_preview_${run.id}`,
+      kind: "preview_metadata",
+      content: JSON.stringify({
+        previewUrl: run.result?.previewUrl,
+        workspacePath: run.result?.workspacePath,
+        runner: run.runner
+      }, null, 2),
+      contentType: "application/json",
+      extension: ".json",
+      metadata: {
+        runner: run.runner
+      },
+      ...common
+    });
+
+    records.push(traceRecord, diffRecord, previewRecord);
+    this.upsertArtifactRecords(records);
+    const runArtifactIds = uniqueStrings([
+      ...(run.artifactIds ?? []),
+      traceRecord.id,
+      diffRecord.id,
+      previewRecord.id
+    ]);
+    run.artifactIds = runArtifactIds;
+    if (run.result) {
+      run.result.artifactIds = uniqueStrings([...(run.result.artifactIds ?? []), ...runArtifactIds]);
+      run.result.tests = tests;
+    }
+  }
+
+  private async recordCompletedRunEvidence(
+    run: AgentRun,
+    workItem: WorkItem,
+    tests: TestRun[],
+    endedAt: string,
+    finalRunStatus: AgentRun["status"]
+  ) {
+    await this.recordRunTestEvidence(run, workItem, tests, endedAt, { workspaceStatus: "archived", finalRunStatus });
 
     const pullRequest = this.recordPullRequest(run, workItem, endedAt);
     this.addAuditEvent({
@@ -2108,6 +2281,26 @@ function buildFallbackBranchName(workItem: WorkItem, runId: string) {
 
 function slugSegment(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "item";
+}
+
+function uniqueStrings(values: Array<string | undefined>) {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))];
+}
+
+function renderTestLog(test: TestRun) {
+  return [
+    `TestRun: ${test.id}`,
+    `Status: ${test.status}`,
+    `Command: ${test.command}`,
+    `Exit code: ${test.exitCode ?? "not recorded"}`,
+    `Duration: ${test.durationMs}ms`,
+    `Retry: ${test.retryCount ?? 0}/${test.maxAttempts ?? 1}`,
+    `Flaky: ${test.flakySignal ? "yes" : "no"}`,
+    "",
+    "Summary:",
+    test.summary,
+    ...(test.failureSummary ? ["", "Failure:", test.failureSummary] : [])
+  ].join("\n");
 }
 
 function roundUsd(value: number) {

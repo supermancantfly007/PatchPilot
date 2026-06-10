@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CodexRunError, type CodexRunner } from "@patchpilot/codex-runner";
 import { contractVersion } from "@patchpilot/contracts";
-import type { AgentRun, TestRun } from "@patchpilot/domain";
+import type { AgentRun, ArtifactRecord, TestRun } from "@patchpilot/domain";
 import { buildServer } from "./server";
 import { PatchPilotStore } from "./store";
 
@@ -312,6 +312,7 @@ describe("PatchPilot API", () => {
     const previousTestCommand = process.env.PATCHPILOT_TEST_COMMAND;
     const previousPreviewUrl = process.env.PATCHPILOT_PREVIEW_URL;
     const previousWorkspaceRoot = process.env.PATCHPILOT_WORKSPACE_ROOT;
+    const restoreArtifactEnv = setArtifactEnv({});
     await mkdir(configDir, { recursive: true });
     await writeFile(
       configPath,
@@ -321,6 +322,17 @@ test:
 dev:
   previewUrl: http://fixture-preview.local
   workspaceRoot: .patchpilot/worktrees-from-config
+artifacts:
+  provider: s3
+  localRoot: .patchpilot/artifacts-from-config
+  s3:
+    endpoint: http://minio.config:9000
+    region: us-east-2
+    bucket: patchpilot-config
+    accessKeyId: config-access
+    secretAccessKey: config-secret
+    forcePathStyle: false
+    prefix: config-prefix
 `.trimStart(),
       "utf8"
     );
@@ -344,6 +356,16 @@ dev:
       expect(config.previewUrl).toBe("http://fixture-preview.local");
       expect(config.dev.previewUrl).toBe("http://fixture-preview.local");
       expect(config.workspaceRoot).toBe(join(fixtureRoot, ".patchpilot", "worktrees-from-config"));
+      expect(config.artifacts).toEqual({
+        provider: "s3",
+        s3: {
+          endpoint: "http://minio.config:9000",
+          region: "us-east-2",
+          bucket: "patchpilot-config",
+          forcePathStyle: false,
+          prefix: "config-prefix"
+        }
+      });
     } finally {
       if (previousConfigPath === undefined) delete process.env.PATCHPILOT_CONFIG_PATH;
       else process.env.PATCHPILOT_CONFIG_PATH = previousConfigPath;
@@ -353,6 +375,7 @@ dev:
       else process.env.PATCHPILOT_PREVIEW_URL = previousPreviewUrl;
       if (previousWorkspaceRoot === undefined) delete process.env.PATCHPILOT_WORKSPACE_ROOT;
       else process.env.PATCHPILOT_WORKSPACE_ROOT = previousWorkspaceRoot;
+      restoreArtifactEnv();
       await app.close();
       await rm(fixtureRoot, { recursive: true, force: true });
     }
@@ -751,6 +774,9 @@ dev:
     const workspace = snapshot
       .json()
       .workspaceRuns.find((candidate: { runId: string }) => candidate.runId === failedRun.id);
+    const failedArtifacts = snapshot
+      .json()
+      .artifacts.filter((artifact: ArtifactRecord) => artifact.runId === failedRun.id);
     const auditActions = snapshot.json().auditEvents.map((event: { action: string }) => event.action);
 
     expect(testRun).toMatchObject({
@@ -783,6 +809,16 @@ dev:
       sourceCommit: "cccccccccccccccccccccccccccccccccccccccc",
       sourceBranch: "patchpilot/fake-failing-branch"
     });
+    expect(new Set(failedArtifacts.map((artifact: ArtifactRecord) => artifact.kind))).toEqual(
+      new Set(["log", "test_report", "trace", "diff", "preview_metadata"])
+    );
+    expect(failedArtifacts.every((artifact: ArtifactRecord) => artifact.storage === "local_fs")).toBe(true);
+    expect(testRun.artifactIds.every((artifactId: string) =>
+      failedArtifacts.some((artifact: ArtifactRecord) => artifact.id === artifactId)
+    )).toBe(true);
+    expect(failedRun.artifactIds.every((artifactId: string) =>
+      failedArtifacts.some((artifact: ArtifactRecord) => artifact.id === artifactId)
+    )).toBe(true);
     expect(auditActions).toEqual(
       expect.arrayContaining(["test_run.failed", "defect.created", "agent_run.failed"])
     );
@@ -822,6 +858,7 @@ dev:
     const completedRuns = await pollPrdRuns(app, prd.id, 4);
     expect(completedRuns.every((run: { status: string }) => run.status === "succeeded")).toBe(true);
     const evidenceSnapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const evidence = evidenceSnapshot.json();
     const prdWorkspaceRuns = evidenceSnapshot
       .json()
       .workspaceRuns.filter((workspace: { prdId: string }) => workspace.prdId === prd.id);
@@ -831,6 +868,9 @@ dev:
     const prdTestCases = evidenceSnapshot
       .json()
       .testCases.filter((testCase: { prdId: string }) => testCase.prdId === prd.id);
+    const prdArtifacts = evidence.artifacts.filter((artifact: ArtifactRecord) => artifact.prdId === prd.id);
+    const prdArtifactIds = new Set(prdArtifacts.map((artifact: ArtifactRecord) => artifact.id));
+    const prdAgentRuns = evidence.agentRuns.filter((run: { prdId: string }) => run.prdId === prd.id);
     const prdPullRequests = evidenceSnapshot
       .json()
       .pullRequests.filter((pullRequest: { prdId: string }) => pullRequest.prdId === prd.id);
@@ -873,6 +913,53 @@ dev:
         test.retryCount === 0 &&
         test.flakySignal === false
       )
+    ).toBe(true);
+    expect(prdArtifacts.filter((artifact: ArtifactRecord) => artifact.kind === "log")).toHaveLength(4);
+    expect(prdArtifacts.filter((artifact: ArtifactRecord) => artifact.kind === "test_report")).toHaveLength(4);
+    expect(prdArtifacts.filter((artifact: ArtifactRecord) => artifact.kind === "trace")).toHaveLength(4);
+    expect(prdArtifacts.filter((artifact: ArtifactRecord) => artifact.kind === "diff")).toHaveLength(4);
+    expect(prdArtifacts.filter((artifact: ArtifactRecord) => artifact.kind === "preview_metadata")).toHaveLength(4);
+    expect(
+      prdArtifacts.every((artifact: ArtifactRecord) =>
+        artifact.storage === "local_fs" &&
+        artifact.uri.startsWith("file://") &&
+        Boolean(artifact.checksumSha256) &&
+        artifact.sizeBytes > 0
+      )
+    ).toBe(true);
+    expect(
+      prdTestRuns.every((test: { id: string; artifactIds?: string[]; logArtifactId?: string }) => {
+        const artifactIds = test.artifactIds ?? [];
+        const linkedArtifactKinds = prdArtifacts
+          .filter((artifact: ArtifactRecord) => artifact.testRunId === test.id)
+          .map((artifact: ArtifactRecord) => artifact.kind);
+        return (
+          artifactIds.length >= 2 &&
+          artifactIds.every((artifactId) => prdArtifactIds.has(artifactId)) &&
+          artifactIds.includes(test.logArtifactId || "") &&
+          linkedArtifactKinds.includes("log") &&
+          linkedArtifactKinds.includes("test_report")
+        );
+      })
+    ).toBe(true);
+    expect(
+      prdAgentRuns.every((run: {
+        id: string;
+        artifactIds?: string[];
+        result?: { artifactIds?: string[] };
+      }) => {
+        const artifactIds = run.artifactIds ?? [];
+        const resultArtifactIds = run.result?.artifactIds ?? [];
+        return (
+          artifactIds.length >= 3 &&
+          resultArtifactIds.length >= artifactIds.length &&
+          artifactIds.every((artifactId) => prdArtifactIds.has(artifactId)) &&
+          resultArtifactIds.every((artifactId) => prdArtifactIds.has(artifactId)) &&
+          artifactIds.includes(`artifact_trace_${run.id}`) &&
+          artifactIds.includes(`artifact_diff_${run.id}`) &&
+          artifactIds.includes(`artifact_preview_${run.id}`)
+        );
+      })
     ).toBe(true);
     expect(prdPullRequests).toHaveLength(4);
     expect(
@@ -1184,6 +1271,18 @@ const budgetEnvKeys = [
   "PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO"
 ] as const;
 
+const artifactEnvKeys = [
+  "PATCHPILOT_ARTIFACT_STORE",
+  "PATCHPILOT_ARTIFACT_ROOT",
+  "PATCHPILOT_ARTIFACT_S3_ENDPOINT",
+  "PATCHPILOT_ARTIFACT_S3_REGION",
+  "PATCHPILOT_ARTIFACT_S3_BUCKET",
+  "PATCHPILOT_ARTIFACT_S3_ACCESS_KEY_ID",
+  "PATCHPILOT_ARTIFACT_S3_SECRET_ACCESS_KEY",
+  "PATCHPILOT_ARTIFACT_S3_FORCE_PATH_STYLE",
+  "PATCHPILOT_ARTIFACT_S3_PREFIX"
+] as const;
+
 function setBudgetEnv(values: Partial<Record<(typeof budgetEnvKeys)[number], string>>) {
   const previous = new Map<(typeof budgetEnvKeys)[number], string | undefined>();
   for (const key of budgetEnvKeys) {
@@ -1195,6 +1294,24 @@ function setBudgetEnv(values: Partial<Record<(typeof budgetEnvKeys)[number], str
 
   return () => {
     for (const key of budgetEnvKeys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
+function setArtifactEnv(values: Partial<Record<(typeof artifactEnvKeys)[number], string>>) {
+  const previous = new Map<(typeof artifactEnvKeys)[number], string | undefined>();
+  for (const key of artifactEnvKeys) {
+    previous.set(key, process.env[key]);
+    const value = values[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+
+  return () => {
+    for (const key of artifactEnvKeys) {
       const value = previous.get(key);
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;

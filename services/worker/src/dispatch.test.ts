@@ -301,6 +301,7 @@ function snapshot(input: {
     workspaceRuns: [],
     testCases: [],
     testRuns: [],
+    artifacts: [],
     pullRequests: [],
     reviewRecords: [],
     auditEvents: [],

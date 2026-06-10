@@ -913,7 +913,8 @@
           "e2e",
           "dev",
           "security",
-          "budget"
+          "budget",
+          "artifacts"
         ],
         "properties": {
           "configuredRunner": {
@@ -976,6 +977,9 @@
           },
           "budget": {
             "$ref": "#/components/schemas/RuntimeBudgetConfig"
+          },
+          "artifacts": {
+            "$ref": "#/components/schemas/RuntimeArtifactsConfig"
           }
         }
       },
@@ -1128,6 +1132,55 @@
           },
           "softThresholdRatio": {
             "type": "number"
+          }
+        }
+      },
+      "RuntimeArtifactsConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "local_fs",
+              "s3"
+            ]
+          },
+          "localRoot": {
+            "type": "string"
+          },
+          "s3": {
+            "$ref": "#/components/schemas/RuntimeS3ArtifactConfig"
+          }
+        }
+      },
+      "RuntimeS3ArtifactConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "region",
+          "bucket",
+          "forcePathStyle",
+          "prefix"
+        ],
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "bucket": {
+            "type": "string"
+          },
+          "forcePathStyle": {
+            "type": "boolean"
+          },
+          "prefix": {
+            "type": "string"
           }
         }
       },
@@ -1702,6 +1755,13 @@
           "costActualUsd": {
             "type": "number"
           },
+          "artifactIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
           "startedAt": {
             "type": "string",
             "format": "date-time"
@@ -1841,6 +1901,13 @@
           },
           "codexSessionId": {
             "type": "string"
+          },
+          "artifactIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         }
       },
@@ -2119,6 +2186,86 @@
           },
           "flakySignal": {
             "type": "boolean"
+          }
+        }
+      },
+      "ArtifactRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "storage",
+          "uri",
+          "contentType",
+          "sizeBytes",
+          "checksumSha256",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "log",
+              "trace",
+              "diff",
+              "test_report",
+              "screenshot",
+              "preview_metadata"
+            ]
+          },
+          "storage": {
+            "type": "string",
+            "enum": [
+              "local_fs",
+              "s3"
+            ]
+          },
+          "uri": {
+            "type": "string"
+          },
+          "contentType": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "type": "number"
+          },
+          "checksumSha256": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "requirementId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "testRunId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -2791,6 +2938,7 @@
           "workspaceRuns",
           "testCases",
           "testRuns",
+          "artifacts",
           "pullRequests",
           "reviewRecords",
           "auditEvents",
@@ -2846,6 +2994,12 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/TestRun"
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ArtifactRecord"
             }
           },
           "pullRequests": {

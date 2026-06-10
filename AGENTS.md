@@ -19,3 +19,5 @@ This is a single-context repo: read `CONTEXT.md` and relevant ADRs under `docs/a
 ### Task completion
 
 When completing a `.scratch/agent-platform/TODO.md` task, finish code review, unit tests, and relevant E2E checks, then mark the task done, commit the changes, and push the commit to the remote before moving on to the next task.
+
+After the current task is completed and pushed, prefer using an agent team for suitable future TODO work: split low-coupling tasks across independent branches, keep each branch independently reviewable and testable, then review, run verification, merge into `main`, and push before continuing.

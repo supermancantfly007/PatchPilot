@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
+    "@patchpilot/artifacts": "workspace:*",
     "@patchpilot/codex-runner": "workspace:*",
     "@patchpilot/contracts": "workspace:*",
     "@patchpilot/domain": "workspace:*",

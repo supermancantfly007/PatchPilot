@@ -66,6 +66,10 @@ export type FailureType =
   | "budget_exhausted"
   | "environment_failed";
 
+export type ArtifactKind = "log" | "trace" | "diff" | "test_report" | "screenshot" | "preview_metadata";
+
+export type ArtifactStorageProvider = "local_fs" | "s3";
+
 export type InterfaceContractKind = "http" | "event" | "schema";
 
 export type InterfaceContractStatus = "draft" | "approved" | "breaking_change_pending" | "deprecated";
@@ -235,6 +239,7 @@ export interface AgentRun {
   budgetApprovalId?: string;
   costEstimateUsd: number;
   costActualUsd?: number;
+  artifactIds?: string[];
   startedAt: string;
   endedAt?: string;
 }
@@ -273,6 +278,7 @@ export interface AgentRunResult {
   baseCommit?: string;
   headCommit?: string;
   codexSessionId?: string;
+  artifactIds?: string[];
 }
 
 export interface RuntimeConfig {
@@ -320,6 +326,17 @@ export interface RuntimeConfig {
     workItemUsd: number;
     runUsd: number;
     softThresholdRatio: number;
+  };
+  artifacts: {
+    provider: ArtifactStorageProvider;
+    localRoot?: string;
+    s3?: {
+      endpoint?: string;
+      region: string;
+      bucket: string;
+      forcePathStyle: boolean;
+      prefix: string;
+    };
   };
 }
 
@@ -384,6 +401,23 @@ export interface WorkspaceRun {
   createdAt: string;
   updatedAt: string;
   archivedAt?: string;
+}
+
+export interface ArtifactRecord {
+  id: string;
+  kind: ArtifactKind;
+  storage: ArtifactStorageProvider;
+  uri: string;
+  contentType: string;
+  sizeBytes: number;
+  checksumSha256: string;
+  metadata?: Record<string, string>;
+  requirementId?: string;
+  prdId?: string;
+  workItemId?: string;
+  runId?: string;
+  testRunId?: string;
+  createdAt: string;
 }
 
 export interface AuditEvent {
@@ -489,6 +523,7 @@ export interface PatchPilotSnapshot {
   workspaceRuns: WorkspaceRun[];
   testCases: TestCase[];
   testRuns: TestRun[];
+  artifacts: ArtifactRecord[];
   pullRequests: PullRequestRecord[];
   reviewRecords: ReviewRecord[];
   auditEvents: AuditEvent[];
@@ -507,6 +542,7 @@ export const emptySnapshot = (): PatchPilotSnapshot => ({
   workspaceRuns: [],
   testCases: [],
   testRuns: [],
+  artifacts: [],
   pullRequests: [],
   reviewRecords: [],
   auditEvents: [],

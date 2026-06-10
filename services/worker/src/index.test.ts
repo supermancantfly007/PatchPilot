@@ -85,6 +85,7 @@ function snapshot(): PatchPilotSnapshot {
     workspaceRuns: [],
     testCases: [],
     testRuns: [],
+    artifacts: [],
     pullRequests: [],
     reviewRecords: [],
     auditEvents: [],

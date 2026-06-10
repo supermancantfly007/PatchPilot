@@ -36,6 +36,17 @@ budget:
   workItemUsd: 1.25
   runUsd: 0.75
   softThresholdRatio: 0.6
+artifacts:
+  provider: s3
+  localRoot: .patchpilot/artifacts-fixture
+  s3:
+    endpoint: http://minio.fixture:9000
+    region: us-west-2
+    bucket: patchpilot-fixture
+    accessKeyId: fixture-access
+    secretAccessKey: fixture-secret
+    forcePathStyle: false
+    prefix: fixture-prefix
 `);
 
     try {
@@ -64,6 +75,19 @@ budget:
         workItemUsd: 1.25,
         runUsd: 0.75,
         softThresholdRatio: 0.6
+      });
+      expect(config.artifacts).toEqual({
+        provider: "s3",
+        localRoot: join(fixture.root, ".patchpilot", "artifacts-fixture"),
+        s3: {
+          endpoint: "http://minio.fixture:9000",
+          region: "us-west-2",
+          bucket: "patchpilot-fixture",
+          accessKeyId: "fixture-access",
+          secretAccessKey: "fixture-secret",
+          forcePathStyle: false,
+          prefix: "fixture-prefix"
+        }
       });
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
@@ -115,7 +139,16 @@ security:
           PATCHPILOT_BUDGET_MAX_COST_USD: "6",
           PATCHPILOT_BUDGET_WORK_ITEM_USD: "3.25",
           PATCHPILOT_BUDGET_RUN_USD: "1.5",
-          PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO: "0.7"
+          PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO: "0.7",
+          PATCHPILOT_ARTIFACT_STORE: "s3",
+          PATCHPILOT_ARTIFACT_ROOT: ".patchpilot/artifacts-env",
+          PATCHPILOT_ARTIFACT_S3_ENDPOINT: "http://minio.env:9000",
+          PATCHPILOT_ARTIFACT_S3_REGION: "eu-central-1",
+          PATCHPILOT_ARTIFACT_S3_BUCKET: "patchpilot-env",
+          PATCHPILOT_ARTIFACT_S3_ACCESS_KEY_ID: "env-access",
+          PATCHPILOT_ARTIFACT_S3_SECRET_ACCESS_KEY: "env-secret",
+          PATCHPILOT_ARTIFACT_S3_FORCE_PATH_STYLE: "false",
+          PATCHPILOT_ARTIFACT_S3_PREFIX: "env-prefix"
         }
       });
 
@@ -130,6 +163,19 @@ security:
       expect(config.budget.workItemUsd).toBe(3.25);
       expect(config.budget.runUsd).toBe(1.5);
       expect(config.budget.softThresholdRatio).toBe(0.7);
+      expect(config.artifacts).toEqual({
+        provider: "s3",
+        localRoot: ".patchpilot/artifacts-env",
+        s3: {
+          endpoint: "http://minio.env:9000",
+          region: "eu-central-1",
+          bucket: "patchpilot-env",
+          accessKeyId: "env-access",
+          secretAccessKey: "env-secret",
+          forcePathStyle: false,
+          prefix: "env-prefix"
+        }
+      });
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }

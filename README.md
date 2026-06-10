@@ -48,6 +48,17 @@ budget:
   workItemUsd: 0
   runUsd: 0
   softThresholdRatio: 0.8
+artifacts:
+  provider: local_fs
+  localRoot: .patchpilot/artifacts
+  s3:
+    endpoint: http://localhost:9000
+    region: us-east-1
+    bucket: patchpilot
+    accessKeyId: patchpilot
+    secretAccessKey: patchpilot123
+    forcePathStyle: true
+    prefix: patchpilot
 ```
 
 ## Local Processes
@@ -160,6 +171,16 @@ The Codex runner does not auto-merge or publish. It creates an isolated worktree
 
 Codex prompts are intentionally short. PatchPilot sends the task title, task file path, required skill (`/tdd` or `/diagnose`), and safety boundary; detailed context lives in `PATCHPILOT_TASK.md`, `AGENTS.md`, and the repo tests.
 
+## Artifact Store
+
+PatchPilot stores run evidence through `@patchpilot/artifacts`. The default local filesystem store writes content and metadata under `.patchpilot/artifacts`; `snapshot.artifacts` records the artifact ids referenced by `AgentRun`, `AgentRunResult`, and `TestRun`.
+
+Use S3-compatible storage, including local MinIO, by setting `PATCHPILOT_ARTIFACT_STORE=s3` and the `PATCHPILOT_ARTIFACT_S3_*` variables from `.env.example`. The optional integration test expects the target bucket to already exist:
+
+```bash
+PATCHPILOT_ARTIFACT_S3_INTEGRATION=1 pnpm --filter @patchpilot/artifacts test
+```
+
 ## Quality Gates
 
 ```bash
@@ -179,4 +200,5 @@ pnpm e2e:bug
 pnpm e2e:smoke
 pnpm e2e:cli
 pnpm e2e:budget
+pnpm e2e:failure-defect
 ```
