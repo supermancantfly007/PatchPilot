@@ -1,12 +1,20 @@
 import type {
+  AgentRun,
+  AgentRunnerKind,
+  ArtifactRecord,
+  AuditEvent,
   ClarificationQuestion,
   InterfaceContract,
   InterfaceContractStatus,
   IntakeArtifactReference,
   Prd,
+  PullRequestRecord,
   Requirement,
   RequirementTemplate,
+  ReviewRecord,
   TestCase,
+  TestRun,
+  WorkspaceRun,
   WorkItem
 } from "@patchpilot/domain";
 
@@ -216,4 +224,233 @@ export interface PlanWorkItemsActivityResult {
   testCases: TestCase[];
   interfaceContracts: InterfaceContract[];
   plannedAt: string;
+}
+
+export type WorkItemExecutionWorkflowStatus =
+  | "claiming"
+  | "preparing_workspace"
+  | "running_codex"
+  | "running_tests"
+  | "creating_pull_request"
+  | "reviewing"
+  | "archiving"
+  | "recording_terminal_state"
+  | "completed";
+
+export interface WorkItemExecutionWorkflowInput {
+  idempotencyKey: string;
+  prd: Prd;
+  workItem: WorkItem;
+  testCases?: TestCase[];
+  agentId?: string;
+  runner?: AgentRunnerKind;
+  baseBranch?: string;
+  baseCommit?: string;
+  workspaceRoot?: string;
+  previewUrl?: string;
+  testCommand?: string;
+  leaseDurationMs?: number;
+}
+
+export interface WorkItemExecutionEvidenceChain {
+  workflowId: string;
+  workItemId: string;
+  agentRunId: string;
+  workspaceRunId: string;
+  testRunIds: string[];
+  pullRequestId: string;
+  reviewRecordId: string;
+  artifactIds: string[];
+  auditEventIds: string[];
+  archivedAt: string;
+  completedAt: string;
+}
+
+export interface WorkItemExecutionProgress {
+  workflowId: string;
+  idempotencyKey: string;
+  prdId: string;
+  workItemId: string;
+  status: WorkItemExecutionWorkflowStatus;
+  agentId?: string;
+  agentRun?: AgentRun;
+  workspaceRun?: WorkspaceRun;
+  testRuns?: TestRun[];
+  pullRequest?: PullRequestRecord;
+  reviewRecord?: ReviewRecord;
+  evidenceChain?: WorkItemExecutionEvidenceChain;
+  auditEventCount: number;
+}
+
+export interface WorkItemExecutionWorkflowResult extends WorkItemExecutionProgress {
+  status: "completed";
+  workItem: WorkItem;
+  agentRun: AgentRun;
+  workspaceRun: WorkspaceRun;
+  testRuns: TestRun[];
+  testCases: TestCase[];
+  pullRequest: PullRequestRecord;
+  reviewRecord: ReviewRecord;
+  artifacts: ArtifactRecord[];
+  auditEvents: AuditEvent[];
+  evidenceChain: WorkItemExecutionEvidenceChain;
+  completedAt: string;
+}
+
+export interface WorkItemExecutionCodexEvidence {
+  summary: string;
+  previewUrl: string;
+  riskLevel: "low" | "medium" | "high";
+  changedFiles: string[];
+  reviewerSummary: string;
+  runner: AgentRunnerKind;
+  agentMessages: string[];
+  reasoningSummaries: string[];
+  branchName: string;
+  baseBranch: string;
+  baseCommit: string;
+  headCommit: string;
+  workspacePath: string;
+  codexSessionId?: string;
+}
+
+export interface ClaimWorkItemExecutionActivityInput {
+  workflowId: string;
+  idempotencyKey: string;
+  workItem: WorkItem;
+  agentId?: string;
+  leaseDurationMs?: number;
+}
+
+export interface ClaimWorkItemExecutionActivityResult {
+  workItem: WorkItem;
+  agentId: string;
+  claimToken: string;
+  leaseExpiresAt: string;
+  auditEvents: AuditEvent[];
+}
+
+export interface PrepareWorkItemWorkspaceActivityInput {
+  workflowId: string;
+  idempotencyKey: string;
+  prd: Prd;
+  workItem: WorkItem;
+  agentId: string;
+  claimToken: string;
+  runner?: AgentRunnerKind;
+  workspaceRoot?: string;
+}
+
+export interface PrepareWorkItemWorkspaceActivityResult {
+  workItem: WorkItem;
+  agentRun: AgentRun;
+  workspaceRun: WorkspaceRun;
+  auditEvents: AuditEvent[];
+}
+
+export interface RunWorkItemCodexActivityInput {
+  workflowId: string;
+  idempotencyKey: string;
+  prd: Prd;
+  workItem: WorkItem;
+  agentRun: AgentRun;
+  workspaceRun: WorkspaceRun;
+  baseBranch?: string;
+  baseCommit?: string;
+  previewUrl?: string;
+}
+
+export interface RunWorkItemCodexActivityResult {
+  agentRun: AgentRun;
+  codex: WorkItemExecutionCodexEvidence;
+  auditEvents: AuditEvent[];
+}
+
+export interface RunWorkItemTestsActivityInput {
+  workflowId: string;
+  idempotencyKey: string;
+  prd: Prd;
+  workItem: WorkItem;
+  agentRun: AgentRun;
+  workspaceRun: WorkspaceRun;
+  codex: WorkItemExecutionCodexEvidence;
+  testCases?: TestCase[];
+  testCommand?: string;
+}
+
+export interface RunWorkItemTestsActivityResult {
+  agentRun: AgentRun;
+  testRuns: TestRun[];
+  testCases: TestCase[];
+  artifacts: ArtifactRecord[];
+  auditEvents: AuditEvent[];
+}
+
+export interface CreateWorkItemPullRequestActivityInput {
+  workflowId: string;
+  idempotencyKey: string;
+  workItem: WorkItem;
+  agentRun: AgentRun;
+  codex: WorkItemExecutionCodexEvidence;
+  testRuns: TestRun[];
+}
+
+export interface CreateWorkItemPullRequestActivityResult {
+  pullRequest: PullRequestRecord;
+  auditEvents: AuditEvent[];
+}
+
+export interface ReviewWorkItemExecutionActivityInput {
+  workflowId: string;
+  idempotencyKey: string;
+  workItem: WorkItem;
+  agentRun: AgentRun;
+  codex: WorkItemExecutionCodexEvidence;
+  testRuns: TestRun[];
+  pullRequest: PullRequestRecord;
+}
+
+export interface ReviewWorkItemExecutionActivityResult {
+  reviewRecord: ReviewRecord;
+  auditEvents: AuditEvent[];
+}
+
+export interface ArchiveWorkItemWorkspaceActivityInput {
+  workflowId: string;
+  idempotencyKey: string;
+  workspaceRun: WorkspaceRun;
+  agentRun: AgentRun;
+}
+
+export interface ArchiveWorkItemWorkspaceActivityResult {
+  workspaceRun: WorkspaceRun;
+  auditEvents: AuditEvent[];
+}
+
+export interface CompleteWorkItemExecutionActivityInput {
+  workflowId: string;
+  idempotencyKey: string;
+  workItem: WorkItem;
+  agentRun: AgentRun;
+  workspaceRun: WorkspaceRun;
+  codex: WorkItemExecutionCodexEvidence;
+  testRuns: TestRun[];
+  testCases: TestCase[];
+  artifacts: ArtifactRecord[];
+  pullRequest: PullRequestRecord;
+  reviewRecord: ReviewRecord;
+}
+
+export interface CompleteWorkItemExecutionActivityResult {
+  workItem: WorkItem;
+  agentRun: AgentRun;
+  workspaceRun: WorkspaceRun;
+  testRuns: TestRun[];
+  testCases: TestCase[];
+  pullRequest: PullRequestRecord;
+  reviewRecord: ReviewRecord;
+  artifacts: ArtifactRecord[];
+  auditEvents: AuditEvent[];
+  evidenceChain: WorkItemExecutionEvidenceChain;
+  completedAt: string;
 }

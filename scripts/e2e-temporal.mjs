@@ -2,12 +2,15 @@ import { randomUUID } from "node:crypto";
 import {
   createPatchPilotTemporalWorker,
   createTemporalClient,
+  InMemoryWorkItemExecutionActivityStore,
+  queryWorkItemExecutionProgress,
   queryRequirementIntakeProgress,
   queryTemporalCanaryProgress,
   readTemporalConfig,
   signalRequirementClarificationAnswer,
   signalRequirementPrdConfirmation,
   signalTemporalCanary,
+  startWorkItemExecutionWorkflow,
   startRequirementIntakeWorkflow,
   startTemporalCanaryWorkflow,
   startWorkItemPlanningWorkflow
@@ -17,8 +20,12 @@ const config = readTemporalConfig();
 const canaryIdempotencyKey = `td-204-${randomUUID()}`;
 const intakeIdempotencyKey = `td-205-${randomUUID()}`;
 const planningIdempotencyKey = `td-206-${randomUUID()}`;
+const executionIdempotencyKey = `td-207-${randomUUID()}`;
 
-const worker = await createPatchPilotTemporalWorker({ config });
+const workItemExecutionStore = new InMemoryWorkItemExecutionActivityStore();
+workItemExecutionStore.failNext("runCodex");
+
+const worker = await createPatchPilotTemporalWorker({ config, workItemExecutionActivityStore: workItemExecutionStore });
 const client = await createTemporalClient(config);
 
 await worker.runUntil(async () => {
@@ -202,6 +209,89 @@ await worker.runUntil(async () => {
       2
     )
   );
+
+  const executionWorkItem = planningResult.workItems[0];
+  if (!executionWorkItem) throw new Error("planning did not produce a WorkItem for TD-207 execution");
+  const executionHandle = await startWorkItemExecutionWorkflow(
+    client,
+    {
+      idempotencyKey: executionIdempotencyKey,
+      prd: intakeResult.prd,
+      workItem: executionWorkItem,
+      testCases: planningResult.testCases,
+      runner: "codex",
+      workspaceRoot: ".patchpilot/temporal-e2e",
+      baseBranch: "main",
+      baseCommit: "base-td207-e2e",
+      previewUrl: "http://localhost:3000",
+      testCommand: "pnpm --filter @patchpilot/workflows test"
+    },
+    config
+  );
+  const executionProgress = await waitForExecutionProgress(executionHandle, "completed");
+  assertEqual(executionProgress.status, "completed", "work item execution query should reach completed");
+  assertEqual(executionProgress.auditEventCount, 9, "execution query should expose the terminal audit chain count");
+
+  const executionResult = await executionHandle.result();
+  assertEqual(executionResult.status, "completed", "work item execution should complete");
+  assertEqual(executionResult.workItem.status, "review", "completed WorkItem should wait in review state");
+  assertEqual(executionResult.agentRun.status, "succeeded", "completed AgentRun should succeed");
+  assertEqual(executionResult.workspaceRun.status, "archived", "completed WorkspaceRun should be archived");
+  assertEqual(executionResult.pullRequest.status, "ready_for_review", "execution should create a PR record");
+  assertEqual(executionResult.reviewRecord.status, "approved", "execution should create an approved review record");
+  assertEqual(executionResult.testRuns.length, 1, "execution should record TestRun evidence");
+  assertEqual(executionResult.testRuns[0].status, "passed", "execution TestRun should pass");
+  assertEqual(
+    executionResult.evidenceChain.auditEventIds.length,
+    executionResult.auditEvents.length,
+    "terminal evidence chain should include every audit event"
+  );
+  assertEqual(
+    workItemExecutionStore.getAttemptCount("runCodex"),
+    2,
+    "injected Codex activity failure should be retried by Temporal policy"
+  );
+
+  const executionDescription = await executionHandle.describe();
+  const duplicateExecutionHandle = await startWorkItemExecutionWorkflow(
+    client,
+    {
+      idempotencyKey: executionIdempotencyKey,
+      prd: intakeResult.prd,
+      workItem: executionWorkItem,
+      testCases: planningResult.testCases,
+      runner: "simulated"
+    },
+    config
+  );
+  const duplicateExecutionDescription = await duplicateExecutionHandle.describe();
+  assertEqual(
+    duplicateExecutionDescription.runId,
+    executionDescription.runId,
+    "duplicate execution idempotency key should not create a second Temporal run"
+  );
+
+  console.log(
+    JSON.stringify(
+      {
+        workflowId: executionHandle.workflowId,
+        runId: executionDescription.runId,
+        duplicateRunId: duplicateExecutionDescription.runId,
+        status: executionResult.status,
+        idempotencyKey: executionResult.idempotencyKey,
+        workItemId: executionResult.workItemId,
+        agentRunId: executionResult.agentRun.id,
+        workspaceRunId: executionResult.workspaceRun.id,
+        testRunIds: executionResult.evidenceChain.testRunIds,
+        pullRequestId: executionResult.pullRequest.id,
+        reviewRecordId: executionResult.reviewRecord.id,
+        auditEventCount: executionResult.auditEvents.length,
+        codexActivityAttempts: workItemExecutionStore.getAttemptCount("runCodex")
+      },
+      null,
+      2
+    )
+  );
 });
 
 function assertEqual(actual, expected, message) {
@@ -248,4 +338,21 @@ async function waitForRequirementProgress(handle, expectedStatus) {
   }
 
   throw lastError ?? new Error(`requirement intake workflow did not reach query status ${expectedStatus}`);
+}
+
+async function waitForExecutionProgress(handle, expectedStatus) {
+  const deadline = Date.now() + 10_000;
+  let lastError;
+
+  while (Date.now() < deadline) {
+    try {
+      const progress = await queryWorkItemExecutionProgress(handle);
+      if (progress.status === expectedStatus) return progress;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  throw lastError ?? new Error(`work item execution workflow did not reach query status ${expectedStatus}`);
 }
