@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CodexRunError, type CodexRunner } from "@patchpilot/codex-runner";
 import { contractVersion } from "@patchpilot/contracts";
-import { createInMemoryTelemetry } from "@patchpilot/telemetry";
+import { createInMemoryTelemetry, prometheusMetricNames } from "@patchpilot/telemetry";
 import {
   emptySnapshot,
   verifyAuditChain,
@@ -205,6 +205,33 @@ describe("PatchPilot API", () => {
     });
     expect(typeof response.json().codexAvailable).toBe("boolean");
     expect(typeof response.json().gitWorkspaceAvailable).toBe("boolean");
+    await app.close();
+  });
+
+  it("serves Prometheus metrics for a simulated run", async () => {
+    const app = await buildServer({ store: new PatchPilotStore() });
+    const startedRun = await startSimulatedRun(app, "验证 /metrics 暴露稳定的运行、队列、成本、测试和验收指标");
+    const completedRun = await pollRun(app, startedRun.id);
+    expect(completedRun.status).toBe("succeeded");
+
+    const acceptance = await app.inject({
+      method: "POST",
+      url: `/api/acceptance/${completedRun.id}`,
+      payload: { status: "accepted" }
+    });
+    expect(acceptance.statusCode).toBe(200);
+
+    const metrics = await app.inject({ method: "GET", url: "/metrics" });
+    expect(metrics.statusCode).toBe(200);
+    expect(metrics.headers["content-type"]).toContain("text/plain");
+    expect(metrics.body).toContain(`# TYPE ${prometheusMetricNames.runDurationSeconds} histogram`);
+    expect(metrics.body).toContain('patchpilot_agent_run_duration_seconds_count{runner="simulated",status="succeeded"} 1');
+    expect(metrics.body).toContain('patchpilot_agent_run_failures_total{runner="simulated",failure_type="test_failed"} 0');
+    expect(metrics.body).toContain('patchpilot_work_item_queue_depth{role="backend",status="done"} 1');
+    expect(metrics.body).toContain('patchpilot_agent_run_cost_actual_usd{runner="simulated",status="succeeded"} 0.38');
+    expect(metrics.body).toContain("patchpilot_test_pass_rate_ratio 1");
+    expect(metrics.body).toContain('patchpilot_acceptance_decisions_total{status="accepted"} 1');
+    expect(metrics.body).toContain("patchpilot_acceptance_rate_ratio 1");
     await app.close();
   });
 

@@ -21,6 +21,7 @@ describe("contract artifacts", () => {
     expect(contractArtifacts.map((artifact) => artifact.kind)).toEqual(["http", "event", "schema"]);
     expect(httpApiContract.operations.createRequirement.path).toBe("/api/requirements");
     expect(httpApiContract.operations.createApproval.path).toBe("/api/approvals");
+    expect(httpApiContract.operations.metrics.path).toBe("/metrics");
     expect(runEventStreamContract.stream.payload).toBe("AgentRun");
     expect(sharedStateContract.rootSchema).toBe("PatchPilotSnapshot");
     expect(sharedStateContract.schemas).toContain("IntakeArtifactReference");
@@ -57,6 +58,7 @@ describe("contract artifacts", () => {
 
   it("renders markdown directly from each artifact", () => {
     expect(renderContractMarkdown(httpApiContract)).toContain("GET /api/snapshot");
+    expect(renderContractMarkdown(httpApiContract)).toContain("GET /metrics");
     expect(renderContractMarkdown(runEventStreamContract)).toContain("data: AgentRun");
     expect(renderContractMarkdown(sharedStateContract)).toContain("PatchPilotSnapshot");
   });
