@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type RequirementTemplate = "feature" | "bug" | "ui" | "document";
 
 export type RequirementStatus =
@@ -69,6 +71,14 @@ export type FailureType =
 export type ArtifactKind = "log" | "trace" | "diff" | "test_report" | "screenshot" | "preview_metadata";
 
 export type ArtifactStorageProvider = "local_fs" | "s3";
+
+export type AuditJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | AuditJsonValue[]
+  | { [key: string]: AuditJsonValue | undefined };
 
 export type InterfaceContractKind = "http" | "event" | "schema";
 
@@ -452,7 +462,9 @@ export interface ArtifactRecord {
 export interface AuditEvent {
   id: string;
   traceId: string;
-  actor: string;
+  actorType: string;
+  actorId: string;
+  actor?: string;
   action: string;
   targetType:
     | "requirement"
@@ -469,6 +481,11 @@ export interface AuditEvent {
     | "approval";
   targetId: string;
   message: string;
+  beforeJson: AuditJsonValue | null;
+  afterJson: AuditJsonValue | null;
+  metadataJson: AuditJsonValue | null;
+  hash: string;
+  previousHash: string | null;
   requirementId?: string;
   prdId?: string;
   workItemId?: string;
@@ -1107,4 +1124,99 @@ export function createBugFixWorkItem(input: {
     createdAt: input.now,
     updatedAt: input.now
   };
+}
+
+export interface AuditChainVerification {
+  valid: boolean;
+  checkedEvents: number;
+  headHash: string | null;
+  errors: string[];
+}
+
+type HashableAuditEvent = Omit<AuditEvent, "hash" | "actor">;
+
+export function computeAuditEventHash(event: HashableAuditEvent): string {
+  return createHash("sha256").update(stableStringify(toHashableAuditEvent(event))).digest("hex");
+}
+
+export function verifyAuditChain(events: AuditEvent[]): AuditChainVerification {
+  const errors: string[] = [];
+  let previousHash: string | null = null;
+  let headHash: string | null = null;
+  const orderedEvents = [...events].reverse();
+
+  orderedEvents.forEach((event, index) => {
+    if (event.previousHash !== previousHash) {
+      errors.push(
+        `${event.id} previousHash mismatch at chain index ${index}: expected ${previousHash ?? "null"}, got ${event.previousHash ?? "null"}`
+      );
+    }
+
+    const expectedHash = computeAuditEventHash(event);
+    if (event.hash !== expectedHash) {
+      errors.push(`${event.id} hash mismatch at chain index ${index}`);
+    }
+
+    previousHash = event.hash;
+    headHash = event.hash;
+  });
+
+  return {
+    valid: errors.length === 0,
+    checkedEvents: orderedEvents.length,
+    headHash,
+    errors
+  };
+}
+
+export function normalizeAuditActor(actor: string | undefined): { actorType: string; actorId: string } {
+  const actorId = actor?.trim() || "system";
+  if (actorId === "human") return { actorType: "human", actorId };
+  if (actorId.startsWith("agent_") || actorId.endsWith("_agent")) return { actorType: "agent", actorId };
+  if (actorId.includes("runner")) return { actorType: "runner", actorId };
+  if (actorId.includes("approval") || actorId.includes("budget") || actorId.includes("policy")) {
+    return { actorType: "policy", actorId };
+  }
+  if (actorId.includes("adapter") || actorId.includes("manager") || actorId === "scheduler") {
+    return { actorType: "system", actorId };
+  }
+  return { actorType: "system", actorId };
+}
+
+function toHashableAuditEvent(event: HashableAuditEvent) {
+  return {
+    id: event.id,
+    traceId: event.traceId,
+    actorType: event.actorType,
+    actorId: event.actorId,
+    action: event.action,
+    targetType: event.targetType,
+    targetId: event.targetId,
+    message: event.message,
+    beforeJson: event.beforeJson,
+    afterJson: event.afterJson,
+    metadataJson: event.metadataJson,
+    previousHash: event.previousHash,
+    requirementId: event.requirementId,
+    prdId: event.prdId,
+    workItemId: event.workItemId,
+    runId: event.runId,
+    createdAt: event.createdAt
+  };
+}
+
+function stableStringify(value: unknown): string {
+  return JSON.stringify(sortJsonValue(value));
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => sortJsonValue(item));
+  if (!value || typeof value !== "object") return value;
+
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+    const child = (value as Record<string, unknown>)[key];
+    if (child !== undefined) sorted[key] = sortJsonValue(child);
+  }
+  return sorted;
 }

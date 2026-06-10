@@ -27,6 +27,8 @@ export async function buildServer(options: { store?: PatchPilotStore } = {}) {
 
   app.get(apiRoute("snapshot"), async () => store.getSnapshot());
 
+  app.get(apiRoute("verifyAudit"), async () => store.verifyAuditChain());
+
   app.get(apiRoute("agents"), async () => store.getAgents());
 
   app.post(apiRoute("createRequirement"), async (request, reply) => {

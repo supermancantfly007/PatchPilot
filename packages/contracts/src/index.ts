@@ -145,6 +145,11 @@ export const httpApiContract = {
       path: "/api/snapshot",
       response: "PatchPilotSnapshot"
     },
+    verifyAudit: {
+      method: "GET",
+      path: "/api/audit/verify",
+      response: "AuditChainVerification"
+    },
     agents: {
       method: "GET",
       path: "/api/agents",
@@ -588,6 +593,16 @@ const approvalStatus = enumSchema(["pending", "approved", "denied", "expired"]);
 const approvalTargetType = enumSchema(approvalTargetTypes);
 const approvalRiskLevel = enumSchema(approvalRiskLevels);
 const failureType = enumSchema(failureTypes);
+const jsonValue = {
+  anyOf: [
+    { type: "object", additionalProperties: true },
+    { type: "array", items: {} },
+    { type: "string" },
+    { type: "number" },
+    { type: "boolean" },
+    { type: "null" }
+  ]
+};
 
 export const openApiSchemas = {
   HealthResponse: objectSchema({
@@ -596,6 +611,17 @@ export const openApiSchemas = {
   }),
   RunEventError: objectSchema({
     message: { type: "string" }
+  }),
+  AuditChainVerification: objectSchema({
+    valid: { type: "boolean" },
+    checkedEvents: { type: "integer", minimum: 0 },
+    headHash: {
+      anyOf: [
+        { type: "string" },
+        { type: "null" }
+      ]
+    },
+    errors: arrayOf({ type: "string" })
   }),
   CreateRequirementRequest: objectSchema({
     rawInput: { type: "string", minLength: 3 },
@@ -1001,13 +1027,44 @@ export const openApiSchemas = {
   AuditEvent: looseObjectSchema({
     id,
     traceId: id,
+    actorType: { type: "string" },
+    actorId: id,
     actor: { type: "string" },
     action: { type: "string" },
     targetType: { type: "string" },
     targetId: id,
     message: { type: "string" },
+    beforeJson: jsonValue,
+    afterJson: jsonValue,
+    metadataJson: jsonValue,
+    hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    previousHash: {
+      anyOf: [
+        { type: "string", pattern: "^[a-f0-9]{64}$" },
+        { type: "null" }
+      ]
+    },
+    requirementId: id,
+    prdId: id,
+    workItemId: id,
+    runId: id,
     createdAt: isoDate
-  }),
+  }, [
+    "id",
+    "traceId",
+    "actorType",
+    "actorId",
+    "action",
+    "targetType",
+    "targetId",
+    "message",
+    "beforeJson",
+    "afterJson",
+    "metadataJson",
+    "hash",
+    "previousHash",
+    "createdAt"
+  ]),
   BugReport: looseObjectSchema({
     id,
     title: { type: "string" },
