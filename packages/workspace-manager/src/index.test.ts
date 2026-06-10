@@ -9,7 +9,7 @@ import { buildWorkspaceBranchName, GitWorkspaceManager } from "./index";
 
 describe("GitWorkspaceManager", () => {
   it("builds stable PatchPilot branch names", () => {
-    expect(buildWorkspaceBranchName(makeContext())).toBe("patchpilot/backend/12345678");
+    expect(buildWorkspaceBranchName(makeContext())).toBe("patchpilot/wi_test-backend-slice");
   });
 
   it("prepares a worktree and collects workspace artifacts", async () => {
@@ -23,8 +23,12 @@ describe("GitWorkspaceManager", () => {
         workspaceRoot: fixture.workspaceRoot
       });
       expect(workspace.path).toBe(join(fixture.workspaceRoot, "run_12345678"));
-      expect(workspace.branchName).toBe("patchpilot/backend/12345678");
+      expect(workspace.branchName).toBe("patchpilot/wi_test-backend-slice");
+      expect(workspace.baseBranch).toBe("main");
+      expect(workspace.baseCommit).toMatch(/^[0-9a-f]{40}$/);
       expect(existsSync(workspace.taskFilePath)).toBe(true);
+      const currentBranch = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], workspace.path);
+      expect(currentBranch.stdout.trim()).toBe(workspace.branchName);
       expect(await manager.getWorkspaceStatus(workspace.path)).toBe("clean");
 
       const initialArtifacts = await manager.collectArtifacts(workspace);
@@ -42,6 +46,24 @@ describe("GitWorkspaceManager", () => {
       expect(artifacts.changedFiles).toEqual(["feature.txt"]);
       expect(artifacts.summary).toBe("agent summary");
       expect(artifacts.status).toBe("dirty");
+
+      const commit = await manager.commitWorkspace(workspace, {
+        message: "PatchPilot wi_test: Backend slice"
+      });
+      expect(commit).toMatchObject({
+        status: "committed",
+        branchName: workspace.branchName,
+        baseBranch: "main",
+        baseCommit: workspace.baseCommit,
+        changedFiles: ["feature.txt"]
+      });
+      expect(commit.headCommit).toMatch(/^[0-9a-f]{40}$/);
+      expect(commit.headCommit).not.toBe(workspace.baseCommit);
+      const branchHead = await runGit(["rev-parse", workspace.branchName], fixture.repo);
+      expect(branchHead.stdout.trim()).toBe(commit.headCommit);
+      const committedFiles = await runGit(["show", "--name-only", "--format=", commit.headCommit], workspace.path);
+      expect(committedFiles.stdout.trim().split("\n")).toEqual(["feature.txt"]);
+      expect(await manager.getWorkspaceStatus(workspace.path)).toBe("clean");
 
       await manager.cleanupWorkspace(workspace);
       expect(existsSync(workspace.path)).toBe(false);
@@ -68,6 +90,38 @@ describe("GitWorkspaceManager", () => {
       expect(existsSync(workspacePath)).toBe(false);
       const worktrees = await runGit(["worktree", "list", "--porcelain"], fixture.repo);
       expect(worktrees.stdout).not.toContain(workspacePath);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns the base commit when no deliverable files changed", async () => {
+    const fixture = await createGitFixture();
+    const previousCwd = process.cwd();
+    process.chdir(fixture.repo);
+    const manager = new GitWorkspaceManager();
+
+    try {
+      const workspace = await manager.prepareWorkspace(makeContext({ runId: "run_no_changes" }), {
+        workspaceRoot: fixture.workspaceRoot
+      });
+      await writeFile(join(workspace.path, ".patchpilot-codex-summary.md"), "agent summary");
+      const commit = await manager.commitWorkspace(workspace, {
+        message: "PatchPilot wi_test: Backend slice"
+      });
+
+      expect(commit).toMatchObject({
+        status: "unchanged",
+        branchName: workspace.branchName,
+        baseBranch: "main",
+        baseCommit: workspace.baseCommit,
+        headCommit: workspace.baseCommit,
+        changedFiles: []
+      });
+
+      await manager.cleanupWorkspace(workspace);
+      expect(existsSync(workspace.path)).toBe(false);
     } finally {
       process.chdir(previousCwd);
       await rm(fixture.root, { recursive: true, force: true });
@@ -121,7 +175,7 @@ async function createGitFixture() {
   const root = await mkdtemp(join(tmpdir(), "patchpilot-workspace-manager-"));
   const repo = join(root, "repo");
   const workspaceRoot = join(root, "worktrees");
-  await runGit(["init", repo], root);
+  await runGit(["init", "--initial-branch=main", repo], root);
   await runGit(["config", "user.email", "test@example.com"], repo);
   await runGit(["config", "user.name", "PatchPilot Test"], repo);
   await writeFile(join(repo, "README.md"), "# fixture\n");

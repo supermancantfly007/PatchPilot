@@ -972,6 +972,8 @@ export class PatchPilotStore {
         runner: test.runner || (run.runner === "codex" ? "patchpilot-test-runner" : "simulated-test-runner"),
         environmentImage: test.environmentImage || (run.runner === "codex" ? "local" : "simulated"),
         workspacePath,
+        commit: run.result?.headCommit || test.commit,
+        branch: run.result?.branchName || test.branch,
         exitCode: test.exitCode !== undefined ? test.exitCode : test.status === "passed" ? 0 : 1,
         retryCount: test.retryCount ?? 0,
         attempt: test.attempt ?? 1,
@@ -1069,6 +1071,10 @@ export class PatchPilotStore {
         ? tests.map((test) => `${test.status}: ${test.command} (${test.durationMs}ms)`).join("\n")
         : "No test evidence recorded.";
     const reviewerSummary = result?.reviewerSummary || "Reviewer agent 尚未返回摘要。";
+    const branchName = result?.branchName || existing?.branchName || buildFallbackBranchName(workItem, run.id);
+    const baseBranch = result?.baseBranch || existing?.baseBranch || "main";
+    const baseCommit = result?.baseCommit || existing?.baseCommit;
+    const headCommit = result?.headCommit || existing?.headCommit;
     const pullRequest: PullRequestRecord = {
       id: existing?.id || `pr_${run.id}`,
       provider: "local",
@@ -1078,10 +1084,17 @@ export class PatchPilotStore {
       prdId: run.prdId,
       workItemId: workItem.id,
       runId: run.id,
-      branchName: existing?.branchName || `patchpilot/${workItem.role}/${run.id.replace(/^run_/, "").slice(0, 8)}`,
-      baseBranch: existing?.baseBranch || "main",
+      branchName,
+      baseBranch,
+      ...(baseCommit ? { baseCommit } : {}),
+      ...(headCommit ? { headCommit } : {}),
       url: existing?.url || `local://pull-requests/${run.id}`,
-      bodyMarkdown: this.buildPullRequestBody(run, workItem, testSummary, reviewerSummary),
+      bodyMarkdown: this.buildPullRequestBody(run, workItem, testSummary, reviewerSummary, {
+        branchName,
+        baseBranch,
+        baseCommit,
+        headCommit
+      }),
       reviewerSummary,
       testSummary,
       createdAt: existing?.createdAt || now,
@@ -1135,7 +1148,13 @@ export class PatchPilotStore {
     run: AgentRun,
     workItem: WorkItem,
     testSummary: string,
-    reviewerSummary: string
+    reviewerSummary: string,
+    git: {
+      branchName: string;
+      baseBranch: string;
+      baseCommit?: string;
+      headCommit?: string;
+    }
   ) {
     const result = run.result;
     return [
@@ -1147,6 +1166,11 @@ export class PatchPilotStore {
       `WorkItem: ${workItem.id}`,
       `Role: ${workItem.role}`,
       `Scope: ${workItem.scope}`,
+      "",
+      "## Git",
+      `Branch: ${git.branchName}`,
+      `Base: ${git.baseBranch}${git.baseCommit ? ` (${git.baseCommit})` : ""}`,
+      `Commit: ${git.headCommit || "not recorded"}`,
       "",
       "## 改动摘要",
       result?.summary || "Agent run completed without a summary.",
@@ -1326,6 +1350,17 @@ export class PatchPilotStore {
 }
 
 type WorkItemRole = PatchPilotSnapshot["workItems"][number]["role"];
+
+function buildFallbackBranchName(workItem: WorkItem, runId: string) {
+  const workItemId = slugSegment(workItem.id).slice(0, 80);
+  const titleSlug = slugSegment(workItem.title).slice(0, 48);
+  const fallbackSlug = runId.replace(/^run_/, "").slice(0, 8) || "run";
+  return `patchpilot/${workItemId}-${titleSlug || fallbackSlug}`;
+}
+
+function slugSegment(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "item";
+}
 
 export class DomainError extends Error {
   constructor(

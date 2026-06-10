@@ -209,6 +209,10 @@ export interface AgentRunResult {
   reviewerSummary: string;
   runner: AgentRunnerKind;
   workspacePath?: string;
+  branchName?: string;
+  baseBranch?: string;
+  baseCommit?: string;
+  headCommit?: string;
   codexSessionId?: string;
 }
 
@@ -356,6 +360,8 @@ export interface PullRequestRecord {
   runId: string;
   branchName: string;
   baseBranch: string;
+  baseCommit?: string;
+  headCommit?: string;
   url: string;
   bodyMarkdown: string;
   reviewerSummary: string;

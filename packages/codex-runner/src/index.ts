@@ -135,17 +135,29 @@ export class LocalCodexRunner implements CodexRunner {
       type: "git.diff.created",
       message: changedFiles.length > 0 ? `已发现 ${changedFiles.length} 个变更文件` : "Codex 没有产生文件变更"
     });
+    const commit = await this.workspaceManager.commitWorkspace(workspace, {
+      message: buildCommitMessage(context)
+    });
+    const finalizedTests = [testRun].map((test) => ({
+      ...test,
+      branch: test.branch || commit.branchName,
+      commit: commit.headCommit
+    }));
 
     return {
       summary: artifacts.summary,
       previewUrl: config.dev.previewUrl,
       riskLevel: changedFiles.length > 12 ? "medium" : "low",
       changedFiles,
-      tests: [testRun],
+      tests: finalizedTests,
       reviewerSummary:
         "本次交付在隔离 worktree 中完成，平台已收集变更文件、测试命令和执行摘要。验收通过后仍需人工按仓库规则合并。",
       runner: "codex",
       workspacePath: workspace.path,
+      branchName: commit.branchName,
+      baseBranch: commit.baseBranch,
+      baseCommit: commit.baseCommit,
+      headCommit: commit.headCommit,
       codexSessionId: firstCodexRun.sessionId
     };
   }
@@ -266,6 +278,11 @@ function buildRepairPrompt(context: CodexRunContext, testSummary: string) {
     "",
     "完成后说明：修复、测试、风险。"
   ].join("\n");
+}
+
+function buildCommitMessage(context: CodexRunContext) {
+  const title = context.workItem.title.replace(/\s+/g, " ").trim();
+  return `PatchPilot ${context.workItem.id}: ${title}`.slice(0, 160);
 }
 
 export function parseCodexEvent(line: string) {

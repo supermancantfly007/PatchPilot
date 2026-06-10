@@ -1069,6 +1069,18 @@
           "workspacePath": {
             "type": "string"
           },
+          "branchName": {
+            "type": "string"
+          },
+          "baseBranch": {
+            "type": "string"
+          },
+          "baseCommit": {
+            "type": "string"
+          },
+          "headCommit": {
+            "type": "string"
+          },
           "codexSessionId": {
             "type": "string"
           }
@@ -1415,6 +1427,12 @@
             "type": "string"
           },
           "baseBranch": {
+            "type": "string"
+          },
+          "baseCommit": {
+            "type": "string"
+          },
+          "headCommit": {
             "type": "string"
           },
           "url": {

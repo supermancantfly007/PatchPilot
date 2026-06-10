@@ -320,6 +320,10 @@ dev:
           reviewerSummary: "Fake reviewer approved the injected runner result.",
           runner: "codex",
           workspacePath: "fake://workspace",
+          branchName: "patchpilot/wi_fake-codex-runner",
+          baseBranch: "main",
+          baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           codexSessionId: "fake-session"
         };
       }
@@ -350,6 +354,10 @@ dev:
     expect(completedRun.result).toMatchObject({
       runner: "codex",
       workspacePath: "fake://workspace",
+      branchName: "patchpilot/wi_fake-codex-runner",
+      baseBranch: "main",
+      baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       codexSessionId: "fake-session",
       changedFiles: ["packages/codex-runner/src/index.ts"]
     });
@@ -360,8 +368,20 @@ dev:
     expect(testRun).toMatchObject({
       status: "passed",
       runId: start.json().id,
-      workspacePath: "fake://workspace"
+      workspacePath: "fake://workspace",
+      branch: "patchpilot/wi_fake-codex-runner",
+      commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     });
+    const pullRequest = snapshot.json().pullRequests.find((item: { runId: string }) => item.runId === start.json().id);
+    expect(pullRequest).toMatchObject({
+      branchName: "patchpilot/wi_fake-codex-runner",
+      baseBranch: "main",
+      baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    });
+    expect(pullRequest.bodyMarkdown).toContain("## Git");
+    expect(pullRequest.bodyMarkdown).toContain("Branch: patchpilot/wi_fake-codex-runner");
+    expect(pullRequest.bodyMarkdown).toContain("Commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     await app.close();
   });
 
@@ -455,6 +475,7 @@ dev:
     ).toBe(true);
     expect(prdPullRequests[0].bodyMarkdown).toContain("## 需求");
     expect(prdPullRequests[0].bodyMarkdown).toContain("## 工作项");
+    expect(prdPullRequests[0].bodyMarkdown).toContain("## Git");
     expect(prdPullRequests[0].bodyMarkdown).toContain("## 测试结果");
     expect(prdPullRequests[0].bodyMarkdown).toContain("## Reviewer Agent 摘要");
     expect(prdReviewRecords).toHaveLength(4);

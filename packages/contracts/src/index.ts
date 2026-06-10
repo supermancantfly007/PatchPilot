@@ -681,6 +681,10 @@ export const openApiSchemas = {
     reviewerSummary: { type: "string" },
     runner: runnerKind,
     workspacePath: { type: "string" },
+    branchName: { type: "string" },
+    baseBranch: { type: "string" },
+    baseCommit: { type: "string" },
+    headCommit: { type: "string" },
     codexSessionId: { type: "string" }
   }, ["summary", "previewUrl", "riskLevel", "changedFiles", "tests", "reviewerSummary", "runner"]),
   WorkspaceRun: looseObjectSchema({
@@ -750,9 +754,11 @@ export const openApiSchemas = {
     runId: id,
     branchName: { type: "string" },
     baseBranch: { type: "string" },
+    baseCommit: { type: "string" },
+    headCommit: { type: "string" },
     url: { type: "string" },
     bodyMarkdown: markdown
-  }),
+  }, ["id", "provider", "status", "title", "requirementId", "prdId", "workItemId", "runId", "branchName", "baseBranch", "url", "bodyMarkdown"]),
   ReviewRecord: looseObjectSchema({
     id,
     status: enumSchema(["approved", "changes_requested", "blocked"]),

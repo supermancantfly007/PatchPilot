@@ -23,6 +23,8 @@ export interface PreparedWorkspace {
   taskFilePath: string;
   branchName: string;
   baseRef: string;
+  baseBranch: string;
+  baseCommit: string;
   status: "active";
 }
 
@@ -35,11 +37,21 @@ export interface WorkspaceArtifacts {
   artifactPaths: string[];
 }
 
+export interface WorkspaceCommit {
+  status: "committed" | "unchanged";
+  branchName: string;
+  baseBranch: string;
+  baseCommit: string;
+  headCommit: string;
+  changedFiles: string[];
+}
+
 export interface WorkspaceManager {
   isGitWorkspaceAvailable(cwd?: string): Promise<boolean>;
   prepareWorkspace(context: WorkspaceContext, config: WorkspaceManagerConfig): Promise<PreparedWorkspace>;
   getWorkspaceStatus(workspacePath: string): Promise<WorkspaceStatus>;
   collectArtifacts(workspace: PreparedWorkspace, options?: { summaryPath?: string }): Promise<WorkspaceArtifacts>;
+  commitWorkspace(workspace: PreparedWorkspace, options: { message: string }): Promise<WorkspaceCommit>;
   cleanupWorkspace(workspace: Pick<PreparedWorkspace, "path">): Promise<void>;
 }
 
@@ -58,12 +70,15 @@ export class GitWorkspaceManager implements WorkspaceManager {
 
     const workspacePath = join(root, buildWorkspaceName(context));
     const baseRef = config.baseRef || "HEAD";
+    const base = await resolveBaseInfo(baseRef, process.cwd());
+    const branchName = buildWorkspaceBranchName(context);
     const taskFilePath = join(workspacePath, config.taskFileName || "PATCHPILOT_TASK.md");
     let worktreeCreated = false;
 
     try {
+      await ensureBranchAtRef(branchName, base.baseCommit);
       const worktreeResult = await runShell(
-        `git worktree add --detach ${shellQuote(workspacePath)} ${shellQuote(baseRef)}`,
+        `git worktree add ${shellQuote(workspacePath)} ${shellQuote(branchName)}`,
         process.cwd(),
         30000
       );
@@ -81,8 +96,10 @@ export class GitWorkspaceManager implements WorkspaceManager {
       runId: context.runId,
       path: workspacePath,
       taskFilePath,
-      branchName: buildWorkspaceBranchName(context),
+      branchName,
       baseRef,
+      baseBranch: base.baseBranch,
+      baseCommit: base.baseCommit,
       status: "active"
     };
   }
@@ -108,6 +125,55 @@ export class GitWorkspaceManager implements WorkspaceManager {
     };
   }
 
+  async commitWorkspace(workspace: PreparedWorkspace, options: { message: string }): Promise<WorkspaceCommit> {
+    const changedFiles = await listChangedFiles(workspace.path);
+    if (changedFiles.length === 0) {
+      return {
+        status: "unchanged",
+        branchName: workspace.branchName,
+        baseBranch: workspace.baseBranch,
+        baseCommit: workspace.baseCommit,
+        headCommit: await readGitValue("git rev-parse HEAD", workspace.path, 5000, workspace.baseCommit),
+        changedFiles
+      };
+    }
+
+    const addResult = await runShell(`git add -- ${changedFiles.map(shellQuote).join(" ")}`, workspace.path, 30000);
+    if (addResult.exitCode !== 0) {
+      throw new Error(`无法暂存 worktree 变更：${tail(addResult.output, 1200)}`);
+    }
+
+    const staged = await runShell("git diff --cached --quiet", workspace.path, 30000);
+    if (staged.exitCode === 0) {
+      return {
+        status: "unchanged",
+        branchName: workspace.branchName,
+        baseBranch: workspace.baseBranch,
+        baseCommit: workspace.baseCommit,
+        headCommit: await readGitValue("git rev-parse HEAD", workspace.path, 5000, workspace.baseCommit),
+        changedFiles
+      };
+    }
+
+    const commitResult = await runShell(
+      `git -c user.name=PatchPilot -c user.email=patchpilot@example.local commit -m ${shellQuote(options.message)}`,
+      workspace.path,
+      30000
+    );
+    if (commitResult.exitCode !== 0) {
+      throw new Error(`无法创建本地提交边界：${tail(commitResult.output, 1200)}`);
+    }
+
+    return {
+      status: "committed",
+      branchName: workspace.branchName,
+      baseBranch: workspace.baseBranch,
+      baseCommit: workspace.baseCommit,
+      headCommit: await readGitValue("git rev-parse HEAD", workspace.path, 5000, workspace.baseCommit),
+      changedFiles
+    };
+  }
+
   async cleanupWorkspace(workspace: Pick<PreparedWorkspace, "path">) {
     const result = await runShell(`git worktree remove --force ${shellQuote(workspace.path)}`, process.cwd(), 30000);
     if (result.exitCode !== 0) {
@@ -121,8 +187,9 @@ export function buildWorkspaceName(context: Pick<WorkspaceContext, "runId">) {
 }
 
 export function buildWorkspaceBranchName(context: Pick<WorkspaceContext, "runId" | "workItem">) {
-  const runSlug = context.runId.replace(/^run_/, "").slice(0, 8) || "run";
-  return `patchpilot/${slugSegment(context.workItem.role)}/${slugSegment(runSlug)}`;
+  const workItemId = slugSegment(context.workItem.id).slice(0, 80);
+  const titleSlug = slugSegment(context.workItem.title).slice(0, 48);
+  return `patchpilot/${workItemId}-${titleSlug}`;
 }
 
 async function listChangedFiles(workspacePath: string) {
@@ -134,10 +201,53 @@ async function listChangedFiles(workspacePath: string) {
 function parseChangedFiles(output: string) {
   return output
     .split("\n")
-    .map((line) => line.trim())
+    .map((line) => line.trimEnd())
     .filter(Boolean)
-    .map((line) => line.replace(/^..?\s+/, ""))
+    .map((line) => {
+      const file = line.slice(3).trim();
+      return file.includes(" -> ") ? file.split(" -> ").pop() || file : file;
+    })
     .filter((file) => file !== "PATCHPILOT_TASK.md" && !file.startsWith(".patchpilot-codex-"));
+}
+
+async function resolveBaseInfo(baseRef: string, cwd: string) {
+  const baseCommit = await readGitValue(
+    `git rev-parse ${shellQuote(baseRef)}`,
+    cwd,
+    5000,
+    baseRef
+  );
+  const baseBranch = await readGitValue(
+    `git rev-parse --abbrev-ref ${shellQuote(baseRef)}`,
+    cwd,
+    5000,
+    baseRef
+  );
+  return {
+    baseCommit,
+    baseBranch: baseBranch === "HEAD" ? baseRef : baseBranch
+  };
+}
+
+async function ensureBranchAtRef(branchName: string, ref: string) {
+  const exists = await runShell(
+    `git show-ref --verify --quiet ${shellQuote(`refs/heads/${branchName}`)}`,
+    process.cwd(),
+    5000
+  );
+  const command = exists.exitCode === 0
+    ? `git branch -f ${shellQuote(branchName)} ${shellQuote(ref)}`
+    : `git branch ${shellQuote(branchName)} ${shellQuote(ref)}`;
+  const result = await runShell(command, process.cwd(), 30000);
+  if (result.exitCode !== 0) {
+    throw new Error(`无法准备任务分支 ${branchName}：${tail(result.output, 1200)}`);
+  }
+}
+
+async function readGitValue(command: string, cwd: string, timeoutMs: number, fallback: string) {
+  const result = await runShell(command, cwd, timeoutMs);
+  if (result.exitCode !== 0) return fallback;
+  return result.output.trim() || fallback;
 }
 
 async function readSummary(summaryPath: string | undefined, changedFiles: string[]) {
