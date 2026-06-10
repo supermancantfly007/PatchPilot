@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute, join } from "node:path";
+import { executeCommand } from "@patchpilot/command-executor";
 import {
   defaultEgressAllowedHosts,
   defaultEgressAuditLogPath,
@@ -238,19 +238,13 @@ function parseGitRemoteHost(remoteUrl: string) {
 }
 
 function runCommand(command: string, args: string[]) {
-  return new Promise<{ exitCode: number | null; output: string }>((resolve) => {
-    const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let output = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    child.on("error", (error) => resolve({ exitCode: 1, output: error.message }));
-    child.on("close", (exitCode) => resolve({ exitCode, output }));
+  return executeCommand({
+    kind: command === "git" ? "git" : "runtime",
+    command,
+    args,
+    cwd: process.cwd(),
+    timeoutMs: 5000,
+    maxOutputBytes: 64 * 1024
   });
 }
 

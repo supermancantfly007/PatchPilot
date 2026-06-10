@@ -13,6 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@patchpilot/command-executor": "workspace:*",
     "@patchpilot/domain": "workspace:*",
     "@patchpilot/policy": "workspace:*",
     "@patchpilot/security": "workspace:*"

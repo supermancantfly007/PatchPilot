@@ -81,6 +81,10 @@ import {
 } from "@patchpilot/codex-runner";
 import type { PullRequestAdapter, PullRequestCheckSummary, PullRequestDraft } from "@patchpilot/pull-request-adapter";
 import {
+  asCommandAuditEvidenceList,
+  type CommandAuditEvidence
+} from "@patchpilot/command-executor";
+import {
   generateCapabilityManifest,
   summarizeCapabilityManifest,
   type CapabilityManifest
@@ -134,6 +138,7 @@ interface RunFailureDetails {
   testRun?: TestRun;
   egressPolicyEvidence?: EgressPolicyEvidence;
   secretBrokerEvidence?: SecretBrokerEvidence;
+  commandAuditEvents?: CommandAuditEvidence[];
 }
 
 type AddAuditEventInput = Pick<AuditEvent, "action" | "targetType" | "targetId" | "message"> &
@@ -1341,6 +1346,7 @@ export class PatchPilotStore {
         failure.egressPolicyEvidence ?? failure.testRun?.egressPolicyEvidence,
         endedAt
       );
+      this.recordCommandPolicyDeniedAudit(run, workItem, failure.commandAuditEvents, endedAt);
       this.completeAgentAssignment(workItem.id, endedAt);
       workItem.status = "blocked";
       workItem.updatedAt = endedAt;
@@ -3065,6 +3071,39 @@ export class PatchPilotStore {
     });
   }
 
+  private recordCommandPolicyDeniedAudit(
+    run: AgentRun,
+    workItem: WorkItem,
+    evidence: CommandAuditEvidence[] | undefined,
+    now: string
+  ) {
+    const denied = (evidence ?? []).filter((event) => event.action === "command.policy_denied");
+    for (const event of denied) {
+      this.addAuditEvent({
+        actor: "command_executor",
+        action: "command.policy_denied",
+        targetType: "agent_run",
+        targetId: run.id,
+        message: `Command wrapper denied ${event.kind} command: ${event.policyDecision?.reason ?? "policy_denied"}.`,
+        requirementId: run.requirementId,
+        prdId: run.prdId,
+        workItemId: workItem.id,
+        runId: run.id,
+        createdAt: now,
+        beforeJson: null,
+        afterJson: {
+          command: auditCommandEvidence(event)
+        },
+        metadataJson: {
+          manifestId: event.manifestId ?? null,
+          policyDecision: event.policyDecision ? auditCommandPolicyDecision(event.policyDecision) : null,
+          outputCaptured: Boolean(event.outputPreview),
+          outputBytes: event.outputBytes ?? 0
+        }
+      });
+    }
+  }
+
   private async resolveAndAuditSecretBroker(
     run: AgentRun,
     workItem: WorkItem,
@@ -3827,6 +3866,37 @@ function auditEgressEntry(entry: EgressPolicyEvidence["recent"][number]): Record
   };
 }
 
+function auditCommandEvidence(event: CommandAuditEvidence): Record<string, AuditJsonValue> {
+  return {
+    id: event.id,
+    action: event.action,
+    kind: event.kind,
+    command: event.command,
+    cwd: event.cwd,
+    manifestId: event.manifestId ?? null,
+    policyDecision: event.policyDecision ? auditCommandPolicyDecision(event.policyDecision) : null,
+    startedAt: event.startedAt ?? null,
+    endedAt: event.endedAt ?? null,
+    exitCode: event.exitCode ?? null,
+    timedOut: event.timedOut ?? null,
+    durationMs: event.durationMs ?? null,
+    outputPreview: event.outputPreview ?? null,
+    outputBytes: event.outputBytes ?? 0,
+    maxOutputBytes: event.maxOutputBytes ?? null
+  };
+}
+
+function auditCommandPolicyDecision(
+  decision: NonNullable<CommandAuditEvidence["policyDecision"]>
+): Record<string, AuditJsonValue> {
+  return {
+    decision: decision.decision,
+    reason: decision.reason,
+    target: decision.target,
+    matchedPattern: decision.matchedPattern ?? null
+  };
+}
+
 function auditSecretBrokerInjectedSecret(
   secret: SecretBrokerEvidence["injected"][number]
 ): Record<string, AuditJsonValue> {
@@ -3994,6 +4064,11 @@ function extractRunFailureDetails(error: unknown): RunFailureDetails {
     : record
       ? asSecretBrokerEvidence(record.secretBrokerEvidence)
       : undefined;
+  const commandAuditEvents = error instanceof CodexRunError
+    ? error.commandAuditEvents
+    : record
+      ? asCommandAuditEvidenceList(record.commandAuditEvents)
+      : [];
   const failureType = rawFailureType || (testRun?.status === "failed" ? "test_failed" : classifyFailureMessage(failureSummary));
 
   return {
@@ -4001,7 +4076,8 @@ function extractRunFailureDetails(error: unknown): RunFailureDetails {
     failureSummary,
     ...(testRun ? { testRun } : {}),
     ...(egressPolicyEvidence ? { egressPolicyEvidence } : {}),
-    ...(secretBrokerEvidence ? { secretBrokerEvidence } : {})
+    ...(secretBrokerEvidence ? { secretBrokerEvidence } : {}),
+    ...(commandAuditEvents.length > 0 ? { commandAuditEvents } : {})
   };
 }
 
@@ -4012,7 +4088,8 @@ function redactRunError(error: unknown, redactionOptions: SecretRedactionOptions
       error.failureType,
       error.testRun ? redactJsonValue(error.testRun, redactionOptions) : undefined,
       error.egressPolicyEvidence ? redactJsonValue(error.egressPolicyEvidence, redactionOptions) : undefined,
-      error.secretBrokerEvidence ? redactJsonValue(error.secretBrokerEvidence, redactionOptions) : undefined
+      error.secretBrokerEvidence ? redactJsonValue(error.secretBrokerEvidence, redactionOptions) : undefined,
+      error.commandAuditEvents.length > 0 ? redactJsonValue(error.commandAuditEvents, redactionOptions) : []
     );
   }
   if (error instanceof Error) {
@@ -4021,6 +4098,7 @@ function redactRunError(error: unknown, redactionOptions: SecretRedactionOptions
       testRun?: TestRun;
       egressPolicyEvidence?: EgressPolicyEvidence;
       secretBrokerEvidence?: SecretBrokerEvidence;
+      commandAuditEvents?: CommandAuditEvidence[];
     };
     redacted.name = error.name;
     const record = asRecord(error);
@@ -4028,9 +4106,13 @@ function redactRunError(error: unknown, redactionOptions: SecretRedactionOptions
     const testRun = record ? asTestRun(record.testRun) : undefined;
     const egressPolicyEvidence = record ? asEgressPolicyEvidence(record.egressPolicyEvidence) : undefined;
     const secretBrokerEvidence = record ? asSecretBrokerEvidence(record.secretBrokerEvidence) : undefined;
+    const commandAuditEvents = record ? asCommandAuditEvidenceList(record.commandAuditEvents) : [];
     if (testRun) redacted.testRun = redactJsonValue(testRun, redactionOptions);
     if (egressPolicyEvidence) redacted.egressPolicyEvidence = redactJsonValue(egressPolicyEvidence, redactionOptions);
     if (secretBrokerEvidence) redacted.secretBrokerEvidence = redactJsonValue(secretBrokerEvidence, redactionOptions);
+    if (commandAuditEvents.length > 0) {
+      redacted.commandAuditEvents = redactJsonValue(commandAuditEvents, redactionOptions);
+    }
     return redacted;
   }
   return new Error(redactSecrets(String(error), redactionOptions).redacted);

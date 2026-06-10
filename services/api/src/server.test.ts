@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CodexRunError, type CodexRunner } from "@patchpilot/codex-runner";
+import { executeCommand } from "@patchpilot/command-executor";
 import { contractVersion, hashNormalizedContent } from "@patchpilot/contracts";
 import type { PullRequestAdapter, UpsertPullRequestInput, WriteReviewerCommentInput } from "@patchpilot/pull-request-adapter";
 import { createInMemoryTelemetry, prometheusMetricNames } from "@patchpilot/telemetry";
@@ -1907,6 +1908,79 @@ artifacts:
       },
       metadataJson: {
         auditLogPath: ".patchpilot/egress-audit.jsonl"
+      }
+    });
+
+    await app.close();
+  });
+
+  it("writes audit evidence when the command wrapper denies a bypass attempt", async () => {
+    let delegatedExecutorCalled = false;
+    const fakeCodexRunner: CodexRunner = {
+      isAvailable: async () => true,
+      isGitWorkspaceAvailable: async () => true,
+      run: async (_context, _emit, config) => {
+        await executeCommand({
+          kind: "test",
+          command: "npm test",
+          cwd: process.cwd(),
+          timeoutMs: 5000,
+          capabilityManifest: config.policyManifest,
+          executor: async () => {
+            delegatedExecutorCalled = true;
+            return {
+              exitCode: 0,
+              output: "bypassed",
+              stdout: "bypassed",
+              stderr: "",
+              timedOut: false,
+              durationMs: 1
+            };
+          }
+        });
+        return fakeCodexRunResult("test_command_wrapper_denied");
+      }
+    };
+    const app = await buildServer({ store: new PatchPilotStore({ codexRunner: fakeCodexRunner }) });
+    const workItem = await createApprovedWorkItem(app, "验证 command wrapper deny audit");
+
+    const start = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/start`,
+      payload: { runner: "codex" }
+    });
+    expect(start.statusCode).toBe(201);
+
+    const failedRun = await pollRun(app, start.json().id);
+    expect(delegatedExecutorCalled).toBe(false);
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      failureType: "policy_denied"
+    });
+
+    const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const deniedAudit = snapshot
+      .json()
+      .auditEvents.find((event: { action: string; runId?: string }) =>
+        event.action === "command.policy_denied" && event.runId === failedRun.id
+      );
+    expect(deniedAudit).toMatchObject({
+      targetType: "agent_run",
+      targetId: failedRun.id,
+      afterJson: {
+        command: {
+          kind: "test",
+          command: "npm test",
+          policyDecision: {
+            decision: "denied",
+            reason: "command_not_allowlisted",
+            target: "npm test"
+          }
+        }
+      },
+      metadataJson: {
+        outputCaptured: false,
+        outputBytes: 0
       }
     });
 
