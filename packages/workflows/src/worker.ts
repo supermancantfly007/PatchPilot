@@ -3,9 +3,11 @@ import { NativeConnection, Worker, type WorkerOptions } from "@temporalio/worker
 import {
   createRequirementIntakeActivities,
   createTemporalCanaryActivities,
+  createWorkItemExecutionActivities,
   createWorkItemPlanningActivities,
   type RequirementIntakeActivityStore,
   type TemporalCanaryActivityStore,
+  type WorkItemExecutionActivityStore,
   type WorkItemPlanningActivityStore
 } from "./activities";
 import {
@@ -25,6 +27,7 @@ export interface CreatePatchPilotTemporalWorkerOptions {
   activityStore?: TemporalCanaryActivityStore;
   requirementIntakeActivityStore?: RequirementIntakeActivityStore;
   workItemPlanningActivityStore?: WorkItemPlanningActivityStore;
+  workItemExecutionActivityStore?: WorkItemExecutionActivityStore;
   workerOptions?: Partial<WorkerOptions>;
 }
 
@@ -50,7 +53,8 @@ export async function createPatchPilotTemporalWorker(
     activities: {
       ...createTemporalCanaryActivities(options.activityStore),
       ...createRequirementIntakeActivities(options.requirementIntakeActivityStore),
-      ...createWorkItemPlanningActivities(options.workItemPlanningActivityStore)
+      ...createWorkItemPlanningActivities(options.workItemPlanningActivityStore),
+      ...createWorkItemExecutionActivities(options.workItemExecutionActivityStore)
     },
     reuseV8Context: config.reuseV8Context ?? true,
     ...options.workerOptions

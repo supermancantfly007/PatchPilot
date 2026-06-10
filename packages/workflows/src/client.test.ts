@@ -6,6 +6,8 @@ import {
   requirementIntakeWorkflowStartOptions,
   temporalCanaryWorkflowId,
   temporalCanaryWorkflowStartOptions,
+  workItemExecutionWorkflowId,
+  workItemExecutionWorkflowStartOptions,
   workItemPlanningWorkflowId,
   workItemPlanningWorkflowStartOptions
 } from "./client";
@@ -106,6 +108,50 @@ describe("Temporal client helpers", () => {
     ).toEqual({
       taskQueue: "patchpilot-test",
       workflowId: workItemPlanningWorkflowId(input.idempotencyKey),
+      workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
+      workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
+      args: [input]
+    });
+  });
+
+  it("derives idempotent start options for work item execution workflows", () => {
+    const input = {
+      idempotencyKey: "TD-207 / Work Item Execution!",
+      prd: {
+        id: "prd_req_td_207",
+        requirementId: "req_td_207",
+        version: 1,
+        status: "approved" as const,
+        title: "Execution workflow",
+        bodyMarkdown: "# Execution workflow",
+        acceptanceCriteria: ["Records execution evidence chain"]
+      },
+      workItem: {
+        id: "wi_td_207_backend",
+        prdId: "prd_req_td_207",
+        title: "WorkItemExecutionWorkflow",
+        status: "ready" as const,
+        role: "backend" as const,
+        scope: "Execute claim, workspace, CodexRun, test, PR, review, and archive.",
+        nonGoals: ["No approval workflow"],
+        acceptanceCriteria: ["Records execution evidence chain"],
+        testSuggestions: ["Run workflow tests"],
+        version: 1
+      }
+    };
+
+    expect(workItemExecutionWorkflowId(input.idempotencyKey)).toMatch(
+      /^patchpilot-work-item-execution-td-207-work-item-execution-[a-f0-9]{12}$/
+    );
+    expect(
+      workItemExecutionWorkflowStartOptions(input, {
+        address: "temporal.test:7233",
+        namespace: "default",
+        taskQueue: "patchpilot-test"
+      })
+    ).toEqual({
+      taskQueue: "patchpilot-test",
+      workflowId: workItemExecutionWorkflowId(input.idempotencyKey),
       workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
       workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
       args: [input]

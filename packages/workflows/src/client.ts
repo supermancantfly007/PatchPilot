@@ -16,6 +16,8 @@ import {
   requirementIntakeWorkflow,
   temporalCanaryProgressQuery,
   temporalCanaryWorkflow,
+  workItemExecutionProgressQuery,
+  workItemExecutionWorkflow,
   workItemPlanningProgressQuery,
   workItemPlanningWorkflow
 } from "./workflows";
@@ -34,6 +36,9 @@ import {
   type TemporalCanaryWorkflowResult,
   type TemporalConnectionConfig,
   type TemporalEnv,
+  type WorkItemExecutionProgress,
+  type WorkItemExecutionWorkflowInput,
+  type WorkItemExecutionWorkflowResult,
   type WorkItemPlanningProgress,
   type WorkItemPlanningWorkflowInput,
   type WorkItemPlanningWorkflowResult
@@ -42,6 +47,7 @@ import {
 export type TemporalCanaryWorkflowHandle = WorkflowHandle<typeof temporalCanaryWorkflow>;
 export type RequirementIntakeWorkflowHandle = WorkflowHandle<typeof requirementIntakeWorkflow>;
 export type WorkItemPlanningWorkflowHandle = WorkflowHandle<typeof workItemPlanningWorkflow>;
+export type WorkItemExecutionWorkflowHandle = WorkflowHandle<typeof workItemExecutionWorkflow>;
 
 export function readTemporalConfig(env: TemporalEnv = process.env): TemporalConnectionConfig {
   return {
@@ -66,6 +72,10 @@ export function requirementIntakeWorkflowId(idempotencyKey: string): string {
 
 export function workItemPlanningWorkflowId(idempotencyKey: string): string {
   return temporalWorkflowId("patchpilot-work-item-planning", idempotencyKey);
+}
+
+export function workItemExecutionWorkflowId(idempotencyKey: string): string {
+  return temporalWorkflowId("patchpilot-work-item-execution", idempotencyKey);
 }
 
 export function temporalCanaryWorkflowStartOptions(
@@ -101,6 +111,19 @@ export function workItemPlanningWorkflowStartOptions(
   return {
     taskQueue: config.taskQueue,
     workflowId: workItemPlanningWorkflowId(input.idempotencyKey),
+    workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
+    workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
+    args: [input]
+  };
+}
+
+export function workItemExecutionWorkflowStartOptions(
+  input: WorkItemExecutionWorkflowInput,
+  config = readTemporalConfig()
+): WorkflowStartOptions<typeof workItemExecutionWorkflow> {
+  return {
+    taskQueue: config.taskQueue,
+    workflowId: workItemExecutionWorkflowId(input.idempotencyKey),
     workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
     workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
     args: [input]
@@ -158,6 +181,23 @@ export async function startWorkItemPlanningWorkflow(
   }
 }
 
+export async function startWorkItemExecutionWorkflow(
+  client: Client,
+  input: WorkItemExecutionWorkflowInput,
+  config = readTemporalConfig()
+): Promise<WorkItemExecutionWorkflowHandle> {
+  const startOptions = workItemExecutionWorkflowStartOptions(input, config);
+
+  try {
+    return await client.workflow.start(workItemExecutionWorkflow, startOptions);
+  } catch (error) {
+    if (error instanceof WorkflowExecutionAlreadyStartedError) {
+      return client.workflow.getHandle(startOptions.workflowId) as WorkItemExecutionWorkflowHandle;
+    }
+    throw error;
+  }
+}
+
 export function queryTemporalCanaryProgress(handle: TemporalCanaryWorkflowHandle): Promise<TemporalCanaryProgress> {
   return handle.query(temporalCanaryProgressQuery);
 }
@@ -179,6 +219,12 @@ export function queryWorkItemPlanningProgress(
   handle: WorkItemPlanningWorkflowHandle
 ): Promise<WorkItemPlanningProgress> {
   return handle.query(workItemPlanningProgressQuery);
+}
+
+export function queryWorkItemExecutionProgress(
+  handle: WorkItemExecutionWorkflowHandle
+): Promise<WorkItemExecutionProgress> {
+  return handle.query(workItemExecutionProgressQuery);
 }
 
 export function signalRequirementClarificationAnswer(
@@ -225,6 +271,15 @@ export async function runWorkItemPlanningWorkflow(
   config = readTemporalConfig()
 ): Promise<WorkItemPlanningWorkflowResult> {
   const handle = await startWorkItemPlanningWorkflow(client, input, config);
+  return handle.result();
+}
+
+export async function runWorkItemExecutionWorkflow(
+  client: Client,
+  input: WorkItemExecutionWorkflowInput,
+  config = readTemporalConfig()
+): Promise<WorkItemExecutionWorkflowResult> {
+  const handle = await startWorkItemExecutionWorkflow(client, input, config);
   return handle.result();
 }
 

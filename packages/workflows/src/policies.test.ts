@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { temporalCanaryActivityOptions, workItemPlanningActivityOptions } from "./policies";
+import {
+  temporalCanaryActivityOptions,
+  workItemExecutionActivityOptions,
+  workItemPlanningActivityOptions
+} from "./policies";
 
 describe("Temporal workflow policies", () => {
   it("keeps a bounded retry policy on the canary activity", () => {
@@ -21,6 +25,18 @@ describe("Temporal workflow policies", () => {
         initialInterval: "500 milliseconds",
         backoffCoefficient: 2,
         maximumInterval: "5 seconds",
+        maximumAttempts: 5
+      }
+    });
+  });
+
+  it("keeps a bounded retry policy on work item execution activities", () => {
+    expect(workItemExecutionActivityOptions).toEqual({
+      startToCloseTimeout: "30 seconds",
+      retry: {
+        initialInterval: "500 milliseconds",
+        backoffCoefficient: 2,
+        maximumInterval: "10 seconds",
         maximumAttempts: 5
       }
     });

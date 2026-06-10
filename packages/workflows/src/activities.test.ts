@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  createWorkItemExecutionActivities,
   createRequirementIntakeActivities,
   InMemoryRequirementIntakeActivityStore,
   InMemoryTemporalCanaryActivityStore,
+  InMemoryWorkItemExecutionActivityStore,
   InMemoryWorkItemPlanningActivityStore
 } from "./activities";
-import type { Prd } from "@patchpilot/domain";
+import type { Prd, TestCase, WorkItem } from "@patchpilot/domain";
 
 describe("Temporal canary activities", () => {
   it("deduplicates activity completion by idempotency key", async () => {
@@ -172,6 +174,159 @@ describe("Work item planning activities", () => {
   });
 });
 
+describe("Work item execution activities", () => {
+  it("claims, executes, reviews, archives, and completes with a terminal evidence chain", async () => {
+    const store = new InMemoryWorkItemExecutionActivityStore();
+    const activities = createWorkItemExecutionActivities(store);
+    const prd = executionPrd();
+    const workItem = executionWorkItem(prd);
+    const workflowId = "workflow-td-207";
+
+    const claim = await activities.claimWorkItemExecutionActivity({
+      workflowId,
+      idempotencyKey: "td-207:claim",
+      workItem,
+      agentId: "agent_backend"
+    });
+    const duplicateClaim = await activities.claimWorkItemExecutionActivity({
+      workflowId,
+      idempotencyKey: "td-207:claim",
+      workItem,
+      agentId: "agent_frontend"
+    });
+    expect(duplicateClaim).toEqual(claim);
+    expect(claim.workItem.status).toBe("claimed");
+    expect(claim.workItem.claimToken).toBe(claim.claimToken);
+
+    const prepared = await activities.prepareWorkItemWorkspaceActivity({
+      workflowId,
+      idempotencyKey: "td-207:workspace",
+      prd,
+      workItem: claim.workItem,
+      agentId: claim.agentId,
+      claimToken: claim.claimToken,
+      runner: "codex",
+      workspaceRoot: "/tmp/patchpilot-workflows"
+    });
+    expect(prepared.workItem.status).toBe("running");
+    expect(prepared.agentRun.status).toBe("running");
+    expect(prepared.workspaceRun.isolation).toBe("git_worktree");
+
+    store.failNext("runCodex");
+    await expect(
+      activities.runWorkItemCodexActivity({
+        workflowId,
+        idempotencyKey: "td-207:codex",
+        prd,
+        workItem: prepared.workItem,
+        agentRun: prepared.agentRun,
+        workspaceRun: prepared.workspaceRun,
+        baseBranch: "main",
+        baseCommit: "base-td207",
+        previewUrl: "http://localhost:3000"
+      })
+    ).rejects.toThrow("Injected transient runCodex activity failure");
+    const codex = await activities.runWorkItemCodexActivity({
+      workflowId,
+      idempotencyKey: "td-207:codex",
+      prd,
+      workItem: prepared.workItem,
+      agentRun: prepared.agentRun,
+      workspaceRun: prepared.workspaceRun,
+      baseBranch: "main",
+      baseCommit: "base-td207",
+      previewUrl: "http://localhost:3000"
+    });
+    expect(store.getAttemptCount("runCodex")).toBe(2);
+    expect(codex.codex.changedFiles.length).toBeGreaterThan(0);
+
+    const tested = await activities.runWorkItemTestsActivity({
+      workflowId,
+      idempotencyKey: "td-207:tests",
+      prd,
+      workItem: prepared.workItem,
+      agentRun: codex.agentRun,
+      workspaceRun: prepared.workspaceRun,
+      codex: codex.codex,
+      testCases: [executionTestCase(prd, workItem)],
+      testCommand: "pnpm --filter @patchpilot/workflows test"
+    });
+    expect(tested.testRuns[0]?.status).toBe("passed");
+    expect(tested.testCases[0]?.status).toBe("passed");
+    expect(tested.artifacts.map((artifact) => artifact.kind).sort()).toEqual(["log", "test_report"]);
+
+    const pullRequest = await activities.createWorkItemPullRequestActivity({
+      workflowId,
+      idempotencyKey: "td-207:pr",
+      workItem: prepared.workItem,
+      agentRun: tested.agentRun,
+      codex: codex.codex,
+      testRuns: tested.testRuns
+    });
+    const review = await activities.reviewWorkItemExecutionActivity({
+      workflowId,
+      idempotencyKey: "td-207:review",
+      workItem: prepared.workItem,
+      agentRun: tested.agentRun,
+      codex: codex.codex,
+      testRuns: tested.testRuns,
+      pullRequest: pullRequest.pullRequest
+    });
+    const archived = await activities.archiveWorkItemWorkspaceActivity({
+      workflowId,
+      idempotencyKey: "td-207:archive",
+      workspaceRun: prepared.workspaceRun,
+      agentRun: tested.agentRun
+    });
+    const completed = await activities.completeWorkItemExecutionActivity({
+      workflowId,
+      idempotencyKey: "td-207:terminal",
+      workItem: prepared.workItem,
+      agentRun: tested.agentRun,
+      workspaceRun: archived.workspaceRun,
+      codex: codex.codex,
+      testRuns: tested.testRuns,
+      testCases: tested.testCases,
+      artifacts: tested.artifacts,
+      pullRequest: pullRequest.pullRequest,
+      reviewRecord: review.reviewRecord
+    });
+
+    expect(pullRequest.pullRequest.status).toBe("ready_for_review");
+    expect(review.reviewRecord.status).toBe("approved");
+    expect(completed.workspaceRun.status).toBe("archived");
+    expect(completed.workItem.status).toBe("review");
+    expect(completed.workItem.claimToken).toBeUndefined();
+    expect(completed.agentRun.status).toBe("succeeded");
+    expect(completed.agentRun.result?.tests[0]?.pullRequestId).toBe(pullRequest.pullRequest.id);
+    expect(completed.evidenceChain).toMatchObject({
+      workflowId,
+      workItemId: workItem.id,
+      agentRunId: prepared.agentRun.id,
+      workspaceRunId: prepared.workspaceRun.id,
+      pullRequestId: pullRequest.pullRequest.id,
+      reviewRecordId: review.reviewRecord.id
+    });
+    expect(completed.evidenceChain.testRunIds).toEqual([tested.testRuns[0]?.id]);
+    expect(completed.evidenceChain.artifactIds.length).toBeGreaterThanOrEqual(5);
+    expect(completed.evidenceChain.auditEventIds).toEqual(completed.auditEvents.map((event) => event.id));
+    expect(completed.auditEvents.map((event) => event.action)).toEqual([
+      "work_item.claimed",
+      "work_item.started",
+      "workspace_run.created",
+      "codex_run.completed",
+      "test_run.passed",
+      "pull_request.ready_for_review",
+      "review.approved",
+      "workspace_run.archived",
+      "agent_run.succeeded"
+    ]);
+    expect(completed.auditEvents.every((event, index, events) =>
+      index === 0 ? event.previousHash === null : event.previousHash === events[index - 1]?.hash
+    )).toBe(true);
+  });
+});
+
 function planningPrd(acceptanceCriteria = ["Submit requirement", "Generate PRD", "Plan work items"]): Prd {
   return {
     id: "prd_req_td_206",
@@ -182,5 +337,54 @@ function planningPrd(acceptanceCriteria = ["Submit requirement", "Generate PRD",
     bodyMarkdown: "# Temporal work item planning\n\n## 如何验收\n" + acceptanceCriteria.map((item) => `- ${item}`).join("\n"),
     acceptanceCriteria,
     approvedAt: "2026-06-10T00:00:00.000Z"
+  };
+}
+
+function executionPrd(): Prd {
+  return {
+    id: "prd_req_td_207",
+    requirementId: "req_td_207",
+    version: 1,
+    status: "approved",
+    title: "Temporal work item execution",
+    bodyMarkdown: "# Temporal work item execution",
+    acceptanceCriteria: ["Execution workflow records claim, workspace, Codex, test, PR, review, and archive evidence"],
+    approvedAt: "2026-06-10T00:00:00.000Z"
+  };
+}
+
+function executionWorkItem(prd: Prd): WorkItem {
+  return {
+    id: "wi_td_207_backend",
+    prdId: prd.id,
+    title: "Implement WorkItemExecutionWorkflow",
+    status: "ready",
+    role: "backend",
+    scope: "Implement claim, workspace, CodexRun, test, PR, review, and archive workflow orchestration.",
+    nonGoals: ["Do not implement approval or defect workflows"],
+    acceptanceCriteria: prd.acceptanceCriteria,
+    testSuggestions: ["Run workflow tests", "Run Temporal E2E"],
+    requiredCapabilities: ["repo:write", "test:run"],
+    version: 1,
+    createdAt: "2026-06-10T00:00:00.000Z",
+    updatedAt: "2026-06-10T00:00:00.000Z"
+  };
+}
+
+function executionTestCase(prd: Prd, workItem: WorkItem): TestCase {
+  return {
+    id: `tc_${workItem.id}`,
+    requirementId: prd.requirementId,
+    prdId: prd.id,
+    workItemId: workItem.id,
+    title: "Work item execution evidence chain",
+    kind: "acceptance",
+    status: "ready",
+    priority: "high",
+    steps: workItem.testSuggestions,
+    expectedResult: "The execution workflow reaches review with a complete evidence chain.",
+    linkedAcceptanceCriteria: workItem.acceptanceCriteria,
+    createdAt: "2026-06-10T00:00:00.000Z",
+    updatedAt: "2026-06-10T00:00:00.000Z"
   };
 }
