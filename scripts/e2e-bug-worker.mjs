@@ -26,7 +26,7 @@ const afterRepro = await poll(async () => {
   const fixWorkItem = snapshot.workItems.find((item) => item.sourceBugId === bug.id && item.role === "backend");
   const reproRun = snapshot.agentRuns.find((run) => run.workItemId === workItem.id);
   const reproTestCase = snapshot.testCases.find((testCase) => testCase.workItemId === workItem.id);
-  if (currentBug?.status !== "confirmed") return undefined;
+  if (currentBug?.status !== "reproduced") return undefined;
   if (!fixWorkItem || fixWorkItem.status !== "ready") return undefined;
   if (reproRun?.status !== "succeeded") return undefined;
   if (!reproTestCase) return undefined;
@@ -41,14 +41,14 @@ const afterFix = await poll(async () => {
   const fixRun = snapshot.agentRuns.find((run) => run.workItemId === afterRepro.fixWorkItem.id);
   const bugTestCases = snapshot.testCases.filter((testCase) => testCase.sourceBugId === bug.id);
   const bugTestRuns = snapshot.testRuns.filter((test) => test.prdId === bug.prdId);
-  if (currentBug?.status !== "fixed") return undefined;
+  if (currentBug?.status !== "closed") return undefined;
   if (fixRun?.status !== "succeeded") return undefined;
   if (bugTestCases.length < 2) return undefined;
   if (!bugTestRuns.every((test) => test.testCaseId)) return undefined;
   return { currentBug, fixRun, bugTestCases, bugTestRuns };
 }, 15000);
 
-assertEqual(afterFix.currentBug.status, "fixed", "developer fix task should close the bug");
+assertEqual(afterFix.currentBug.status, "closed", "developer fix task should close the bug");
 assertEqual(afterFix.bugTestCases.length, 2, "bug lifecycle should create repro and regression test cases");
 console.log("PatchPilot bug worker E2E passed");
 

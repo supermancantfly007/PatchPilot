@@ -205,7 +205,7 @@ export default function HomePage() {
   const rejectedAcceptances = acceptances.filter((acceptance) => acceptance.status === "rejected");
   const blockedWorkItems = workItems.filter((item) => item.status === "blocked");
   const reworkWorkItems = workItems.filter((item) => (item.reworkCount ?? 0) > 0 && !["done", "cancelled"].includes(item.status));
-  const openBugs = bugs.filter((bug) => !["fixed", "rejected"].includes(bug.status));
+  const openBugs = bugs.filter((bug) => !["closed", "unreproducible"].includes(bug.status));
   const busyAgents = agents.filter((agent) => agent.status === "busy");
   const needsAttention = failedRuns.length + rejectedAcceptances.length + blockedWorkItems.length + openBugs.length;
   const openRequirement = requirements.find((requirement) => !["approved", "rejected"].includes(requirement.status));

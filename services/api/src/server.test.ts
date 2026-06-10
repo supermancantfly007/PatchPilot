@@ -1092,12 +1092,12 @@ dev:
     expect(claim.statusCode).toBe(200);
     expect(claim.json().workItem.status).toBe("claimed");
     expect(claim.json().agent.status).toBe("busy");
-    expect(claim.json().bug.status).toBe("confirmed");
+    expect(claim.json().bug.status).toBe("needs_repro");
 
     await app.close();
   });
 
-  it("turns a confirmed bug reproduction into a developer fix task", async () => {
+  it("turns a reproduced bug into a developer fix task and closes it after verification", async () => {
     const app = await buildServer();
     const bugResponse = await app.inject({
       method: "POST",
@@ -1123,12 +1123,12 @@ dev:
     expect(reproRun.status).toBe("succeeded");
 
     const snapshotAfterRepro = await app.inject({ method: "GET", url: "/api/snapshot" });
-    const confirmedBug = snapshotAfterRepro.json().bugs.find((item: { id: string }) => item.id === bug.id);
+    const reproducedBug = snapshotAfterRepro.json().bugs.find((item: { id: string }) => item.id === bug.id);
     const fixWorkItem = snapshotAfterRepro
       .json()
       .workItems.find((item: { sourceBugId?: string; role: string }) => item.sourceBugId === bug.id && item.role === "backend");
 
-    expect(confirmedBug.status).toBe("confirmed");
+    expect(reproducedBug.status).toBe("reproduced");
     expect(fixWorkItem.status).toBe("ready");
     expect(fixWorkItem.title).toContain("修复 bug");
 
@@ -1143,7 +1143,7 @@ dev:
     expect(fixRun.result.summary).toContain("完成模拟修复");
 
     const snapshotAfterFix = await app.inject({ method: "GET", url: "/api/snapshot" });
-    const fixedBug = snapshotAfterFix.json().bugs.find((item: { id: string }) => item.id === bug.id);
+    const closedBug = snapshotAfterFix.json().bugs.find((item: { id: string }) => item.id === bug.id);
     const bugTestRuns = snapshotAfterFix
       .json()
       .testRuns.filter((test: { prdId: string }) => test.prdId === bug.prdId);
@@ -1151,11 +1151,12 @@ dev:
       .json()
       .auditEvents.filter((event: { prdId?: string }) => event.prdId === bug.prdId)
       .map((event: { action: string }) => event.action);
-    expect(fixedBug.status).toBe("fixed");
+    expect(closedBug.status).toBe("closed");
     expect(bugTestRuns).toHaveLength(2);
     expect(bugTestRuns.every((test: { status: string }) => test.status === "passed")).toBe(true);
     expect(bugAuditActions).toContain("bug.reproduced");
-    expect(bugAuditActions).toContain("bug.fixed");
+    expect(bugAuditActions).toContain("bug.verifying");
+    expect(bugAuditActions).toContain("bug.closed");
 
     await app.close();
   });

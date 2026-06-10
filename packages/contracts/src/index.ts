@@ -42,6 +42,15 @@ export const failureTypes = [
   "budget_exhausted",
   "environment_failed"
 ] as const satisfies readonly FailureType[];
+export const bugStatuses = [
+  "reported",
+  "needs_repro",
+  "reproduced",
+  "unreproducible",
+  "fixing",
+  "verifying",
+  "closed"
+] as const;
 
 export const requirementInputSchema = z.object({
   rawInput: z.string().trim().min(3),
@@ -950,7 +959,7 @@ export const openApiSchemas = {
     expectedBehavior: { type: "string" },
     actualBehavior: { type: "string" },
     severity: enumSchema(["low", "medium", "high", "critical"]),
-    status: enumSchema(["reported", "confirmed", "fixing", "fixed", "rejected"]),
+    status: enumSchema(bugStatuses),
     reporter: { type: "string" },
     requirementId: id,
     prdId: id,

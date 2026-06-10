@@ -10,6 +10,7 @@ import {
   type AuditEvent,
   type BugReport,
   type BugSeverity,
+  type BugStatus,
   type FailureType,
   type PatchPilotSnapshot,
   type PullRequestRecord,
@@ -460,8 +461,8 @@ export class PatchPilotStore {
       const bug = workItem.sourceBugId
         ? this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId)
         : undefined;
-      if (bug && bug.status === "reported") {
-        bug.status = "confirmed";
+      if (bug && workItem.role === "test" && bug.status === "reported") {
+        bug.status = "needs_repro";
         bug.updatedAt = now;
       }
 
@@ -598,7 +599,7 @@ export class PatchPilotStore {
       if (!needsBudgetApproval && workItem.sourceBugId) {
         const bug = this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId);
         if (bug) {
-          bug.status = workItem.role === "test" ? "confirmed" : "fixing";
+          bug.status = workItem.role === "test" ? "needs_repro" : "fixing";
           bug.updatedAt = now;
         }
       }
@@ -1150,7 +1151,7 @@ export class PatchPilotStore {
     if (workItem.sourceBugId) {
       const bug = this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId);
       if (bug) {
-        bug.status = workItem.role === "test" ? "confirmed" : "fixing";
+        bug.status = workItem.role === "test" ? "needs_repro" : "fixing";
         bug.updatedAt = now;
       }
     }
@@ -1407,6 +1408,12 @@ export class PatchPilotStore {
     this.snapshot.approvals = this.snapshot.approvals.map((item) => ({
       ...item,
       status: item.status || "pending",
+      createdAt: item.createdAt || now,
+      updatedAt: item.updatedAt || item.createdAt || now
+    }));
+    this.snapshot.bugs = this.snapshot.bugs.map((item) => ({
+      ...item,
+      status: normalizeBugStatus(item.status),
       createdAt: item.createdAt || now,
       updatedAt: item.updatedAt || item.createdAt || now
     }));
@@ -2009,7 +2016,7 @@ export class PatchPilotStore {
     if (!bug) return;
     const run = this.latestRunForWorkItem(workItem.id);
     if (workItem.role === "test") {
-      bug.status = "confirmed";
+      bug.status = "reproduced";
       bug.updatedAt = now;
       this.ensureBugFixWorkItem(bug, workItem, now);
       this.addAuditEvent({
@@ -2026,14 +2033,28 @@ export class PatchPilotStore {
       });
       return;
     }
-    bug.status = "fixed";
+    bug.status = "verifying";
     bug.updatedAt = now;
     this.addAuditEvent({
       actor: "backend_agent",
-      action: "bug.fixed",
+      action: "bug.verifying",
       targetType: "bug",
       targetId: bug.id,
-      message: "开发 agent 已完成 bug 修复并通过回归检查。",
+      message: "开发 agent 已完成 bug 修复，正在根据回归证据关闭 Defect。",
+      requirementId: bug.requirementId,
+      prdId: bug.prdId,
+      workItemId: workItem.id,
+      runId: run?.id,
+      createdAt: now
+    });
+    bug.status = "closed";
+    bug.updatedAt = now;
+    this.addAuditEvent({
+      actor: "test_runner",
+      action: "bug.closed",
+      targetType: "bug",
+      targetId: bug.id,
+      message: "回归测试证据通过，Defect 已关闭。",
       requirementId: bug.requirementId,
       prdId: bug.prdId,
       workItemId: workItem.id,
@@ -2180,6 +2201,18 @@ function severityForFailure(failureType: FailureType): BugSeverity {
   if (failureType === "environment_failed") return "medium";
   if (failureType === "transient") return "low";
   return "medium";
+}
+
+function normalizeBugStatus(status: string): BugStatus {
+  const legacyStatusMap: Record<string, BugStatus> = {
+    confirmed: "reproduced",
+    fixed: "closed",
+    rejected: "unreproducible"
+  };
+  if (legacyStatusMap[status]) return legacyStatusMap[status];
+  const statuses = ["reported", "needs_repro", "reproduced", "unreproducible", "fixing", "verifying", "closed"];
+  if (statuses.includes(status)) return status as BugStatus;
+  return "reported";
 }
 
 export class DomainError extends Error {

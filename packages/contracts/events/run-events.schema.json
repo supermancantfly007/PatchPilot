@@ -1918,10 +1918,12 @@
             "type": "string",
             "enum": [
               "reported",
-              "confirmed",
+              "needs_repro",
+              "reproduced",
+              "unreproducible",
               "fixing",
-              "fixed",
-              "rejected"
+              "verifying",
+              "closed"
             ]
           },
           "reporter": {

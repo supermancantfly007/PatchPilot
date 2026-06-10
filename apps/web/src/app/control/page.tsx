@@ -62,16 +62,18 @@ const testCaseStatusLabels: Record<TestCase["status"], string> = {
 
 const bugStatusLabels: Record<BugReport["status"], string> = {
   reported: "已报告",
-  confirmed: "已复现",
+  needs_repro: "待复现",
+  reproduced: "已复现",
+  unreproducible: "无法复现",
   fixing: "修复中",
-  fixed: "已修复",
-  rejected: "已拒绝"
+  verifying: "验证中",
+  closed: "已关闭"
 };
 
 function statusTone(status: Requirement["status"] | WorkItem["status"] | AgentRun["status"] | TestCase["status"] | BugReport["status"]) {
-  if (["approved", "done", "succeeded", "passed", "fixed"].includes(status)) return "green";
-  if (["rejected", "blocked", "failed", "cancelled"].includes(status)) return "red";
-  if (["prd_draft", "review", "needs_approval", "ready", "reported", "confirmed", "fixing"].includes(status)) return "amber";
+  if (["approved", "done", "succeeded", "passed", "closed"].includes(status)) return "green";
+  if (["rejected", "blocked", "failed", "cancelled", "unreproducible"].includes(status)) return "red";
+  if (["prd_draft", "review", "needs_approval", "ready", "reported", "needs_repro", "reproduced", "fixing", "verifying"].includes(status)) return "amber";
   return "blue";
 }
 
@@ -131,7 +133,7 @@ export default function ControlPage() {
   const auditEvents = snapshot?.auditEvents ?? [];
   const pullRequests = snapshot?.pullRequests ?? [];
   const openWorkItems = workItems.filter((item) => !["done", "cancelled"].includes(item.status));
-  const openBugs = bugs.filter((bug) => !["fixed", "rejected"].includes(bug.status));
+  const openBugs = bugs.filter((bug) => !["closed", "unreproducible"].includes(bug.status));
   const failedRuns = runs.filter((run) => run.status === "failed" || run.status === "cancelled");
   const recentRequirements = sortByDate(requirements, (item) => item.updatedAt).slice(0, 8);
   const visibleWorkItems = sortByDate(workItems, (item) => item.updatedAt ?? item.createdAt).slice(0, 10);

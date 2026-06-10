@@ -49,7 +49,14 @@ export type AgentStatus = "idle" | "busy" | "offline";
 
 export type BugSeverity = "low" | "medium" | "high" | "critical";
 
-export type BugStatus = "reported" | "confirmed" | "fixing" | "fixed" | "rejected";
+export type BugStatus =
+  | "reported"
+  | "needs_repro"
+  | "reproduced"
+  | "unreproducible"
+  | "fixing"
+  | "verifying"
+  | "closed";
 
 export type FailureType =
   | "transient"
