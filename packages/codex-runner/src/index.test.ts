@@ -7,9 +7,47 @@ describe("codex-runner", () => {
       type: "agent_message",
       session_id: "session-123",
       message: "implemented the change"
-    }))).toEqual({
+    }))).toMatchObject({
       message: "Codex：implemented the change",
-      sessionId: "session-123"
+      sessionId: "session-123",
+      agentMessage: "implemented the change"
+    });
+  });
+
+  it("parses reasoning summaries from nested Codex items", () => {
+    expect(parseCodexEvent(JSON.stringify({
+      type: "item.completed",
+      item: {
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: "inspected the runner capture path" }]
+      }
+    }))).toMatchObject({
+      message: "Codex：inspected the runner capture path",
+      reasoningSummary: "inspected the runner capture path"
+    });
+  });
+
+  it("parses command execution tool calls from JSONL events", () => {
+    expect(parseCodexEvent(JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "tool-call-1",
+        type: "command_execution",
+        command: "pnpm test",
+        status: "completed",
+        exit_code: 0,
+        duration_ms: 423
+      }
+    }))).toMatchObject({
+      message: "Codex：执行命令：pnpm test",
+      toolCall: {
+        id: "tool-call-1",
+        name: "exec_command",
+        command: "pnpm test",
+        status: "completed",
+        exitCode: 0,
+        durationMs: 423
+      }
     });
   });
 

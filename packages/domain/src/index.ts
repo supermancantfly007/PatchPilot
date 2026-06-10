@@ -272,6 +272,11 @@ export interface AgentRunResult {
   tests: TestRun[];
   reviewerSummary: string;
   runner: AgentRunnerKind;
+  agentMessages?: string[];
+  reasoningSummaries?: string[];
+  toolCalls?: AgentRunToolCall[];
+  diffSummary?: AgentRunDiffSummary;
+  testOutputSummary?: string;
   workspacePath?: string;
   branchName?: string;
   baseBranch?: string;
@@ -279,6 +284,30 @@ export interface AgentRunResult {
   headCommit?: string;
   codexSessionId?: string;
   artifactIds?: string[];
+}
+
+export type AgentRunToolCallStatus = "started" | "completed" | "failed" | "unknown";
+
+export interface AgentRunToolCall {
+  id: string;
+  name: string;
+  status: AgentRunToolCallStatus;
+  summary: string;
+  command?: string;
+  exitCode?: number | null;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+}
+
+export interface AgentRunDiffSummary {
+  changedFileCount: number;
+  changedFiles: string[];
+  hasChanges: boolean;
+  branchName?: string;
+  baseBranch?: string;
+  baseCommit?: string;
+  headCommit?: string;
 }
 
 export interface RuntimeConfig {

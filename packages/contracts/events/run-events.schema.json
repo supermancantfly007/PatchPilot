@@ -1289,6 +1289,94 @@
           }
         }
       },
+      "AgentRunToolCall": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "name",
+          "status",
+          "summary"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "started",
+              "completed",
+              "failed",
+              "unknown"
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "exitCode": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "durationMs": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      },
+      "AgentRunDiffSummary": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "changedFileCount",
+          "changedFiles",
+          "hasChanges"
+        ],
+        "properties": {
+          "changedFileCount": {
+            "type": "number",
+            "minimum": 0
+          },
+          "changedFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "hasChanges": {
+            "type": "boolean"
+          },
+          "branchName": {
+            "type": "string"
+          },
+          "baseBranch": {
+            "type": "string"
+          },
+          "baseCommit": {
+            "type": "string"
+          },
+          "headCommit": {
+            "type": "string"
+          }
+        }
+      },
       "AgentRunResult": {
         "type": "object",
         "additionalProperties": true,
@@ -1337,6 +1425,30 @@
               "simulated",
               "codex"
             ]
+          },
+          "agentMessages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reasoningSummaries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "toolCalls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentRunToolCall"
+            }
+          },
+          "diffSummary": {
+            "$ref": "#/components/schemas/AgentRunDiffSummary"
+          },
+          "testOutputSummary": {
+            "type": "string"
           },
           "workspacePath": {
             "type": "string"

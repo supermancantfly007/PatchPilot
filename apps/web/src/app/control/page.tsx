@@ -329,20 +329,27 @@ export default function ControlPage() {
             </div>
             <div className="dashboard-list compact-list-panel">
               {visibleRuns.length ? (
-                visibleRuns.map((run) => (
-                  <Link className="dashboard-row" href={`/runs/${run.id}`} key={run.id}>
-                    <span>
-                      <strong>
-                        <Activity size={16} />
-                        {run.id.replace(/^run_/, "").slice(0, 8)}
-                      </strong>
-                      <small>
-                        {run.runner} · {run.currentStep} · {formatShortDate(run.startedAt)}
-                      </small>
-                    </span>
-                    <span className={`status-pill ${statusTone(run.status)}`}>{runStatusLabels[run.status]}</span>
-                  </Link>
-                ))
+                visibleRuns.map((run) => {
+                  const changedFileCount = run.result?.diffSummary?.changedFileCount ?? run.result?.changedFiles.length ?? 0;
+                  const toolCallCount = run.result?.toolCalls?.length ?? 0;
+                  return (
+                    <Link className="dashboard-row" href={`/runs/${run.id}`} key={run.id}>
+                      <span>
+                        <strong>
+                          <Activity size={16} />
+                          {run.id.replace(/^run_/, "").slice(0, 8)}
+                        </strong>
+                        <small>
+                          {run.runner} · {run.currentStep} · {formatShortDate(run.startedAt)}
+                        </small>
+                        <small>
+                          {changedFileCount} 个变更文件 · {toolCallCount} 个工具调用
+                        </small>
+                      </span>
+                      <span className={`status-pill ${statusTone(run.status)}`}>{runStatusLabels[run.status]}</span>
+                    </Link>
+                  );
+                })
               ) : (
                 <p className="empty-copy">工作项开始执行后会产生 Agent Run 记录。</p>
               )}
