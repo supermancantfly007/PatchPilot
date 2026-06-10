@@ -7,6 +7,7 @@ import { GitWorkspaceManager, type WorkspaceManager } from "@patchpilot/workspac
 import type {
   AgentRunEvent,
   AgentRunResult,
+  FailureType,
   Prd,
   Requirement,
   TestRun,
@@ -52,6 +53,17 @@ export interface CodexRunner {
   isAvailable(): Promise<boolean>;
   isGitWorkspaceAvailable(cwd?: string): Promise<boolean>;
   run(context: CodexRunContext, emit: EmitCodexRunnerEvent, config: CodexRunnerConfig): Promise<AgentRunResult>;
+}
+
+export class CodexRunError extends Error {
+  constructor(
+    message: string,
+    public readonly failureType: FailureType,
+    public readonly testRun?: TestRun
+  ) {
+    super(message);
+    this.name = "CodexRunError";
+  }
 }
 
 export class LocalCodexRunner implements CodexRunner {
@@ -117,7 +129,7 @@ export class LocalCodexRunner implements CodexRunner {
     }
 
     if (testRun.status !== "passed") {
-      throw new Error(`测试未通过：${testRun.summary}`);
+      throw new CodexRunError(`测试未通过：${testRun.summary}`, "test_failed", testRun);
     }
 
     await emit({
@@ -243,11 +255,12 @@ async function runCodexExec(
   await pendingEmit;
 
   if (exitCode !== 0) {
-    throw new Error(summarizeCodexExecFailure({
+    const message = summarizeCodexExecFailure({
       stderr,
       stdoutRemainder: stdoutBuffer,
       exitCode
-    }));
+    });
+    throw new CodexRunError(message, classifyFailureMessage(message));
   }
 
   return { lastMessagePath, sessionId };
@@ -315,6 +328,22 @@ export function summarizeCodexExecFailure(input: {
   exitCode: number | null;
 }) {
   return `Codex 执行失败：${tail(input.stderr || input.stdoutRemainder || `exit ${input.exitCode}`, 1600)}`;
+}
+
+export function classifyFailureMessage(message: string): FailureType {
+  const normalized = message.toLowerCase();
+  if (/budget|quota|cost|余额|预算|额度/u.test(normalized)) return "budget_exhausted";
+  if (/policy|denied|approval|sandbox|permission|not allowed|unauthorized|拒绝|权限|策略/u.test(normalized)) {
+    return "policy_denied";
+  }
+  if (/test|assert|expect|failed tests?|测试|断言/u.test(normalized)) return "test_failed";
+  if (/timeout|timed out|econnreset|etimedout|rate limit|429|network|temporar|超时|网络|限流/u.test(normalized)) {
+    return "transient";
+  }
+  if (/enoent|eacces|command not found|not found|module not found|workspace|worktree|git|环境/u.test(normalized)) {
+    return "environment_failed";
+  }
+  return "deterministic";
 }
 
 function stringValue(value: unknown) {

@@ -3,9 +3,9 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { CodexRunner } from "@patchpilot/codex-runner";
+import { CodexRunError, type CodexRunner } from "@patchpilot/codex-runner";
 import { contractVersion } from "@patchpilot/contracts";
-import type { AgentRun } from "@patchpilot/domain";
+import type { AgentRun, TestRun } from "@patchpilot/domain";
 import { buildServer } from "./server";
 import { PatchPilotStore } from "./store";
 
@@ -689,6 +689,104 @@ dev:
     expect(pullRequest.bodyMarkdown).toContain("## Git");
     expect(pullRequest.bodyMarkdown).toContain("Branch: patchpilot/wi_fake-codex-runner");
     expect(pullRequest.bodyMarkdown).toContain("Commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    await app.close();
+  });
+
+  it("classifies failed codex test runs and creates defect evidence", async () => {
+    const failedTestRun: TestRun = {
+      id: "test_fake_codex_failed",
+      status: "failed",
+      command: "pnpm test -- --run fake failure",
+      summary: "1 fake assertion failed",
+      durationMs: 91,
+      commit: "cccccccccccccccccccccccccccccccccccccccc",
+      branch: "patchpilot/fake-failing-branch",
+      failureSummary: "expected fake result to pass",
+      exitCode: 1,
+      retryCount: 0,
+      attempt: 1,
+      maxAttempts: 1,
+      flakySignal: false,
+      runner: "patchpilot-test-runner",
+      environmentImage: "local",
+      workspacePath: "fake://failed-workspace",
+      logArtifactId: "artifact_test_log_fake_failure",
+      artifactIds: ["artifact_test_log_fake_failure"]
+    };
+    const fakeCodexRunner: CodexRunner = {
+      isAvailable: async () => true,
+      isGitWorkspaceAvailable: async () => true,
+      run: async (_context, emit) => {
+        await emit({
+          step: "testing",
+          type: "test.failed",
+          message: "Fake Codex runner test failed"
+        });
+        throw new CodexRunError("测试未通过：1 fake assertion failed", "test_failed", failedTestRun);
+      }
+    };
+    const app = await buildServer({ store: new PatchPilotStore({ codexRunner: fakeCodexRunner }) });
+    const workItem = await createApprovedWorkItem(app, "验证失败分类和 defect 沉淀");
+
+    const start = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/start`,
+      payload: { runner: "codex" }
+    });
+    expect(start.statusCode).toBe(201);
+
+    const failedRun = await pollRun(app, start.json().id);
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      failureType: "test_failed",
+      failureSummary: "测试未通过：1 fake assertion failed"
+    });
+
+    const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const testRun = snapshot.json().testRuns.find((test: { id: string }) => test.id === failedTestRun.id);
+    const defect = snapshot.json().bugs.find((bug: { sourceRunId?: string }) => bug.sourceRunId === failedRun.id);
+    const testCase = snapshot
+      .json()
+      .testCases.find((candidate: { workItemId: string }) => candidate.workItemId === workItem.id);
+    const workspace = snapshot
+      .json()
+      .workspaceRuns.find((candidate: { runId: string }) => candidate.runId === failedRun.id);
+    const auditActions = snapshot.json().auditEvents.map((event: { action: string }) => event.action);
+
+    expect(testRun).toMatchObject({
+      status: "failed",
+      runId: failedRun.id,
+      workItemId: workItem.id,
+      commit: "cccccccccccccccccccccccccccccccccccccccc",
+      branch: "patchpilot/fake-failing-branch",
+      testCaseId: testCase.id
+    });
+    expect(testCase).toMatchObject({
+      status: "failed",
+      lastRunId: failedRun.id,
+      lastTestRunId: failedTestRun.id,
+      flaky: false
+    });
+    expect(workspace).toMatchObject({
+      status: "failed",
+      path: "fake://failed-workspace"
+    });
+    expect(defect).toMatchObject({
+      status: "reported",
+      reporter: "system",
+      requirementId: failedRun.requirementId,
+      prdId: failedRun.prdId,
+      workItemId: workItem.id,
+      sourceRunId: failedRun.id,
+      sourceTestRunId: failedTestRun.id,
+      sourceFailureType: "test_failed",
+      sourceCommit: "cccccccccccccccccccccccccccccccccccccccc",
+      sourceBranch: "patchpilot/fake-failing-branch"
+    });
+    expect(auditActions).toEqual(
+      expect.arrayContaining(["test_run.failed", "defect.created", "agent_run.failed"])
+    );
+
     await app.close();
   });
 

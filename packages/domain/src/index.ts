@@ -51,6 +51,14 @@ export type BugSeverity = "low" | "medium" | "high" | "critical";
 
 export type BugStatus = "reported" | "confirmed" | "fixing" | "fixed" | "rejected";
 
+export type FailureType =
+  | "transient"
+  | "deterministic"
+  | "test_failed"
+  | "policy_denied"
+  | "budget_exhausted"
+  | "environment_failed";
+
 export type InterfaceContractKind = "http" | "event" | "schema";
 
 export type InterfaceContractStatus = "draft" | "approved" | "breaking_change_pending" | "deprecated";
@@ -193,6 +201,11 @@ export interface BugReport {
   requirementId: string;
   prdId: string;
   workItemId: string;
+  sourceRunId?: string;
+  sourceTestRunId?: string;
+  sourceFailureType?: FailureType;
+  sourceCommit?: string;
+  sourceBranch?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -208,6 +221,7 @@ export interface AgentRun {
   timeline: TimelineStep[];
   events: AgentRunEvent[];
   result?: AgentRunResult;
+  failureType?: FailureType;
   failureSummary?: string;
   budgetUsd?: number;
   budgetSoftThresholdUsd?: number;

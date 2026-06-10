@@ -31,6 +31,7 @@ describe("run event schema document", () => {
           ],
           optionalFields: [
             "result",
+            "failureType",
             "failureSummary",
             "budgetUsd",
             "budgetSoftThresholdUsd",

@@ -10,6 +10,7 @@ import {
   type AuditEvent,
   type BugReport,
   type BugSeverity,
+  type FailureType,
   type PatchPilotSnapshot,
   type PullRequestRecord,
   type Requirement,
@@ -37,7 +38,13 @@ import {
   type RuntimeConfig
 } from "@patchpilot/domain";
 import { createInterfaceContracts } from "@patchpilot/contracts";
-import { LocalCodexRunner, type CodexRunner, type CodexRunnerEvent } from "@patchpilot/codex-runner";
+import {
+  CodexRunError,
+  LocalCodexRunner,
+  classifyFailureMessage,
+  type CodexRunner,
+  type CodexRunnerEvent
+} from "@patchpilot/codex-runner";
 import { readPatchPilotConfig } from "./config";
 
 const defaultDataFile = join(process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"), "patchpilot-store.json");
@@ -48,6 +55,14 @@ const budgetApprovalTtlMs = 24 * 60 * 60 * 1000;
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const simulationDelay = (ms: number) =>
   Math.max(0, Math.round(ms * readPatchPilotConfig().dev.simulationDelayFactor));
+const failureTypes = new Set<FailureType>([
+  "transient",
+  "deterministic",
+  "test_failed",
+  "policy_denied",
+  "budget_exhausted",
+  "environment_failed"
+]);
 
 type BudgetScopeType = "agent_run" | "work_item" | "prd";
 
@@ -63,6 +78,12 @@ interface BudgetCheckResult {
   effectiveSoftThresholdUsd?: number;
   hardExceeded: BudgetScopeCheck[];
   softExceeded: BudgetScopeCheck[];
+}
+
+interface RunFailureDetails {
+  failureType: FailureType;
+  failureSummary: string;
+  testRun?: TestRun;
 }
 
 export class PatchPilotStore {
@@ -819,6 +840,7 @@ export class PatchPilotStore {
   }
 
   private async simulateRun(runId: string) {
+    const simulatedFailureType = parseFailureType(process.env.PATCHPILOT_SIMULATED_FAILURE_TYPE);
     const steps: Array<{
       step: AgentRun["currentStep"];
       type: AgentRunEvent["type"];
@@ -829,8 +851,17 @@ export class PatchPilotStore {
       { step: "developing", type: "workspace.created", message: "已创建隔离 worktree，并开始模拟代码变更", wait: 1100 },
       { step: "developing", type: "agent.progress", message: "Agent 已完成主要实现并整理变更摘要", wait: 1100 },
       { step: "testing", type: "test.started", message: "正在运行目标测试和质量门检查", wait: 1000 },
-      { step: "testing", type: "test.passed", message: "目标测试通过，未发现高风险问题", wait: 900 },
-      { step: "confirming", type: "review.completed", message: "Reviewer agent 已完成审查摘要，等待你确认", wait: 800 }
+      ...(simulatedFailureType
+        ? []
+        : [
+            { step: "testing", type: "test.passed", message: "目标测试通过，未发现高风险问题", wait: 900 },
+            { step: "confirming", type: "review.completed", message: "Reviewer agent 已完成审查摘要，等待你确认", wait: 800 }
+          ] satisfies Array<{
+            step: AgentRun["currentStep"];
+            type: AgentRunEvent["type"];
+            message: string;
+            wait: number;
+          }>)
     ];
 
     try {
@@ -848,6 +879,16 @@ export class PatchPilotStore {
       await this.load();
       const run = this.findRun(runId);
       const workItem = this.findWorkItem(run.workItemId);
+      if (simulatedFailureType) {
+        const testRun = simulatedFailureType === "test_failed"
+          ? this.makeSimulatedFailedTestRun(run, workItem)
+          : undefined;
+        throw createRunFailureError(
+          `模拟 ${failureTypeLabel(simulatedFailureType)} 失败${testRun ? `：${testRun.summary}` : ""}`,
+          simulatedFailureType,
+          testRun
+        );
+      }
       const tests: TestRun[] = [this.makeSimulatedTestRun(workItem)];
       run.status = "succeeded";
       run.timeline = completeTimeline(run.timeline);
@@ -880,29 +921,36 @@ export class PatchPilotStore {
     const run = this.snapshot.agentRuns.find((item) => item.id === runId);
     if (!run) return;
     const workItem = this.snapshot.workItems.find((item) => item.id === run.workItemId);
+    const failure = extractRunFailureDetails(error);
+    const endedAt = new Date().toISOString();
     run.status = "failed";
-    run.failureSummary = error instanceof Error ? error.message : String(error);
+    run.failureType = failure.failureType;
+    run.failureSummary = failure.failureSummary;
     run.timeline = run.timeline.map((step) =>
       step.key === run.currentStep ? { ...step, status: "failed" } : step
     );
-    run.events.push(this.makeEvent("run.failed", "执行失败，已生成失败摘要"));
-    run.endedAt = new Date().toISOString();
+    run.events.push(this.makeEvent("run.failed", `执行失败，已分类为 ${failureTypeLabel(failure.failureType)}`));
+    run.endedAt = endedAt;
     if (workItem) workItem.status = "blocked";
     if (workItem) {
-      workItem.updatedAt = run.endedAt;
-      this.markWorkspaceRun(run.id, "failed", run.endedAt);
+      workItem.updatedAt = endedAt;
+      const failedTests = failure.testRun
+        ? this.recordRunTestEvidence(run, workItem, [failure.testRun], endedAt, { workspaceStatus: "failed" })
+        : [];
+      if (failedTests.length === 0) this.markWorkspaceRun(run.id, "failed", endedAt);
+      this.recordFailureDefect(run, workItem, failure, failedTests[0], endedAt);
       this.addAuditEvent({
         actor: "runner",
         action: "agent_run.failed",
         targetType: "agent_run",
         targetId: run.id,
-        message: run.failureSummary || "Agent run 执行失败。",
+        message: `${failureTypeLabel(failure.failureType)}：${run.failureSummary || "Agent run 执行失败。"}`,
         requirementId: run.requirementId,
         prdId: run.prdId,
         workItemId: run.workItemId,
         runId: run.id
       });
-      this.completeAgentAssignment(workItem.id, run.endedAt);
+      this.completeAgentAssignment(workItem.id, endedAt);
     }
     await this.save();
   }
@@ -1528,12 +1576,18 @@ export class PatchPilotStore {
     };
   }
 
-  private recordCompletedRunEvidence(run: AgentRun, workItem: WorkItem, tests: TestRun[], endedAt: string) {
+  private recordRunTestEvidence(
+    run: AgentRun,
+    workItem: WorkItem,
+    tests: TestRun[],
+    endedAt: string,
+    options: { workspaceStatus: WorkspaceRun["status"]; workspacePath?: string }
+  ) {
     const prd = this.findPrd(run.prdId);
     const testCase = this.ensureTestCasesForWorkItems(prd, [workItem], endedAt)[0];
-    const normalizedTests = tests.map((test) => {
+    const normalizedTests: TestRun[] = tests.map((test) => {
       const logArtifactId = test.logArtifactId || `artifact_test_log_${test.id}`;
-      const workspacePath = test.workspacePath || run.result?.workspacePath || `simulated://${run.id}`;
+      const workspacePath = test.workspacePath || options.workspacePath || run.result?.workspacePath || `simulated://${run.id}`;
       return {
         ...test,
         testCaseId: test.testCaseId || testCase?.id,
@@ -1576,7 +1630,12 @@ export class PatchPilotStore {
       ...normalizedTests,
       ...this.snapshot.testRuns.filter((test) => !testIds.has(test.id))
     ];
-    this.markWorkspaceRun(run.id, "archived", endedAt, run.result?.workspacePath);
+    this.markWorkspaceRun(
+      run.id,
+      options.workspaceStatus,
+      endedAt,
+      options.workspacePath || run.result?.workspacePath || normalizedTests[0]?.workspacePath
+    );
 
     for (const test of normalizedTests) {
       this.addAuditEvent({
@@ -1592,6 +1651,12 @@ export class PatchPilotStore {
         createdAt: test.endedAt || endedAt
       });
     }
+
+    return normalizedTests;
+  }
+
+  private recordCompletedRunEvidence(run: AgentRun, workItem: WorkItem, tests: TestRun[], endedAt: string) {
+    this.recordRunTestEvidence(run, workItem, tests, endedAt, { workspaceStatus: "archived" });
 
     const pullRequest = this.recordPullRequest(run, workItem, endedAt);
     this.addAuditEvent({
@@ -1633,6 +1698,67 @@ export class PatchPilotStore {
       runId: run.id,
       createdAt: endedAt
     });
+  }
+
+  private recordFailureDefect(
+    run: AgentRun,
+    workItem: WorkItem,
+    failure: RunFailureDetails,
+    testRun: TestRun | undefined,
+    now: string
+  ) {
+    if (!testRun) return undefined;
+    const existing = this.snapshot.bugs.find(
+      (item) => item.sourceRunId === run.id && item.sourceTestRunId === testRun.id
+    );
+    if (existing) return existing;
+
+    const defect: BugReport = {
+      id: `bug_${randomUUID()}`,
+      title: `失败沉淀：${workItem.title}`,
+      description: [
+        `AgentRun ${run.id} 执行失败，失败分类为 ${failure.failureType}。`,
+        `失败摘要：${failure.failureSummary}`
+      ].join("\n"),
+      reproductionSteps: [
+        `WorkItem: ${workItem.id}`,
+        `Run: ${run.id}`,
+        `TestRun: ${testRun.id}`,
+        `Command: ${testRun.command}`,
+        `Commit: ${testRun.commit || "not recorded"}`,
+        `Branch: ${testRun.branch || "not recorded"}`
+      ].join("\n"),
+      expectedBehavior: "工作项执行完成后，目标测试应通过并进入 review/验收。",
+      actualBehavior: testRun.failureSummary || testRun.summary || failure.failureSummary,
+      severity: severityForFailure(failure.failureType),
+      status: "reported",
+      reporter: "system",
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      sourceRunId: run.id,
+      sourceTestRunId: testRun.id,
+      sourceFailureType: failure.failureType,
+      ...(testRun.commit ? { sourceCommit: testRun.commit } : {}),
+      ...(testRun.branch ? { sourceBranch: testRun.branch } : {}),
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.snapshot.bugs.unshift(defect);
+    this.addAuditEvent({
+      actor: "failure-classifier",
+      action: "defect.created",
+      targetType: "bug",
+      targetId: defect.id,
+      message: `已从失败 TestRun ${testRun.id} 沉淀 Defect，分类为 ${failure.failureType}。`,
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      runId: run.id,
+      createdAt: now
+    });
+    return defect;
   }
 
   private recordPullRequest(run: AgentRun, workItem: WorkItem, now: string): PullRequestRecord {
@@ -1800,6 +1926,33 @@ export class PatchPilotStore {
       .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0];
   }
 
+  private makeSimulatedFailedTestRun(run: AgentRun, workItem: WorkItem): TestRun {
+    const branch = `simulated/${slugSegment(workItem.id)}`;
+    return {
+      id: `test_${randomUUID()}`,
+      runId: run.id,
+      prdId: run.prdId,
+      workItemId: workItem.id,
+      status: "failed",
+      command: "npm test --workspaces --if-present",
+      summary: "模拟测试失败：断言发现交付结果不满足验收标准",
+      durationMs: 760,
+      commit: `simulated-${run.id.replace(/^run_/, "").slice(0, 12)}`,
+      branch,
+      failureSummary: "expected delivery evidence to satisfy acceptance criteria",
+      exitCode: 1,
+      retryCount: 0,
+      attempt: 1,
+      maxAttempts: 1,
+      flakySignal: false,
+      runner: "simulated-test-runner",
+      environmentImage: "simulated",
+      workspacePath: `simulated://${run.id}`,
+      logArtifactId: `artifact_test_log_${run.id}`,
+      artifactIds: [`artifact_test_log_${run.id}`]
+    };
+  }
+
   private makeSimulatedTestRun(workItem: WorkItem): TestRun {
     if (workItem.sourceBugId && workItem.role === "test") {
       return {
@@ -1948,6 +2101,85 @@ function scopeLabel(scope: BudgetScopeType) {
   if (scope === "prd") return "PRD";
   if (scope === "work_item") return "WorkItem";
   return "AgentRun";
+}
+
+function extractRunFailureDetails(error: unknown): RunFailureDetails {
+  const failureSummary = error instanceof Error ? error.message : String(error);
+  const record = asRecord(error);
+  const rawFailureType =
+    error instanceof CodexRunError
+      ? error.failureType
+      : record && isFailureType(record.failureType)
+        ? record.failureType
+        : undefined;
+  const testRun = error instanceof CodexRunError
+    ? error.testRun
+    : record
+      ? asTestRun(record.testRun)
+      : undefined;
+  const failureType = rawFailureType || (testRun?.status === "failed" ? "test_failed" : classifyFailureMessage(failureSummary));
+
+  return {
+    failureType,
+    failureSummary,
+    ...(testRun ? { testRun } : {})
+  };
+}
+
+function createRunFailureError(message: string, failureType: FailureType, testRun?: TestRun) {
+  const error = new Error(message) as Error & { failureType: FailureType; testRun?: TestRun };
+  error.failureType = failureType;
+  if (testRun) error.testRun = testRun;
+  return error;
+}
+
+function parseFailureType(value: string | undefined) {
+  const normalized = value?.trim();
+  return isFailureType(normalized) ? normalized : undefined;
+}
+
+function isFailureType(value: unknown): value is FailureType {
+  return typeof value === "string" && failureTypes.has(value as FailureType);
+}
+
+function asTestRun(value: unknown): TestRun | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  if (
+    typeof record.id !== "string" ||
+    typeof record.status !== "string" ||
+    typeof record.command !== "string" ||
+    typeof record.summary !== "string" ||
+    typeof record.durationMs !== "number"
+  ) {
+    return undefined;
+  }
+  return record as unknown as TestRun;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function failureTypeLabel(failureType: FailureType) {
+  const labels: Record<FailureType, string> = {
+    transient: "暂态失败",
+    deterministic: "确定性失败",
+    test_failed: "测试失败",
+    policy_denied: "策略拒绝",
+    budget_exhausted: "预算耗尽",
+    environment_failed: "环境失败"
+  };
+  return labels[failureType];
+}
+
+function severityForFailure(failureType: FailureType): BugSeverity {
+  if (failureType === "budget_exhausted" || failureType === "policy_denied") return "high";
+  if (failureType === "environment_failed") return "medium";
+  if (failureType === "transient") return "low";
+  return "medium";
 }
 
 export class DomainError extends Error {

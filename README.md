@@ -113,6 +113,7 @@ Compose provides Postgres, Redis, and MinIO with health checks. It does not cont
 - WorkspaceRun, TestCase, TestRun, local PullRequest, ReviewRecord, AuditEvent evidence records plus changed file list, risk summary, reviewer summary, and final acceptance
 - Rejected acceptance requeues the same work items as a new rework round, preserves the rejection reason, and creates fresh agent runs on the next team start
 - Bug reports that first go to the test agent for reproduction, then create a backend fix task for the developer agent
+- Failed agent runs are classified as transient, deterministic, test_failed, policy_denied, budget_exhausted, or environment_failed; failed TestRun evidence can be stored as a reported Defect linked to the run, work item, test run, and commit
 - JSON-backed local state for fast iteration
 
 ## Runner Modes
@@ -128,6 +129,7 @@ Simulated runner environment:
 ```bash
 PATCHPILOT_RUNNER=simulated
 PATCHPILOT_SIMULATION_DELAY_FACTOR=1
+PATCHPILOT_SIMULATED_FAILURE_TYPE=test_failed # optional, for failure/defect E2E fixtures
 ```
 
 Worker environment:

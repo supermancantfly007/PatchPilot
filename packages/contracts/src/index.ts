@@ -1,6 +1,7 @@
 import type {
   AgentRole,
   AgentRun,
+  FailureType,
   InterfaceContract,
   InterfaceContractStatus,
   PatchPilotSnapshot,
@@ -33,6 +34,14 @@ export const approvalTargetTypes = [
 ] as const;
 
 export const approvalRiskLevels = ["low", "medium", "high", "critical"] as const;
+export const failureTypes = [
+  "transient",
+  "deterministic",
+  "test_failed",
+  "policy_denied",
+  "budget_exhausted",
+  "environment_failed"
+] as const satisfies readonly FailureType[];
 
 export const requirementInputSchema = z.object({
   rawInput: z.string().trim().min(3),
@@ -265,6 +274,7 @@ export const runEventStreamContract = {
     ] as const,
     optionalFields: [
       "result",
+      "failureType",
       "failureSummary",
       "budgetUsd",
       "budgetSoftThresholdUsd",
@@ -567,6 +577,7 @@ const approvalKind = enumSchema(approvalKinds);
 const approvalStatus = enumSchema(["pending", "approved", "denied", "expired"]);
 const approvalTargetType = enumSchema(approvalTargetTypes);
 const approvalRiskLevel = enumSchema(approvalRiskLevels);
+const failureType = enumSchema(failureTypes);
 
 export const openApiSchemas = {
   HealthResponse: objectSchema({
@@ -781,6 +792,7 @@ export const openApiSchemas = {
     timeline: arrayOf(schemaRef("TimelineStep")),
     events: arrayOf(schemaRef("AgentRunEvent")),
     result: schemaRef("AgentRunResult"),
+    failureType,
     failureSummary: { type: "string" },
     budgetUsd: { type: "number", minimum: 0 },
     budgetSoftThresholdUsd: { type: "number", minimum: 0 },
@@ -942,8 +954,26 @@ export const openApiSchemas = {
     reporter: { type: "string" },
     requirementId: id,
     prdId: id,
-    workItemId: id
-  }),
+    workItemId: id,
+    sourceRunId: id,
+    sourceTestRunId: id,
+    sourceFailureType: failureType,
+    sourceCommit: { type: "string" },
+    sourceBranch: { type: "string" }
+  }, [
+    "id",
+    "title",
+    "description",
+    "reproductionSteps",
+    "expectedBehavior",
+    "actualBehavior",
+    "severity",
+    "status",
+    "reporter",
+    "requirementId",
+    "prdId",
+    "workItemId"
+  ]),
   AcceptanceDecision: objectSchema({
     runId: id,
     status: enumSchema(["pending", "accepted", "rejected"]),

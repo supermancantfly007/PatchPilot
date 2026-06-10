@@ -1670,6 +1670,17 @@
           "result": {
             "$ref": "#/components/schemas/AgentRunResult"
           },
+          "failureType": {
+            "type": "string",
+            "enum": [
+              "transient",
+              "deterministic",
+              "test_failed",
+              "policy_denied",
+              "budget_exhausted",
+              "environment_failed"
+            ]
+          },
           "failureSummary": {
             "type": "string"
           },
@@ -2473,6 +2484,31 @@
           "workItemId": {
             "type": "string",
             "minLength": 1
+          },
+          "sourceRunId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourceTestRunId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourceFailureType": {
+            "type": "string",
+            "enum": [
+              "transient",
+              "deterministic",
+              "test_failed",
+              "policy_denied",
+              "budget_exhausted",
+              "environment_failed"
+            ]
+          },
+          "sourceCommit": {
+            "type": "string"
+          },
+          "sourceBranch": {
+            "type": "string"
           }
         }
       },
