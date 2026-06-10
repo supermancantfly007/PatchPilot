@@ -1170,6 +1170,30 @@
               "type": "string"
             }
           },
+          "dependsOn": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "requiredCapabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "budgetUsd": {
+            "type": "number",
+            "minimum": 0
+          },
+          "concurrencyKey": {
+            "type": "string"
+          },
+          "maxConcurrent": {
+            "type": "integer",
+            "minimum": 0
+          },
           "assignedAgentId": {
             "type": "string",
             "minLength": 1
@@ -1344,6 +1368,12 @@
           "currentWorkItemId": {
             "type": "string",
             "minLength": 1
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "lastSeenAt": {
             "type": "string",

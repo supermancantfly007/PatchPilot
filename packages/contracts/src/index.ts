@@ -631,6 +631,11 @@ export const openApiSchemas = {
     nonGoals: arrayOf({ type: "string" }),
     acceptanceCriteria: arrayOf({ type: "string" }),
     testSuggestions: arrayOf({ type: "string" }),
+    dependsOn: arrayOf(id),
+    requiredCapabilities: arrayOf({ type: "string" }),
+    budgetUsd: { type: "number", minimum: 0 },
+    concurrencyKey: { type: "string" },
+    maxConcurrent: { type: "integer", minimum: 0 },
     assignedAgentId: id,
     claimedAt: isoDate,
     claimToken: { type: "string" },
@@ -662,6 +667,7 @@ export const openApiSchemas = {
     role: agentRole,
     status: enumSchema(["idle", "busy", "offline"]),
     currentWorkItemId: id,
+    capabilities: arrayOf({ type: "string" }),
     lastSeenAt: isoDate
   }, ["id", "name", "role", "status", "lastSeenAt"]),
   AgentRun: looseObjectSchema({

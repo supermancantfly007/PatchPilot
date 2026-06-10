@@ -111,6 +111,11 @@ export interface WorkItem {
   nonGoals: string[];
   acceptanceCriteria: string[];
   testSuggestions: string[];
+  dependsOn?: string[];
+  requiredCapabilities?: string[];
+  budgetUsd?: number;
+  concurrencyKey?: string;
+  maxConcurrent?: number;
   assignedAgentId?: string;
   claimedAt?: string;
   claimToken?: string;
@@ -146,6 +151,7 @@ export interface AgentProfile {
   role: AgentRole;
   status: AgentStatus;
   currentWorkItemId?: string;
+  capabilities?: string[];
   lastSeenAt: string;
 }
 
