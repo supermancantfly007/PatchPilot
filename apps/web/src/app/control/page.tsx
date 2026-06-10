@@ -2,18 +2,47 @@
 
 import type {
   AgentRun,
+  ApprovalRecord,
   BugReport,
   PatchPilotSnapshot,
   Requirement,
   TestCase,
   WorkItem
 } from "@patchpilot/domain";
-import { Activity, AlertTriangle, Bug, ClipboardList, FileCheck2, GitPullRequest, Paperclip, ShieldCheck } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  Bug,
+  Check,
+  ClipboardList,
+  DollarSign,
+  FileCheck2,
+  GitPullRequest,
+  Paperclip,
+  ShieldCheck,
+  X
+} from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { StatusNotice } from "@/components/StatusNotice";
 import { api } from "@/lib/api";
+import {
+  approvalKindLabels,
+  approvalRiskLabels,
+  approvalRiskTone,
+  approvalShortId,
+  approvalStatusLabels,
+  approvalStatusTone,
+  approvalTargetLabels,
+  failureTypeLabels,
+  failureTypeTone,
+  formatCost,
+  formatCostMode,
+  formatCurrency,
+  runBudgetUsage,
+  runShortId
+} from "@/lib/professionalMode";
 
 const requirementStatusLabels: Record<Requirement["status"], string> = {
   submitted: "已提交",
@@ -95,9 +124,15 @@ function sortByDate<T>(items: T[], getDate: (item: T) => string | undefined) {
   });
 }
 
+function approvalSortDate(approval: ApprovalRecord) {
+  return approval.updatedAt ?? approval.createdAt;
+}
+
 export default function ControlPage() {
   const [snapshot, setSnapshot] = useState<PatchPilotSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [decidingApprovalId, setDecidingApprovalId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -133,14 +168,40 @@ export default function ControlPage() {
   const artifacts = snapshot?.artifacts ?? [];
   const auditEvents = snapshot?.auditEvents ?? [];
   const pullRequests = snapshot?.pullRequests ?? [];
+  const approvals = snapshot?.approvals ?? [];
   const openWorkItems = workItems.filter((item) => !["done", "cancelled"].includes(item.status));
   const openBugs = bugs.filter((bug) => !["closed", "unreproducible"].includes(bug.status));
   const failedRuns = runs.filter((run) => run.status === "failed" || run.status === "cancelled");
+  const pendingApprovals = approvals.filter((approval) => approval.status === "pending");
+  const budgetedRuns = runs.filter((run) => run.budgetUsd !== undefined || run.budgetSoftThresholdUsd !== undefined);
+  const totalRunCost = runs.reduce((total, run) => total + (run.costActualUsd ?? run.costEstimateUsd), 0);
+  const totalRunBudget = budgetedRuns.reduce((total, run) => total + (run.budgetUsd ?? 0), 0);
+  const overBudgetRuns = budgetedRuns.filter((run) => runBudgetUsage(run).tone === "red");
   const recentRequirements = sortByDate(requirements, (item) => item.updatedAt).slice(0, 8);
   const visibleWorkItems = sortByDate(workItems, (item) => item.updatedAt ?? item.createdAt).slice(0, 10);
   const visibleTestCases = sortByDate(testCases, (item) => item.updatedAt).slice(0, 10);
   const visibleRuns = sortByDate(runs, (item) => item.startedAt).slice(0, 10);
+  const visibleApprovals = sortByDate(approvals, approvalSortDate).slice(0, 10);
+  const visibleBudgetRuns = sortByDate(budgetedRuns.length ? budgetedRuns : runs, (item) => item.startedAt).slice(0, 8);
   const visibleAuditEvents = sortByDate(auditEvents, (item) => item.createdAt).slice(0, 10);
+
+  async function decideApproval(approval: ApprovalRecord, decision: "approve" | "deny") {
+    setDecisionError(null);
+    setDecidingApprovalId(approval.id);
+    try {
+      if (decision === "approve") {
+        await api.approveApproval(approval.id, `Professional mode approved ${approval.kind} for ${approval.targetType}.`);
+      } else {
+        await api.denyApproval(approval.id, `Professional mode denied ${approval.kind} for ${approval.targetType}.`);
+      }
+      const nextSnapshot = await api.getSnapshot();
+      setSnapshot(nextSnapshot);
+    } catch (nextError) {
+      setDecisionError(nextError instanceof Error ? nextError.message : "审批操作失败。");
+    } finally {
+      setDecidingApprovalId(null);
+    }
+  }
 
   return (
     <AppShell>
@@ -193,6 +254,16 @@ export default function ControlPage() {
             <strong>{runs.length} 个 Agent Run</strong>
             <small className="muted">{failedRuns.length} 个失败或取消</small>
           </div>
+          <div className={`summary-stat ${pendingApprovals.length ? "attention" : ""}`}>
+            <span className="muted">审批</span>
+            <strong>{pendingApprovals.length} 个待处理</strong>
+            <small className="muted">{approvals.length} 条审批记录</small>
+          </div>
+          <div className={`summary-stat ${overBudgetRuns.length ? "attention" : ""}`}>
+            <span className="muted">成本 / 预算</span>
+            <strong>{formatCurrency(totalRunCost)}</strong>
+            <small className="muted">{totalRunBudget > 0 ? `${formatCurrency(totalRunBudget)} 运行预算` : "未设置运行预算"}</small>
+          </div>
           <div className="summary-stat">
             <span className="muted">审计</span>
             <strong>{auditEvents.length} 条审计事件</strong>
@@ -202,6 +273,12 @@ export default function ControlPage() {
             <strong>{artifacts.filter((artifact) => artifact.kind === "intake_attachment").length} 个引用</strong>
           </div>
         </div>
+
+        {decisionError ? (
+          <StatusNotice title="审批操作失败" tone="error">
+            {decisionError}
+          </StatusNotice>
+        ) : null}
 
         <div className="dashboard-grid">
           <section aria-label="需求管理" className="dashboard-panel">
@@ -361,7 +438,12 @@ export default function ControlPage() {
                           {run.runner} · {run.currentStep} · {formatShortDate(run.startedAt)}
                         </small>
                         <small>
+                          {formatCostMode(run)} {formatCost(run)} ·{" "}
+                          {run.budgetUsd === undefined ? "未设置预算" : `预算 ${formatCurrency(run.budgetUsd)} · ${runBudgetUsage(run).label}`}
+                        </small>
+                        <small>
                           {changedFileCount} 个变更文件 · {toolCallCount} 个工具调用
+                          {run.failureType ? ` · ${failureTypeLabels[run.failureType]}` : ""}
                         </small>
                       </span>
                       <span className={`status-pill ${statusTone(run.status)}`}>{runStatusLabels[run.status]}</span>
@@ -395,6 +477,107 @@ export default function ControlPage() {
                 ))
               ) : (
                 <p className="empty-copy">需求、执行、返工和验收会写入审计链路。</p>
+              )}
+            </div>
+          </section>
+        </div>
+
+        <div className="dashboard-grid">
+          <section aria-label="审批队列" className="dashboard-panel">
+            <div className="panel-title">
+              <h3>审批队列</h3>
+              <span className={`status-pill ${pendingApprovals.length ? "amber" : "green"}`}>
+                {pendingApprovals.length} 个待处理
+              </span>
+            </div>
+            <div className="dashboard-list compact-list-panel">
+              {visibleApprovals.length ? (
+                visibleApprovals.map((approval) => (
+                  <div className="dashboard-row approval-row" key={approval.id}>
+                    <span>
+                      <strong>
+                        <ShieldCheck size={16} />
+                        {approvalKindLabels[approval.kind]} · {approvalShortId(approval.id)}
+                      </strong>
+                      <small className="governance-detail">
+                        {approval.requestedReason}
+                      </small>
+                      <small>
+                        {approvalTargetLabels[approval.targetType]} · {approval.targetId.replace(/^(run_|wi_|prd_)/, "").slice(0, 12)} · 到期{" "}
+                        {formatShortDate(approval.expiresAt)}
+                      </small>
+                    </span>
+                    <span className="approval-actions">
+                      <span className={`status-pill ${approvalRiskTone(approval.riskLevel)}`}>
+                        {approvalRiskLabels[approval.riskLevel]}
+                      </span>
+                      <span className={`status-pill ${approvalStatusTone(approval.status)}`}>
+                        {approvalStatusLabels[approval.status]}
+                      </span>
+                      {approval.status === "pending" ? (
+                        <>
+                          <button
+                            aria-label={`批准审批 ${approvalShortId(approval.id)}`}
+                            className="button compact"
+                            disabled={decidingApprovalId === approval.id}
+                            onClick={() => void decideApproval(approval, "approve")}
+                            type="button"
+                          >
+                            <Check size={15} />
+                            批准
+                          </button>
+                          <button
+                            aria-label={`拒绝审批 ${approvalShortId(approval.id)}`}
+                            className="button compact secondary"
+                            disabled={decidingApprovalId === approval.id}
+                            onClick={() => void decideApproval(approval, "deny")}
+                            type="button"
+                          >
+                            <X size={15} />
+                            拒绝
+                          </button>
+                        </>
+                      ) : null}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <p className="empty-copy">当前没有审批记录。</p>
+              )}
+            </div>
+          </section>
+
+          <section aria-label="成本与预算" className="dashboard-panel">
+            <div className="panel-title">
+              <h3>成本与预算</h3>
+              <span className={`status-pill ${overBudgetRuns.length ? "red" : "blue"}`}>
+                {overBudgetRuns.length} 个超限
+              </span>
+            </div>
+            <div className="dashboard-list compact-list-panel">
+              {visibleBudgetRuns.length ? (
+                visibleBudgetRuns.map((run) => {
+                  const usage = runBudgetUsage(run);
+                  return (
+                    <Link className="dashboard-row" href={`/runs/${run.id}`} key={run.id}>
+                      <span>
+                        <strong>
+                          <DollarSign size={16} />
+                          {runShortId(run.id)}
+                        </strong>
+                        <small>
+                          {formatCostMode(run)} {formatCost(run)} · 预算 {formatCurrency(run.budgetUsd)}
+                        </small>
+                        <small>
+                          软阈值 {formatCurrency(run.budgetSoftThresholdUsd)} · {run.status === "needs_approval" ? "等待预算审批" : runStatusLabels[run.status]}
+                        </small>
+                      </span>
+                      <span className={`status-pill ${usage.tone}`}>{usage.label}</span>
+                    </Link>
+                  );
+                })
+              ) : (
+                <p className="empty-copy">Agent Run 启动后会显示成本估算、实际成本和预算阈值。</p>
               )}
             </div>
           </section>
@@ -440,8 +623,16 @@ export default function ControlPage() {
                     <div className="rework-item" key={run.id}>
                       <AlertTriangle size={18} />
                       <span>
-                        <strong>{runStatusLabels[run.status]} · {run.id.replace(/^run_/, "").slice(0, 8)}</strong>
-                        <small>{run.failureSummary ?? "需要查看 Agent Run 证据。"}</small>
+                        <strong>{runStatusLabels[run.status]} · {runShortId(run.id)}</strong>
+                        <small>
+                          {run.failureType ? `${failureTypeLabels[run.failureType]} · ` : ""}
+                          {run.failureSummary ?? "需要查看 Agent Run 证据。"}
+                        </small>
+                        {run.failureType ? (
+                          <span className={`status-pill ${failureTypeTone(run.failureType)}`} style={{ marginTop: 8 }}>
+                            {run.failureType}
+                          </span>
+                        ) : null}
                       </span>
                     </div>
                   ))}

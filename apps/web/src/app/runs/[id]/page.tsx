@@ -3,13 +3,14 @@
 import type {
   AgentProfile,
   AgentRun,
+  ApprovalRecord,
   PatchPilotSnapshot,
   PullRequestRecord,
   ReviewRecord,
   TestCase,
   WorkItem
 } from "@patchpilot/domain";
-import { AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, GitPullRequest, Loader2, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, Circle, Clock, DollarSign, ExternalLink, GitPullRequest, Loader2, ShieldCheck, X } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -17,6 +18,22 @@ import { AppShell } from "@/components/AppShell";
 import { ArtifactReferenceList } from "@/components/ArtifactReferenceList";
 import { StatusNotice } from "@/components/StatusNotice";
 import { api } from "@/lib/api";
+import {
+  approvalKindLabels,
+  approvalRiskLabels,
+  approvalRiskTone,
+  approvalShortId,
+  approvalStatusLabels,
+  approvalStatusTone,
+  approvalTargetLabels,
+  failureTypeLabels,
+  failureTypeTone,
+  formatCost,
+  formatCostMode,
+  formatCurrency,
+  relatedApprovalsForRun,
+  runBudgetUsage
+} from "@/lib/professionalMode";
 
 function StepIcon({ status }: { status: AgentRun["timeline"][number]["status"] }) {
   if (status === "done") return <CheckCircle2 size={18} />;
@@ -132,6 +149,20 @@ function toolCallTone(status: "started" | "completed" | "failed" | "unknown") {
   return "amber";
 }
 
+function formatShortDate(value?: string) {
+  if (!value) return "暂无时间";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
+function approvalSortDate(approval: ApprovalRecord) {
+  return approval.updatedAt ?? approval.createdAt;
+}
+
 function testCaseStatusLabel(status: TestCase["status"]) {
   const labels: Record<TestCase["status"], string> = {
     draft: "草稿",
@@ -164,6 +195,8 @@ export default function RunPage() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [connection, setConnection] = useState<"connecting" | "live" | "polling" | "closed">("connecting");
   const [error, setError] = useState<string | null>(null);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [decidingApprovalId, setDecidingApprovalId] = useState<string | null>(null);
 
   useEffect(() => {
     setConnection("connecting");
@@ -281,6 +314,11 @@ export default function RunPage() {
   const runAuditEvents = (snapshot?.auditEvents.filter((event) => event.runId === run.id) ?? []).slice(0, 5);
   const requirementArtifactReferences =
     snapshot?.requirements.find((requirement) => requirement.id === run.requirementId)?.artifactReferences ?? [];
+  const runApprovals = relatedApprovalsForRun(snapshot?.approvals ?? [], run).sort(
+    (left, right) => new Date(approvalSortDate(right)).getTime() - new Date(approvalSortDate(left)).getTime()
+  );
+  const pendingRunApprovals = runApprovals.filter((approval) => approval.status === "pending");
+  const budgetUsage = runBudgetUsage(run);
   const diffSummary = run.result?.diffSummary;
   const resultChangedFiles = run.result?.changedFiles ?? [];
   const diffChangedFiles = diffSummary?.changedFiles ?? resultChangedFiles;
@@ -288,6 +326,30 @@ export default function RunPage() {
   const toolCalls = run.result?.toolCalls ?? [];
   const agentMessages = run.result?.agentMessages ?? [];
   const reasoningSummaries = run.result?.reasoningSummaries ?? [];
+  const currentRunId = run.id;
+
+  async function decideApproval(approval: ApprovalRecord, decision: "approve" | "deny") {
+    setDecisionError(null);
+    setDecidingApprovalId(approval.id);
+    try {
+      if (decision === "approve") {
+        await api.approveApproval(approval.id, `Professional mode approved ${approval.kind} for run ${currentRunId}.`);
+      } else {
+        await api.denyApproval(approval.id, `Professional mode denied ${approval.kind} for run ${currentRunId}.`);
+      }
+      const nextSnapshot = await api.getSnapshot();
+      setSnapshot(nextSnapshot);
+      const nextRun = nextSnapshot.agentRuns.find((item) => item.id === currentRunId);
+      if (nextRun) {
+        setRun(nextRun);
+        setLastUpdated(new Date());
+      }
+    } catch (nextError) {
+      setDecisionError(nextError instanceof Error ? nextError.message : "审批操作失败。");
+    } finally {
+      setDecidingApprovalId(null);
+    }
+  }
 
   return (
     <AppShell>
@@ -322,7 +384,13 @@ export default function RunPage() {
               ) : null}
               {run.status === "failed" ? (
                 <StatusNotice title="这次执行失败了" tone="error">
+                  {run.failureType ? `${failureTypeLabels[run.failureType]}：` : ""}
                   {run.failureSummary ?? "runner 没有返回更详细的失败摘要。"} 请返回工作台重新提交，或让主线程查看后端日志。
+                </StatusNotice>
+              ) : null}
+              {run.status === "needs_approval" && pendingRunApprovals.length > 0 ? (
+                <StatusNotice title="这次执行等待审批" tone="warning">
+                  {pendingRunApprovals.map((approval) => approvalKindLabels[approval.kind]).join("、")} 需要处理。
                 </StatusNotice>
               ) : null}
               <div className="stepper">
@@ -495,7 +563,18 @@ export default function RunPage() {
                   </div>
                   <div className="metric">
                     <span className="muted">成本</span>
-                    <strong>${run.costActualUsd?.toFixed(2) ?? run.costEstimateUsd.toFixed(2)}</strong>
+                    <strong>{formatCost(run)}</strong>
+                    <small>{formatCostMode(run)}</small>
+                  </div>
+                  <div className="metric">
+                    <span className="muted">预算</span>
+                    <strong>{formatCurrency(run.budgetUsd)}</strong>
+                    <small>{budgetUsage.label}</small>
+                  </div>
+                  <div className="metric">
+                    <span className="muted">失败类型</span>
+                    <strong>{run.failureType ? failureTypeLabels[run.failureType] : "未记录"}</strong>
+                    <small>{run.failureType ?? "当前没有失败分类"}</small>
                   </div>
                   <p className="muted" style={{ margin: 0 }}>
                     {run.result.summary}
@@ -522,6 +601,107 @@ export default function RunPage() {
                   完成测试和审查后，这里会展示改动摘要、测试结果和风险等级。
                 </p>
               )}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h3>预算和审批</h3>
+                <p className="muted" style={{ margin: "4px 0 0" }}>
+                  {formatCostMode(run)} {formatCost(run)} · 预算 {formatCurrency(run.budgetUsd)}
+                </p>
+              </div>
+              <span className={`status-pill ${budgetUsage.tone}`}>
+                <DollarSign size={14} />
+                {budgetUsage.label}
+              </span>
+            </div>
+            <div className="card-body grid">
+              {decisionError ? (
+                <StatusNotice title="审批操作失败" tone="error">
+                  {decisionError}
+                </StatusNotice>
+              ) : null}
+              <div className="team-summary-grid">
+                <div className="metric">
+                  <span className="muted">成本</span>
+                  <strong>{formatCost(run)}</strong>
+                  <small>{formatCostMode(run)}</small>
+                </div>
+                <div className="metric">
+                  <span className="muted">运行预算</span>
+                  <strong>{formatCurrency(run.budgetUsd)}</strong>
+                  <small>软阈值 {formatCurrency(run.budgetSoftThresholdUsd)}</small>
+                </div>
+                <div className="metric">
+                  <span className="muted">失败类型</span>
+                  <strong>{run.failureType ? failureTypeLabels[run.failureType] : "未记录"}</strong>
+                  <small>{run.failureType ?? "当前没有失败分类"}</small>
+                </div>
+              </div>
+              <div className={`budget-meter ${budgetUsage.tone}`} aria-label={`预算使用率 ${budgetUsage.percent}%`}>
+                <span style={{ width: `${budgetUsage.percent}%` }} />
+              </div>
+              {run.failureType ? (
+                <span className={`status-pill ${failureTypeTone(run.failureType)}`}>
+                  {run.failureType}
+                </span>
+              ) : null}
+              <div className="event-list">
+                {runApprovals.length ? (
+                  runApprovals.map((approval) => (
+                    <div className="event approval-event" key={approval.id}>
+                      <div>
+                        <strong>
+                          <ShieldCheck size={16} />
+                          {approvalKindLabels[approval.kind]} · {approvalShortId(approval.id)}
+                        </strong>
+                        <p className="muted" style={{ marginBottom: 0 }}>
+                          {approval.requestedReason}
+                        </p>
+                        <small className="muted">
+                          {approvalTargetLabels[approval.targetType]} · 到期 {formatShortDate(approval.expiresAt)}
+                        </small>
+                      </div>
+                      <div className="approval-actions">
+                        <span className={`status-pill ${approvalRiskTone(approval.riskLevel)}`}>
+                          {approvalRiskLabels[approval.riskLevel]}
+                        </span>
+                        <span className={`status-pill ${approvalStatusTone(approval.status)}`}>
+                          {approvalStatusLabels[approval.status]}
+                        </span>
+                        {approval.status === "pending" ? (
+                          <>
+                            <button
+                              aria-label={`批准审批 ${approvalShortId(approval.id)}`}
+                              className="button compact"
+                              disabled={decidingApprovalId === approval.id}
+                              onClick={() => void decideApproval(approval, "approve")}
+                              type="button"
+                            >
+                              <Check size={15} />
+                              批准
+                            </button>
+                            <button
+                              aria-label={`拒绝审批 ${approvalShortId(approval.id)}`}
+                              className="button compact secondary"
+                              disabled={decidingApprovalId === approval.id}
+                              onClick={() => void decideApproval(approval, "deny")}
+                              type="button"
+                            >
+                              <X size={15} />
+                              拒绝
+                            </button>
+                          </>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="empty-copy">这个 run 没有关联审批记录。</p>
+                )}
+              </div>
             </div>
           </div>
 

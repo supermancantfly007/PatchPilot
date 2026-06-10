@@ -170,6 +170,9 @@ async function runSmokeScenario(scenario) {
     await page.getByText(/PatchPilot 正在推进这次任务/).waitFor();
     await page.getByText("Agent team 进度").waitFor();
     await page.getByText(/4\/4 完成/).waitFor({ timeout: 15000 });
+    await page.getByRole("heading", { name: "预算和审批" }).waitFor();
+    await page.getByText("成本").first().waitFor();
+    await page.getByText("未设置").first().waitFor();
     await page.getByRole("heading", { name: "交付证据" }).waitFor();
     await page.getByText("输入资料").waitFor();
     await page.getByText(`td123-${scenario.name}-context.txt`).first().waitFor();
@@ -252,6 +255,9 @@ async function runSmokeScenario(scenario) {
     await page.getByRole("heading", { name: "测试用例管理" }).waitFor();
     await page.getByRole("heading", { name: "Bug 队列" }).waitFor();
     await page.getByRole("heading", { name: "Agent Run 证据" }).waitFor();
+    await page.getByRole("heading", { name: "审批队列" }).waitFor();
+    await page.getByRole("heading", { name: "成本与预算" }).waitFor();
+    await page.getByText("成本 / 预算").first().waitFor();
     const requirementRegion = page.getByRole("region", { name: "需求管理" });
     await requirementRegion.getByText(/端到端可用的 agent 平台/).first().waitFor();
     await requirementRegion.getByText(/4 个工作项 · 8 个 Agent Run · 4 条测试用例/).first().waitFor();

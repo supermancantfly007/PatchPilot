@@ -25,6 +25,7 @@
     "e2e:approvals": "node scripts/e2e-approvals.mjs",
     "e2e:budget": "node scripts/e2e-budget-governance.mjs",
     "e2e:failure-defect": "node scripts/e2e-failure-defect.mjs",
+    "e2e:professional-governance": "node scripts/e2e-professional-governance.mjs",
     "e2e:smoke": "node scripts/e2e-smoke.mjs",
     "e2e:team": "node scripts/e2e-team-worker.mjs",
     "e2e:bug": "node scripts/e2e-bug-worker.mjs",

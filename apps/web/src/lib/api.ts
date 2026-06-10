@@ -1,6 +1,7 @@
 import type {
   AcceptanceDecision,
   AgentRun,
+  ApprovalRecord,
   BugReport,
   ClarificationQuestion,
   IntakeArtifactReference,
@@ -120,6 +121,18 @@ export const api = {
   },
   getRun(id: string) {
     return request<AgentRun>(apiPath("getRun", { id }));
+  },
+  approveApproval(id: string, decisionReason = "Approved from PatchPilot professional mode.") {
+    return request<ApprovalRecord>(apiPath("approveApproval", { id }), {
+      method: "POST",
+      body: JSON.stringify({ decidedBy: "professional-mode-ui", decisionReason })
+    });
+  },
+  denyApproval(id: string, decisionReason = "Denied from PatchPilot professional mode.") {
+    return request<ApprovalRecord>(apiPath("denyApproval", { id }), {
+      method: "POST",
+      body: JSON.stringify({ decidedBy: "professional-mode-ui", decisionReason })
+    });
   },
   acceptRun(runId: string, status: AcceptanceDecision["status"], reason?: string) {
     return request<AcceptanceDecision>(apiPath("acceptRun", { runId }), {
