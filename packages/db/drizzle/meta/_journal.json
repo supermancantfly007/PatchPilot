@@ -8,6 +8,13 @@
       "when": 1781106236174,
       "tag": "0000_early_silver_centurion",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1781108216684,
+      "tag": "0001_short_the_enforcers",
+      "breakpoints": true
     }
   ]
 }
