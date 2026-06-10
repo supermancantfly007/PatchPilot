@@ -13,10 +13,11 @@ import Fastify from "fastify";
 import { z } from "zod";
 import { DomainError, PatchPilotStore } from "./store";
 
-const store = new PatchPilotStore();
+const defaultStore = new PatchPilotStore();
 
-export async function buildServer() {
+export async function buildServer(options: { store?: PatchPilotStore } = {}) {
   const app = Fastify({ logger: true });
+  const store = options.store ?? defaultStore;
   await app.register(cors, { origin: true });
 
   app.get(apiRoute("health"), async () => ({ ok: true, service: "patchpilot-api" }));

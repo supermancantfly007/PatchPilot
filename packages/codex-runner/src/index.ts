@@ -1,8 +1,8 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
 import { runTestCommand } from "@patchpilot/testing";
 import type {
   AgentRunEvent,
@@ -13,7 +13,6 @@ import type {
   TimelineStepKey,
   WorkItem
 } from "@patchpilot/domain";
-import { readPatchPilotConfig, type ResolvedPatchPilotConfig } from "./config";
 
 export interface CodexRunContext {
   runId: string;
@@ -22,104 +21,131 @@ export interface CodexRunContext {
   workItem: WorkItem;
 }
 
-export interface RunnerEvent {
+export interface CodexRunnerEvent {
   step?: TimelineStepKey;
   type: AgentRunEvent["type"];
   message: string;
 }
 
-export type EmitRunnerEvent = (event: RunnerEvent) => Promise<void>;
+export type EmitCodexRunnerEvent = (event: CodexRunnerEvent) => Promise<void>;
 
-export async function isCodexAvailable() {
-  try {
-    const result = await runShell("codex --version", process.cwd(), 5000);
-    return result.exitCode === 0;
-  } catch {
-    return false;
-  }
-}
-
-export async function isGitWorkspaceAvailable(cwd = process.cwd()) {
-  const result = await runShell("git rev-parse --is-inside-work-tree", cwd, 5000);
-  return result.exitCode === 0 && result.output.trim() === "true";
-}
-
-export async function runCodexAgent(
-  context: CodexRunContext,
-  emit: EmitRunnerEvent
-): Promise<AgentRunResult> {
-  const config = readPatchPilotConfig();
-  const workspace = await prepareWorkspace(context, config);
-  await emit({
-    step: "developing",
-    type: "workspace.created",
-    message: `已创建隔离 worktree：${workspace.path}`
-  });
-
-  const prompt = buildCodexPrompt(context, workspace.taskFilePath);
-  await emit({
-    step: "developing",
-    type: "codex.started",
-    message: "本地 Codex agent 已启动，正在隔离 worktree 中开发"
-  });
-
-  const firstCodexRun = await runCodexExec(workspace.path, prompt, emit, config);
-  await emit({
-    step: "testing",
-    type: "test.started",
-    message: "Codex 执行结束，开始运行项目测试"
-  });
-
-  let testRun = await runConfiguredTests(context, workspace.path, config);
-  const repairAttempts = config.test.maxRepairAttempts;
-
-  for (let attempt = 1; testRun.status === "failed" && attempt <= repairAttempts; attempt += 1) {
-    await emit({
-      step: "developing",
-      type: "test.failed",
-      message: `测试未通过，启动第 ${attempt} 次 Codex 修复回合`
-    });
-    await runCodexExec(workspace.path, buildRepairPrompt(context, testRun.summary), emit, config);
-    await emit({
-      step: "testing",
-      type: "test.started",
-      message: `第 ${attempt} 次修复完成，重新运行测试`
-    });
-    testRun = await runConfiguredTests(context, workspace.path, config);
-  }
-
-  if (testRun.status !== "passed") {
-    throw new Error(`测试未通过：${testRun.summary}`);
-  }
-
-  await emit({
-    step: "testing",
-    type: "test.passed",
-    message: "目标测试通过，正在整理 diff 和审查摘要"
-  });
-
-  const changedFiles = await listChangedFiles(workspace.path);
-  await emit({
-    step: "confirming",
-    type: "git.diff.created",
-    message: changedFiles.length > 0 ? `已发现 ${changedFiles.length} 个变更文件` : "Codex 没有产生文件变更"
-  });
-
-  return {
-    summary: await readSummary(firstCodexRun.lastMessagePath, changedFiles),
-    previewUrl: config.dev.previewUrl,
-    riskLevel: changedFiles.length > 12 ? "medium" : "low",
-    changedFiles,
-    tests: [testRun],
-    reviewerSummary:
-      "本次交付在隔离 worktree 中完成，平台已收集变更文件、测试命令和执行摘要。验收通过后仍需人工按仓库规则合并。",
-    runner: "codex",
-    workspacePath: workspace.path,
-    codexSessionId: firstCodexRun.sessionId
+export interface CodexRunnerConfig {
+  test: {
+    command: string;
+    timeoutMs: number;
+    maxRepairAttempts: number;
+  };
+  dev: {
+    workspaceRoot: string;
+    previewUrl: string;
+  };
+  security: {
+    codexSandbox: string;
+    codexBypass: boolean;
+  };
+  budget: {
+    codexTimeoutMs: number;
   };
 }
 
-async function prepareWorkspace(context: CodexRunContext, config: ResolvedPatchPilotConfig) {
+export interface CodexRunner {
+  isAvailable(): Promise<boolean>;
+  isGitWorkspaceAvailable(cwd?: string): Promise<boolean>;
+  run(context: CodexRunContext, emit: EmitCodexRunnerEvent, config: CodexRunnerConfig): Promise<AgentRunResult>;
+}
+
+export class LocalCodexRunner implements CodexRunner {
+  async isAvailable() {
+    try {
+      const result = await runShell("codex --version", process.cwd(), 5000);
+      return result.exitCode === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  async isGitWorkspaceAvailable(cwd = process.cwd()) {
+    const result = await runShell("git rev-parse --is-inside-work-tree", cwd, 5000);
+    return result.exitCode === 0 && result.output.trim() === "true";
+  }
+
+  async run(
+    context: CodexRunContext,
+    emit: EmitCodexRunnerEvent,
+    config: CodexRunnerConfig
+  ): Promise<AgentRunResult> {
+    const workspace = await prepareWorkspace(context, config);
+    await emit({
+      step: "developing",
+      type: "workspace.created",
+      message: `已创建隔离 worktree：${workspace.path}`
+    });
+
+    const prompt = buildCodexPrompt(context, workspace.taskFilePath);
+    await emit({
+      step: "developing",
+      type: "codex.started",
+      message: "本地 Codex agent 已启动，正在隔离 worktree 中开发"
+    });
+
+    const firstCodexRun = await runCodexExec(workspace.path, prompt, emit, config);
+    await emit({
+      step: "testing",
+      type: "test.started",
+      message: "Codex 执行结束，开始运行项目测试"
+    });
+
+    let testRun = await runConfiguredTests(context, workspace.path, config);
+    const repairAttempts = config.test.maxRepairAttempts;
+
+    for (let attempt = 1; testRun.status === "failed" && attempt <= repairAttempts; attempt += 1) {
+      await emit({
+        step: "developing",
+        type: "test.failed",
+        message: `测试未通过，启动第 ${attempt} 次 Codex 修复回合`
+      });
+      await runCodexExec(workspace.path, buildRepairPrompt(context, testRun.summary), emit, config);
+      await emit({
+        step: "testing",
+        type: "test.started",
+        message: `第 ${attempt} 次修复完成，重新运行测试`
+      });
+      testRun = await runConfiguredTests(context, workspace.path, config);
+    }
+
+    if (testRun.status !== "passed") {
+      throw new Error(`测试未通过：${testRun.summary}`);
+    }
+
+    await emit({
+      step: "testing",
+      type: "test.passed",
+      message: "目标测试通过，正在整理 diff 和审查摘要"
+    });
+
+    const changedFiles = await listChangedFiles(workspace.path);
+    await emit({
+      step: "confirming",
+      type: "git.diff.created",
+      message: changedFiles.length > 0 ? `已发现 ${changedFiles.length} 个变更文件` : "Codex 没有产生文件变更"
+    });
+
+    return {
+      summary: await readSummary(firstCodexRun.lastMessagePath, changedFiles),
+      previewUrl: config.dev.previewUrl,
+      riskLevel: changedFiles.length > 12 ? "medium" : "low",
+      changedFiles,
+      tests: [testRun],
+      reviewerSummary:
+        "本次交付在隔离 worktree 中完成，平台已收集变更文件、测试命令和执行摘要。验收通过后仍需人工按仓库规则合并。",
+      runner: "codex",
+      workspacePath: workspace.path,
+      codexSessionId: firstCodexRun.sessionId
+    };
+  }
+}
+
+async function prepareWorkspace(context: CodexRunContext, config: CodexRunnerConfig) {
   const root = config.dev.workspaceRoot;
   await mkdir(root, { recursive: true });
 
@@ -142,7 +168,7 @@ async function prepareWorkspace(context: CodexRunContext, config: ResolvedPatchP
 async function runConfiguredTests(
   context: CodexRunContext,
   workspacePath: string,
-  config: ResolvedPatchPilotConfig
+  config: CodexRunnerConfig
 ): Promise<TestRun> {
   return runTestCommand({
     command: config.test.command,
@@ -158,8 +184,8 @@ async function runConfiguredTests(
 async function runCodexExec(
   workspacePath: string,
   prompt: string,
-  emit: EmitRunnerEvent,
-  config: ResolvedPatchPilotConfig
+  emit: EmitCodexRunnerEvent,
+  config: CodexRunnerConfig
 ) {
   const lastMessagePath = join(workspacePath, `.patchpilot-codex-${randomUUID()}.md`);
   const sandbox = config.security.codexSandbox;
@@ -219,7 +245,11 @@ async function runCodexExec(
   await pendingEmit;
 
   if (exitCode !== 0) {
-    throw new Error(`Codex 执行失败：${tail(stderr || stdoutBuffer || `exit ${exitCode}`, 1600)}`);
+    throw new Error(summarizeCodexExecFailure({
+      stderr,
+      stdoutRemainder: stdoutBuffer,
+      exitCode
+    }));
   }
 
   return { lastMessagePath, sessionId };
@@ -297,7 +327,7 @@ function buildRepairPrompt(context: CodexRunContext, testSummary: string) {
   ].join("\n");
 }
 
-function parseCodexEvent(line: string) {
+export function parseCodexEvent(line: string) {
   try {
     const event = JSON.parse(line) as Record<string, unknown>;
     const type = typeof event.type === "string" ? event.type : "codex.event";
@@ -319,6 +349,14 @@ function parseCodexEvent(line: string) {
     const trimmed = line.trim();
     return { message: trimmed ? `Codex：${trimmed.slice(0, 180)}` : undefined, sessionId: undefined };
   }
+}
+
+export function summarizeCodexExecFailure(input: {
+  stderr?: string;
+  stdoutRemainder?: string;
+  exitCode: number | null;
+}) {
+  return `Codex 执行失败：${tail(input.stderr || input.stdoutRemainder || `exit ${input.exitCode}`, 1600)}`;
 }
 
 function stringValue(value: unknown) {

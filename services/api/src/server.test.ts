@@ -3,9 +3,11 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { CodexRunner } from "@patchpilot/codex-runner";
 import { contractVersion } from "@patchpilot/contracts";
 import type { AgentRun } from "@patchpilot/domain";
 import { buildServer } from "./server";
+import { PatchPilotStore } from "./store";
 
 process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR = "0";
 delete process.env.PATCHPILOT_RUNNER;
@@ -286,6 +288,80 @@ dev:
     const doneWorkItem = snapshotAfterAcceptance.json().workItems.find((item: { id: string }) => item.id === workItem.id);
     expect(doneWorkItem.status).toBe("done");
 
+    await app.close();
+  });
+
+  it("uses an injected CodexRunner implementation for codex runs", async () => {
+    let capturedRunId = "";
+    const fakeCodexRunner: CodexRunner = {
+      isAvailable: async () => true,
+      isGitWorkspaceAvailable: async () => true,
+      run: async (context, emit) => {
+        capturedRunId = context.runId;
+        await emit({
+          step: "developing",
+          type: "codex.output",
+          message: "Fake Codex runner produced a change"
+        });
+        return {
+          summary: "Fake Codex runner completed the injected task.",
+          previewUrl: "http://fake-preview.local",
+          riskLevel: "low",
+          changedFiles: ["packages/codex-runner/src/index.ts"],
+          tests: [
+            {
+              id: "test_fake_codex",
+              status: "passed",
+              command: "fake test",
+              summary: "fake test passed",
+              durationMs: 12
+            }
+          ],
+          reviewerSummary: "Fake reviewer approved the injected runner result.",
+          runner: "codex",
+          workspacePath: "fake://workspace",
+          codexSessionId: "fake-session"
+        };
+      }
+    };
+    const app = await buildServer({ store: new PatchPilotStore({ codexRunner: fakeCodexRunner }) });
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/requirements",
+      payload: { rawInput: "验证 CodexRunner 可以被 API 注入替换", template: "feature" }
+    });
+    const requirement = create.json();
+    const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
+    const prd = prdResponse.json().prd;
+    const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
+    const workItem = approval.json().workItems[0];
+
+    const start = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/start`,
+      payload: { runner: "codex" }
+    });
+
+    expect(start.statusCode).toBe(201);
+    expect(start.json().runner).toBe("codex");
+    const completedRun = await pollRun(app, start.json().id);
+    expect(capturedRunId).toBe(start.json().id);
+    expect(completedRun.status).toBe("succeeded");
+    expect(completedRun.result).toMatchObject({
+      runner: "codex",
+      workspacePath: "fake://workspace",
+      codexSessionId: "fake-session",
+      changedFiles: ["packages/codex-runner/src/index.ts"]
+    });
+    expect(completedRun.events.some((event: { message: string }) => event.message.includes("Fake Codex runner"))).toBe(true);
+
+    const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const testRun = snapshot.json().testRuns.find((test: { id: string }) => test.id === "test_fake_codex");
+    expect(testRun).toMatchObject({
+      status: "passed",
+      runId: start.json().id,
+      workspacePath: "fake://workspace"
+    });
     await app.close();
   });
 

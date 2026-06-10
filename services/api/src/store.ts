@@ -36,7 +36,7 @@ import {
   type RuntimeConfig
 } from "@patchpilot/domain";
 import { createInterfaceContracts } from "@patchpilot/contracts";
-import { isCodexAvailable, isGitWorkspaceAvailable, runCodexAgent, type RunnerEvent } from "./codexRunner";
+import { LocalCodexRunner, type CodexRunner, type CodexRunnerEvent } from "@patchpilot/codex-runner";
 import { readPatchPilotConfig } from "./config";
 
 const dataFile = join(process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"), "patchpilot-store.json");
@@ -48,6 +48,11 @@ const simulationDelay = (ms: number) =>
 export class PatchPilotStore {
   private snapshot: PatchPilotSnapshot = emptySnapshot();
   private loaded = false;
+  private readonly codexRunner: CodexRunner;
+
+  constructor(options: { codexRunner?: CodexRunner } = {}) {
+    this.codexRunner = options.codexRunner ?? new LocalCodexRunner();
+  }
 
   async load() {
     if (this.loaded) return;
@@ -383,8 +388,8 @@ export class PatchPilotStore {
 
   async getRuntimeConfig(): Promise<RuntimeConfig> {
     const config = readPatchPilotConfig();
-    const codexAvailable = await isCodexAvailable();
-    const gitWorkspaceAvailable = await isGitWorkspaceAvailable();
+    const codexAvailable = await this.codexRunner.isAvailable();
+    const gitWorkspaceAvailable = await this.codexRunner.isGitWorkspaceAvailable();
     return {
       configuredRunner: config.dev.runner,
       activeRunner: await this.resolveRunner(undefined, { codexAvailable, gitWorkspaceAvailable }),
@@ -633,9 +638,10 @@ export class PatchPilotStore {
       message: "已确认任务上下文，准备为本地 Codex agent 创建隔离工作区"
     });
 
-    const result = await runCodexAgent(
+    const result = await this.codexRunner.run(
       { runId, requirement, prd, workItem },
-      (event) => this.appendRunEvent(runId, event)
+      (event) => this.appendRunEvent(runId, event),
+      readPatchPilotConfig()
     );
 
     await this.load();
@@ -746,7 +752,7 @@ export class PatchPilotStore {
     await this.save();
   }
 
-  private async appendRunEvent(runId: string, event: RunnerEvent) {
+  private async appendRunEvent(runId: string, event: CodexRunnerEvent) {
     await this.load();
     const run = this.snapshot.agentRuns.find((item) => item.id === runId);
     if (!run || run.status !== "running") return;
@@ -767,8 +773,8 @@ export class PatchPilotStore {
     const configured = readPatchPilotConfig().dev.runner;
     if (configured === "simulated" || configured === "codex") return configured;
     const checks = availability || {
-      codexAvailable: await isCodexAvailable(),
-      gitWorkspaceAvailable: await isGitWorkspaceAvailable()
+      codexAvailable: await this.codexRunner.isAvailable(),
+      gitWorkspaceAvailable: await this.codexRunner.isGitWorkspaceAvailable()
     };
     return checks.codexAvailable && checks.gitWorkspaceAvailable ? "codex" : "simulated";
   }
