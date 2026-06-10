@@ -36,7 +36,9 @@ const completed = await poll(async () => {
   if (workspaceRuns.length < expectedRoles.length) return undefined;
   if (!workspaceRuns.every((workspace) => workspace.status === "archived")) return undefined;
   if (testCases.length < expectedRoles.length) return undefined;
-  if (!testCases.every((testCase) => testCase.status === "ready")) return undefined;
+  if (!testCases.every((testCase) => testCase.status === "passed")) return undefined;
+  if (!testCases.every((testCase) => testCase.lastRunId && testCase.lastTestRunId)) return undefined;
+  if (!testCases.every((testCase) => testCase.flaky === false)) return undefined;
   if (testRuns.length < expectedRoles.length) return undefined;
   if (!testRuns.every((test) => test.status === "passed")) return undefined;
   if (!testRuns.every((test) => test.testCaseId)) return undefined;

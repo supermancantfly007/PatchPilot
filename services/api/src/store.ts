@@ -32,6 +32,7 @@ import {
   emptySnapshot,
   generateClarificationQuestions,
   makeSimpleSummary,
+  testCaseStatusFromTestRunStatus,
   type RuntimeConfig
 } from "@patchpilot/domain";
 import { createInterfaceContracts } from "@patchpilot/contracts";
@@ -978,9 +979,15 @@ export class PatchPilotStore {
     if (run.result) {
       run.result.tests = normalizedTests;
     }
-    if (testCase) {
-      testCase.lastRunId = run.id;
-      testCase.updatedAt = endedAt;
+
+    for (const test of normalizedTests) {
+      const linkedTestCase = this.snapshot.testCases.find((item) => item.id === test.testCaseId);
+      if (!linkedTestCase) continue;
+      linkedTestCase.status = testCaseStatusFromTestRunStatus(test.status);
+      linkedTestCase.lastRunId = run.id;
+      linkedTestCase.lastTestRunId = test.id;
+      linkedTestCase.flaky = Boolean(test.flakySignal);
+      linkedTestCase.updatedAt = test.endedAt || endedAt;
     }
 
     const testIds = new Set(normalizedTests.map((test) => test.id));

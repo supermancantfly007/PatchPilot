@@ -11,6 +11,7 @@ import {
   createInitialClarificationTurn,
   generateClarificationQuestions,
   makeSimpleSummary,
+  testCaseStatusFromTestRunStatus,
   type Requirement
 } from "./index";
 
@@ -84,5 +85,13 @@ describe("domain helpers", () => {
     expect(fix.id).toContain("devfix");
     expect(repro.sourceBugId).toBe(base.bugId);
     expect(fix.sourceBugId).toBe(base.bugId);
+  });
+
+  it("maps test run states back to reusable test cases", () => {
+    expect(testCaseStatusFromTestRunStatus("passed")).toBe("passed");
+    expect(testCaseStatusFromTestRunStatus("failed")).toBe("failed");
+    expect(testCaseStatusFromTestRunStatus("blocked")).toBe("blocked");
+    expect(testCaseStatusFromTestRunStatus("skipped")).toBe("blocked");
+    expect(testCaseStatusFromTestRunStatus("running")).toBe("ready");
   });
 });

@@ -707,8 +707,11 @@ export const openApiSchemas = {
     priority: enumSchema(["low", "medium", "high"]),
     steps: arrayOf({ type: "string" }),
     expectedResult: { type: "string" },
-    linkedAcceptanceCriteria: arrayOf({ type: "string" })
-  }),
+    linkedAcceptanceCriteria: arrayOf({ type: "string" }),
+    lastRunId: id,
+    lastTestRunId: id,
+    flaky: { type: "boolean" }
+  }, ["id", "requirementId", "prdId", "workItemId", "title", "kind", "status", "priority", "steps", "expectedResult", "linkedAcceptanceCriteria"]),
   TestRun: looseObjectSchema({
     id,
     testCaseId: id,

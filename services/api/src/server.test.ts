@@ -266,6 +266,14 @@ dev:
     expect(completedRun.status).toBe("succeeded");
     expect(completedRun.result.runner).toBe("simulated");
     expect(completedRun.result.tests[0].status).toBe("passed");
+    const snapshotAfterRun = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const completedTestCase = snapshotAfterRun
+      .json()
+      .testCases.find((item: { workItemId: string }) => item.workItemId === workItem.id);
+    expect(completedTestCase.status).toBe("passed");
+    expect(completedTestCase.lastRunId).toBe(run.id);
+    expect(completedTestCase.lastTestRunId).toBe(completedRun.result.tests[0].id);
+    expect(completedTestCase.flaky).toBe(false);
 
     const acceptance = await app.inject({
       method: "POST",
@@ -335,7 +343,9 @@ dev:
     expect(prdWorkspaceRuns).toHaveLength(4);
     expect(prdWorkspaceRuns.every((workspace: { status: string }) => workspace.status === "archived")).toBe(true);
     expect(prdTestCases).toHaveLength(4);
-    expect(prdTestCases.every((testCase: { status: string }) => testCase.status === "ready")).toBe(true);
+    expect(prdTestCases.every((testCase: { status: string }) => testCase.status === "passed")).toBe(true);
+    expect(prdTestCases.every((testCase: { lastRunId?: string; lastTestRunId?: string }) => testCase.lastRunId && testCase.lastTestRunId)).toBe(true);
+    expect(prdTestCases.every((testCase: { flaky?: boolean }) => testCase.flaky === false)).toBe(true);
     expect(prdTestCases.map((testCase: { workItemId: string }) => testCase.workItemId).sort()).toEqual(
       startTeam.json().workItems.map((item: { id: string }) => item.id).sort()
     );

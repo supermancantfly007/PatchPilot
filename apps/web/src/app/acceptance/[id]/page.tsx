@@ -307,6 +307,11 @@ export default function AcceptancePage() {
   );
   const aggregateResultCount = deliveryRuns.length;
   const aggregateRisk = aggregateRiskLevel(deliveryRuns.map((item) => item.result));
+  const passedTestCaseCount = visibleTestCases.filter((testCase) => testCase.status === "passed").length;
+  const flakyTestCaseCount = visibleTestCases.filter((testCase) => testCase.flaky).length;
+  const testCasePassRate = visibleTestCases.length > 0
+    ? Math.round((passedTestCaseCount / visibleTestCases.length) * 100)
+    : 0;
 
   return (
     <AppShell>
@@ -432,8 +437,14 @@ export default function AcceptancePage() {
                 </div>
                 <div className="metric">
                   <TestTube2 size={18} />
-                  <span className="muted">测试用例</span>
-                  <strong>{visibleTestCases.length} 条</strong>
+                  <span className="muted">测试用例通过率</span>
+                  <strong>{visibleTestCases.length > 0 ? `${testCasePassRate}%` : "暂无"}</strong>
+                  {visibleTestCases.length > 0 ? (
+                    <small>
+                      {passedTestCaseCount}/{visibleTestCases.length} 已通过
+                      {flakyTestCaseCount > 0 ? ` · ${flakyTestCaseCount} flaky` : ""}
+                    </small>
+                  ) : null}
                 </div>
                 <div className="metric">
                   <ShieldCheck size={18} />
@@ -521,7 +532,11 @@ export default function AcceptancePage() {
                   <div className="event" key={testCase.id}>
                     <strong>{testCase.title}</strong>
                     <p className="muted" style={{ marginBottom: 0 }}>
-                      {testCaseStatusLabel(testCase.status)} · {testCase.steps[0] ?? "按验收标准执行"}
+                      {testCaseStatusLabel(testCase.status)}
+                      {testCase.flaky ? " · flaky" : ""}
+                      {testCase.lastTestRunId ? ` · 最近 TestRun ${testCase.lastTestRunId}` : ""}
+                      {" · "}
+                      {testCase.steps[0] ?? "按验收标准执行"}
                     </p>
                   </div>
                 ))

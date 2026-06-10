@@ -298,6 +298,8 @@ export interface TestCase {
   expectedResult: string;
   linkedAcceptanceCriteria: string[];
   lastRunId?: string;
+  lastTestRunId?: string;
+  flaky?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -787,6 +789,13 @@ export function createTestCasesForWorkItems(
     createdAt: now,
     updatedAt: now
   }));
+}
+
+export function testCaseStatusFromTestRunStatus(status: TestRunStatus): TestCaseStatus {
+  if (status === "passed") return "passed";
+  if (status === "failed") return "failed";
+  if (status === "blocked" || status === "skipped") return "blocked";
+  return "ready";
 }
 
 function testCaseTitle(workItem: WorkItem) {
