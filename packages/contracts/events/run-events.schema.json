@@ -106,6 +106,12 @@
               "ui",
               "document"
             ]
+          },
+          "artifactReferences": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IntakeArtifactReferenceInput"
+            }
           }
         }
       },
@@ -346,6 +352,12 @@
           },
           "reporter": {
             "type": "string"
+          },
+          "artifactReferences": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IntakeArtifactReferenceInput"
+            }
           }
         }
       },
@@ -648,6 +660,7 @@
           "template",
           "status",
           "simpleSummary",
+          "artifactReferences",
           "clarificationQuestions",
           "clarificationTurns",
           "createdAt",
@@ -686,6 +699,12 @@
           "simpleSummary": {
             "type": "string"
           },
+          "artifactReferences": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IntakeArtifactReference"
+            }
+          },
           "clarificationQuestions": {
             "type": "array",
             "items": {
@@ -703,6 +722,113 @@
             "format": "date-time"
           },
           "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "IntakeArtifactReferenceInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "file",
+              "screenshot",
+              "recording",
+              "link"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "uri": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "contentType": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "IntakeArtifactReference": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "file",
+              "screenshot",
+              "recording",
+              "link"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "uri": {
+            "type": "string"
+          },
+          "contentType": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "type": "number"
+          },
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
             "type": "string",
             "format": "date-time"
           }
@@ -1781,7 +1907,8 @@
               "diff",
               "test_report",
               "screenshot",
-              "preview_metadata"
+              "preview_metadata",
+              "intake_attachment"
             ]
           },
           "storage": {
@@ -2199,6 +2326,12 @@
           "workItemId": {
             "type": "string",
             "minLength": 1
+          },
+          "artifactReferences": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IntakeArtifactReference"
+            }
           },
           "sourceRunId": {
             "type": "string",

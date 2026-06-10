@@ -44,6 +44,126 @@ describe("PatchPilot API", () => {
     await app.close();
   });
 
+  it("records intake artifact references for requirements and bugs", async () => {
+    const app = await buildServer({ store: new PatchPilotStore() });
+    const artifactReferences = [
+      {
+        kind: "file",
+        label: "需求说明.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 128_000,
+        metadata: { source: "api-test" }
+      },
+      {
+        kind: "screenshot",
+        label: "首页空白截图",
+        contentType: "image/png",
+        sizeBytes: 4096
+      },
+      {
+        kind: "recording",
+        label: "复现录屏",
+        contentType: "video/mp4",
+        sizeBytes: 512_000
+      },
+      {
+        kind: "link",
+        label: "客户反馈链接",
+        uri: "https://example.com/feedback/123"
+      }
+    ];
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/requirements",
+      payload: {
+        rawInput: "根据附件和客户反馈改进首页",
+        template: "ui",
+        artifactReferences
+      }
+    });
+    expect(create.statusCode).toBe(201);
+    expect(create.json().artifactReferences).toHaveLength(4);
+    expect(create.json().artifactReferences.map((reference: { kind: string }) => reference.kind)).toEqual([
+      "file",
+      "screenshot",
+      "recording",
+      "link"
+    ]);
+    expect(create.json().artifactReferences.every((reference: { artifactId?: string }) => reference.artifactId)).toBe(true);
+
+    const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${create.json().id}/prd` });
+    expect(prdResponse.statusCode).toBe(200);
+    const prdMarkdown = prdResponse.json().prd.bodyMarkdown as string;
+    expect(prdMarkdown).toContain("## 关联资料");
+    expect(prdMarkdown).toContain("需求说明.pdf");
+    expect(prdMarkdown).toContain("首页空白截图");
+    expect(prdMarkdown).toContain("复现录屏");
+    expect(prdMarkdown).toContain("[客户反馈链接](https://example.com/feedback/123)");
+
+    const bugResponse = await app.inject({
+      method: "POST",
+      url: "/api/bugs",
+      payload: {
+        title: "附件提交后页面没有显示",
+        description: "用户提交带附件的 bug 后看不到证据。",
+        reproductionSteps: "提交带截图和链接的 bug 表单。",
+        expectedBehavior: "需求说明和证据页显示附件引用。",
+        actualBehavior: "附件引用丢失。",
+        severity: "high",
+        reporter: "qa",
+        artifactReferences: [artifactReferences[1], artifactReferences[3]]
+      }
+    });
+    expect(bugResponse.statusCode).toBe(201);
+    expect(bugResponse.json().bug.artifactReferences).toHaveLength(2);
+    expect(bugResponse.json().prd.bodyMarkdown).toContain("首页空白截图");
+    expect(bugResponse.json().prd.bodyMarkdown).toContain("客户反馈链接");
+
+    const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const intakeArtifacts = snapshot
+      .json()
+      .artifacts.filter((artifact: ArtifactRecord) => artifact.kind === "intake_attachment");
+    expect(intakeArtifacts).toHaveLength(6);
+    expect(intakeArtifacts.every((artifact: ArtifactRecord) => artifact.requirementId)).toBe(true);
+
+    const firstArtifactContent = JSON.parse(await readFile(fileURLToPath(intakeArtifacts[0].uri), "utf8"));
+    expect(firstArtifactContent).toMatchObject({
+      kind: expect.any(String),
+      label: expect.any(String)
+    });
+
+    await app.close();
+  });
+
+  it("rejects link artifact references without valid URLs", async () => {
+    const app = await buildServer({ store: new PatchPilotStore() });
+
+    const missingUrl = await app.inject({
+      method: "POST",
+      url: "/api/requirements",
+      payload: {
+        rawInput: "根据客户链接整理需求",
+        template: "feature",
+        artifactReferences: [{ kind: "link", label: "客户反馈链接" }]
+      }
+    });
+    expect(missingUrl.statusCode).toBe(400);
+
+    const invalidUrl = await app.inject({
+      method: "POST",
+      url: "/api/requirements",
+      payload: {
+        rawInput: "根据客户链接整理需求",
+        template: "feature",
+        artifactReferences: [{ kind: "link", label: "客户反馈链接", uri: "not a url" }]
+      }
+    });
+    expect(invalidUrl.statusCode).toBe(400);
+
+    await app.close();
+  });
+
   it("rejects blank requirement input", async () => {
     const app = await buildServer();
     const response = await app.inject({

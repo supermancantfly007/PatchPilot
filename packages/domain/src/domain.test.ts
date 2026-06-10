@@ -12,6 +12,7 @@ import {
   createInitialClarificationTurn,
   generateClarificationQuestions,
   makeSimpleSummary,
+  renderArtifactReferencesMarkdown,
   testCaseStatusFromTestRunStatus,
   type Requirement
 } from "./index";
@@ -63,6 +64,48 @@ describe("domain helpers", () => {
     expect(testCases[0]?.workItemId).toBe(workItems[0]?.id);
     expect(testCases.every((testCase) => testCase.status === "ready")).toBe(true);
     expect(testCases.every((testCase) => testCase.linkedAcceptanceCriteria === prd.acceptanceCriteria)).toBe(true);
+  });
+
+  it("renders intake artifact references into PRDs", () => {
+    const requirement: Requirement = {
+      id: "req_with_artifacts",
+      title: "Agent 平台",
+      rawInput: "根据截图和链接调整首页",
+      template: "ui",
+      status: "prd_draft",
+      simpleSummary: makeSimpleSummary("根据截图和链接调整首页", "ui"),
+      artifactReferences: [
+        {
+          id: "input_screenshot",
+          kind: "screenshot",
+          label: "首页错误截图",
+          contentType: "image/png",
+          sizeBytes: 4096,
+          artifactId: "artifact_intake_input_screenshot",
+          createdAt: "2026-06-10T00:00:00.000Z"
+        },
+        {
+          id: "input_link",
+          kind: "link",
+          label: "客户反馈链接",
+          uri: "https://example.com/feedback/123",
+          artifactId: "artifact_intake_input_link",
+          createdAt: "2026-06-10T00:00:00.000Z"
+        }
+      ],
+      clarificationQuestions: [],
+      clarificationTurns: [],
+      createdAt: "2026-06-10T00:00:00.000Z",
+      updatedAt: "2026-06-10T00:00:00.000Z"
+    };
+
+    const prd = createPrd(requirement);
+
+    expect(renderArtifactReferencesMarkdown(requirement.artifactReferences)).toContain("首页错误截图");
+    expect(prd.bodyMarkdown).toContain("## 关联资料");
+    expect(prd.bodyMarkdown).toContain("首页错误截图");
+    expect(prd.bodyMarkdown).toContain("artifact_intake_input_screenshot");
+    expect(prd.bodyMarkdown).toContain("[客户反馈链接](https://example.com/feedback/123)");
   });
 
   it("can mark the full timeline complete", () => {

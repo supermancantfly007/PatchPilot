@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { chromium } from "playwright-core";
 
 const baseUrl = process.env.PATCHPILOT_E2E_URL || "http://localhost:3000";
@@ -103,6 +106,7 @@ async function assertNoHorizontalOverflow(page, label) {
 
 async function runSmokeScenario(scenario) {
   const page = await browser.newPage({ viewport: scenario.viewport });
+  const fixtureDir = await mkdtemp(join(tmpdir(), `patchpilot-${scenario.name}-attachments-`));
 
   try {
     const checkpoint = async (label) => {
@@ -114,6 +118,16 @@ async function runSmokeScenario(scenario) {
     await page.getByPlaceholder(/你想让 PatchPilot 做什么/).fill(
       "做一个端到端可用的 agent 平台，白色底，用户可以提交需求、确认需求、看到 agent 执行进度、查看测试证据并接受结果。"
     );
+    const attachmentFile = join(fixtureDir, `td123-${scenario.name}-context.txt`);
+    await writeFile(attachmentFile, `TD-123 ${scenario.name} attachment fixture`, "utf8");
+    await page.getByLabel("添加文件、截图或录屏").setInputFiles(attachmentFile);
+    await page.getByRole("button", { name: /^截图$/ }).click();
+    await page.getByLabel("链接标题").fill("客户反馈链接");
+    await page.getByLabel("链接 URL").fill("https://example.com/patchpilot/td-123");
+    await page.getByRole("button", { name: /添加链接/ }).click();
+    await page.getByText(`td123-${scenario.name}-context.txt`).first().waitFor();
+    await page.getByText("客户反馈链接").first().waitFor();
+    await page.getByText("3 个附件或链接会进入需求说明").waitFor();
     const submitRequirement = page.getByRole("button", { name: /生成需求说明/ });
     await waitForUsableAction(submitRequirement, `${scenario.name}: submit requirement`);
     await submitRequirement.click();
@@ -143,6 +157,10 @@ async function runSmokeScenario(scenario) {
     await page.locator("strong").filter({ hasText: "如何验收" }).first().waitFor();
     await page.getByRole("heading", { name: "接口契约" }).waitFor();
     await page.getByText("交付控制 HTTP API").waitFor();
+    await page.locator("strong").filter({ hasText: "关联资料" }).first().waitFor();
+    await page.getByText(`td123-${scenario.name}-context.txt`).first().waitFor();
+    await page.getByText("待补充截图 1").first().waitFor();
+    await page.getByText("客户反馈链接").first().waitFor();
     await checkpoint("requirement brief");
     const startTeam = page.getByRole("button", { name: /开始执行/ });
     await waitForUsableAction(startTeam, `${scenario.name}: start team`);
@@ -153,6 +171,8 @@ async function runSmokeScenario(scenario) {
     await page.getByText("Agent team 进度").waitFor();
     await page.getByText(/4\/4 完成/).waitFor({ timeout: 15000 });
     await page.getByRole("heading", { name: "交付证据" }).waitFor();
+    await page.getByText("输入资料").waitFor();
+    await page.getByText(`td123-${scenario.name}-context.txt`).first().waitFor();
     await page.getByText("WorkspaceRun").waitFor();
     await page.getByText(/TestCase · 已通过/).waitFor();
     await page.getByText(/PullRequest · 待审查/).waitFor();
@@ -175,6 +195,8 @@ async function runSmokeScenario(scenario) {
     await page.getByRole("heading", { name: "测试证据" }).waitFor();
     await page.getByRole("heading", { name: "审查证据" }).waitFor();
     await page.getByRole("heading", { name: "PR 交付" }).waitFor();
+    await page.getByRole("heading", { name: "输入资料" }).waitFor();
+    await page.getByText("客户反馈链接").first().waitFor();
     await page.getByRole("heading", { name: "交付审计" }).waitFor();
     await checkpoint("acceptance");
     await page.getByPlaceholder(/如果要求修改/).fill("首页需要明确显示返工任务已重新进入队列。");
@@ -233,6 +255,7 @@ async function runSmokeScenario(scenario) {
     const requirementRegion = page.getByRole("region", { name: "需求管理" });
     await requirementRegion.getByText(/端到端可用的 agent 平台/).first().waitFor();
     await requirementRegion.getByText(/4 个工作项 · 8 个 Agent Run · 4 条测试用例/).first().waitFor();
+    await requirementRegion.getByText(/3 个输入资料引用/).first().waitFor();
     const workItemRegion = page.getByRole("region", { name: "工作项看板" });
     await workItemRegion.getByText(/返工第 1 轮/).first().waitFor();
     await workItemRegion.getByText("首页需要明确显示返工任务已重新进入队列。").first().waitFor();
@@ -245,6 +268,7 @@ async function runSmokeScenario(scenario) {
     }
   } finally {
     await page.close();
+    await rm(fixtureDir, { recursive: true, force: true });
   }
 }
 
