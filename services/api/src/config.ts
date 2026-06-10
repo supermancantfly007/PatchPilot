@@ -17,6 +17,11 @@ export interface PatchPilotConfigEnv extends NodeJS.ProcessEnv {
   PATCHPILOT_TEST_TIMEOUT_MS?: string;
   PATCHPILOT_MAX_REPAIR_ATTEMPTS?: string;
   PATCHPILOT_CODEX_TIMEOUT_MS?: string;
+  PATCHPILOT_BUDGET_MAX_COST_USD?: string;
+  PATCHPILOT_BUDGET_PRD_USD?: string;
+  PATCHPILOT_BUDGET_WORK_ITEM_USD?: string;
+  PATCHPILOT_BUDGET_RUN_USD?: string;
+  PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO?: string;
   PATCHPILOT_CODEX_SANDBOX?: string;
   PATCHPILOT_CODEX_BYPASS?: string;
   PATCHPILOT_PREVIEW_URL?: string;
@@ -56,6 +61,10 @@ export interface ResolvedPatchPilotConfig {
   budget: {
     codexTimeoutMs: number;
     maxCostUsd: number;
+    prdUsd: number;
+    workItemUsd: number;
+    runUsd: number;
+    softThresholdRatio: number;
   };
 }
 
@@ -102,7 +111,11 @@ const rawConfigSchema = z.object({
   }).optional(),
   budget: z.object({
     codexTimeoutMs: z.number().positive().optional(),
-    maxCostUsd: z.number().nonnegative().optional()
+    maxCostUsd: z.number().nonnegative().optional(),
+    prdUsd: z.number().nonnegative().optional(),
+    workItemUsd: z.number().nonnegative().optional(),
+    runUsd: z.number().nonnegative().optional(),
+    softThresholdRatio: z.number().min(0).max(1).optional()
   }).optional()
 }).partial();
 
@@ -120,6 +133,7 @@ export function readPatchPilotConfig(options: ReadConfigOptions = {}): ResolvedP
 
   const devPreviewUrl = pickString(env.PATCHPILOT_PREVIEW_URL, raw.dev?.previewUrl, "http://localhost:3000");
   const testTimeoutMs = pickNumber(env.PATCHPILOT_TEST_TIMEOUT_MS, raw.test?.timeoutMs, 2 * 60 * 1000);
+  const maxCostUsd = pickNumber(env.PATCHPILOT_BUDGET_MAX_COST_USD, raw.budget?.maxCostUsd, 0);
 
   return {
     configSource,
@@ -162,7 +176,11 @@ export function readPatchPilotConfig(options: ReadConfigOptions = {}): ResolvedP
     },
     budget: {
       codexTimeoutMs: pickNumber(env.PATCHPILOT_CODEX_TIMEOUT_MS, raw.budget?.codexTimeoutMs, 10 * 60 * 1000),
-      maxCostUsd: pickNumber(undefined, raw.budget?.maxCostUsd, 0)
+      maxCostUsd,
+      prdUsd: pickNumber(env.PATCHPILOT_BUDGET_PRD_USD, raw.budget?.prdUsd, maxCostUsd),
+      workItemUsd: pickNumber(env.PATCHPILOT_BUDGET_WORK_ITEM_USD, raw.budget?.workItemUsd, 0),
+      runUsd: pickNumber(env.PATCHPILOT_BUDGET_RUN_USD, raw.budget?.runUsd, 0),
+      softThresholdRatio: pickNumber(env.PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO, raw.budget?.softThresholdRatio, 0.8)
     }
   };
 }

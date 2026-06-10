@@ -29,7 +29,15 @@ describe("run event schema document", () => {
             "costEstimateUsd",
             "startedAt"
           ],
-          optionalFields: ["result", "failureSummary", "costActualUsd", "endedAt"]
+          optionalFields: [
+            "result",
+            "failureSummary",
+            "budgetUsd",
+            "budgetSoftThresholdUsd",
+            "budgetApprovalId",
+            "costActualUsd",
+            "endedAt"
+          ]
         },
         error: {
           event: "error",

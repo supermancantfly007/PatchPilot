@@ -122,6 +122,7 @@ export interface Prd {
   title: string;
   bodyMarkdown: string;
   acceptanceCriteria: string[];
+  budgetUsd?: number;
   approvedAt?: string;
 }
 
@@ -208,6 +209,9 @@ export interface AgentRun {
   events: AgentRunEvent[];
   result?: AgentRunResult;
   failureSummary?: string;
+  budgetUsd?: number;
+  budgetSoftThresholdUsd?: number;
+  budgetApprovalId?: string;
   costEstimateUsd: number;
   costActualUsd?: number;
   startedAt: string;
@@ -291,6 +295,10 @@ export interface RuntimeConfig {
   budget: {
     codexTimeoutMs: number;
     maxCostUsd: number;
+    prdUsd: number;
+    workItemUsd: number;
+    runUsd: number;
+    softThresholdRatio: number;
   };
 }
 

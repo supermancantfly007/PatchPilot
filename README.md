@@ -44,6 +44,10 @@ security:
 budget:
   codexTimeoutMs: 600000
   maxCostUsd: 0
+  prdUsd: 0
+  workItemUsd: 0
+  runUsd: 0
+  softThresholdRatio: 0.8
 ```
 
 ## Local Processes
@@ -172,4 +176,5 @@ pnpm e2e:team
 pnpm e2e:bug
 pnpm e2e:smoke
 pnpm e2e:cli
+pnpm e2e:budget
 ```

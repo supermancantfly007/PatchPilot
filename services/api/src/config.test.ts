@@ -33,6 +33,9 @@ security:
 budget:
   codexTimeoutMs: 123000
   maxCostUsd: 4.5
+  workItemUsd: 1.25
+  runUsd: 0.75
+  softThresholdRatio: 0.6
 `);
 
     try {
@@ -54,7 +57,14 @@ budget:
         previewUrl: "http://fixture.local:3001"
       });
       expect(config.security).toEqual({ codexSandbox: "read-only", codexBypass: false });
-      expect(config.budget).toEqual({ codexTimeoutMs: 123000, maxCostUsd: 4.5 });
+      expect(config.budget).toEqual({
+        codexTimeoutMs: 123000,
+        maxCostUsd: 4.5,
+        prdUsd: 4.5,
+        workItemUsd: 1.25,
+        runUsd: 0.75,
+        softThresholdRatio: 0.6
+      });
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
@@ -101,7 +111,11 @@ security:
           PATCHPILOT_TEST_TIMEOUT_MS: "",
           PATCHPILOT_PREVIEW_URL: "http://from-env.local",
           PATCHPILOT_RUNNER: "simulated",
-          PATCHPILOT_CODEX_BYPASS: "true"
+          PATCHPILOT_CODEX_BYPASS: "true",
+          PATCHPILOT_BUDGET_MAX_COST_USD: "6",
+          PATCHPILOT_BUDGET_WORK_ITEM_USD: "3.25",
+          PATCHPILOT_BUDGET_RUN_USD: "1.5",
+          PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO: "0.7"
         }
       });
 
@@ -111,6 +125,11 @@ security:
       expect(config.security.codexBypass).toBe(true);
       expect(config.test.timeoutMs).toBe(120000);
       expect(config.budget.codexTimeoutMs).toBe(600000);
+      expect(config.budget.maxCostUsd).toBe(6);
+      expect(config.budget.prdUsd).toBe(6);
+      expect(config.budget.workItemUsd).toBe(3.25);
+      expect(config.budget.runUsd).toBe(1.5);
+      expect(config.budget.softThresholdRatio).toBe(0.7);
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }

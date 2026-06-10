@@ -31,6 +31,9 @@
       "optionalFields": [
         "result",
         "failureSummary",
+        "budgetUsd",
+        "budgetSoftThresholdUsd",
+        "budgetApprovalId",
         "costActualUsd",
         "endedAt"
       ]
@@ -554,13 +557,29 @@
         "additionalProperties": false,
         "required": [
           "codexTimeoutMs",
-          "maxCostUsd"
+          "maxCostUsd",
+          "prdUsd",
+          "workItemUsd",
+          "runUsd",
+          "softThresholdRatio"
         ],
         "properties": {
           "codexTimeoutMs": {
             "type": "number"
           },
           "maxCostUsd": {
+            "type": "number"
+          },
+          "prdUsd": {
+            "type": "number"
+          },
+          "workItemUsd": {
+            "type": "number"
+          },
+          "runUsd": {
+            "type": "number"
+          },
+          "softThresholdRatio": {
             "type": "number"
           }
         }
@@ -735,6 +754,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "budgetUsd": {
+            "type": "number",
+            "minimum": 0
           },
           "approvedAt": {
             "type": "string",
@@ -1102,6 +1125,18 @@
           },
           "failureSummary": {
             "type": "string"
+          },
+          "budgetUsd": {
+            "type": "number",
+            "minimum": 0
+          },
+          "budgetSoftThresholdUsd": {
+            "type": "number",
+            "minimum": 0
+          },
+          "budgetApprovalId": {
+            "type": "string",
+            "minLength": 1
           },
           "costEstimateUsd": {
             "type": "number"

@@ -263,7 +263,15 @@ export const runEventStreamContract = {
       "costEstimateUsd",
       "startedAt"
     ] as const,
-    optionalFields: ["result", "failureSummary", "costActualUsd", "endedAt"] as const,
+    optionalFields: [
+      "result",
+      "failureSummary",
+      "budgetUsd",
+      "budgetSoftThresholdUsd",
+      "budgetApprovalId",
+      "costActualUsd",
+      "endedAt"
+    ] as const,
     terminalStatuses: ["succeeded", "failed", "cancelled"] satisfies AgentRun["status"][],
     compatibilityRules: [
       "Consumers must ignore unknown AgentRun fields.",
@@ -671,7 +679,11 @@ export const openApiSchemas = {
   }),
   RuntimeBudgetConfig: objectSchema({
     codexTimeoutMs: { type: "number" },
-    maxCostUsd: { type: "number" }
+    maxCostUsd: { type: "number" },
+    prdUsd: { type: "number" },
+    workItemUsd: { type: "number" },
+    runUsd: { type: "number" },
+    softThresholdRatio: { type: "number" }
   }),
   Requirement: looseObjectSchema({
     id,
@@ -706,6 +718,7 @@ export const openApiSchemas = {
     title: { type: "string" },
     bodyMarkdown: markdown,
     acceptanceCriteria: arrayOf({ type: "string" }),
+    budgetUsd: { type: "number", minimum: 0 },
     approvedAt: isoDate
   }, ["id", "requirementId", "version", "status", "title", "bodyMarkdown", "acceptanceCriteria"]),
   WorkItem: looseObjectSchema({
@@ -769,6 +782,9 @@ export const openApiSchemas = {
     events: arrayOf(schemaRef("AgentRunEvent")),
     result: schemaRef("AgentRunResult"),
     failureSummary: { type: "string" },
+    budgetUsd: { type: "number", minimum: 0 },
+    budgetSoftThresholdUsd: { type: "number", minimum: 0 },
+    budgetApprovalId: id,
     costEstimateUsd: { type: "number" },
     costActualUsd: { type: "number" },
     startedAt: isoDate,

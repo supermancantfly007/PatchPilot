@@ -43,9 +43,27 @@ import { readPatchPilotConfig } from "./config";
 const defaultDataFile = join(process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"), "patchpilot-store.json");
 
 const defaultClaimLeaseMs = 5 * 60 * 1000;
+const defaultRunCostEstimateUsd = 0.42;
+const budgetApprovalTtlMs = 24 * 60 * 60 * 1000;
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const simulationDelay = (ms: number) =>
   Math.max(0, Math.round(ms * readPatchPilotConfig().dev.simulationDelayFactor));
+
+type BudgetScopeType = "agent_run" | "work_item" | "prd";
+
+interface BudgetScopeCheck {
+  type: BudgetScopeType;
+  limitUsd: number;
+  spentUsd: number;
+  nextSpendUsd: number;
+}
+
+interface BudgetCheckResult {
+  effectiveBudgetUsd?: number;
+  effectiveSoftThresholdUsd?: number;
+  hardExceeded: BudgetScopeCheck[];
+  softExceeded: BudgetScopeCheck[];
+}
 
 export class PatchPilotStore {
   private snapshot: PatchPilotSnapshot = emptySnapshot();
@@ -114,33 +132,7 @@ export class PatchPilotStore {
       await this.load();
       const now = new Date().toISOString();
       this.expireOverdueApprovals(now);
-      const isExpired = this.isApprovalExpired(input.expiresAt, now);
-      const approval: ApprovalRecord = {
-        id: `approval_${randomUUID()}`,
-        ...input,
-        status: isExpired ? "expired" : "pending",
-        ...(isExpired ? {
-          decisionReason: "Approval expired before a decision was recorded.",
-          decidedAt: now
-        } : {}),
-        createdAt: now,
-        updatedAt: now
-      };
-
-      this.snapshot.approvals.unshift(approval);
-      this.addAuditEvent({
-        actor: input.requestedBy,
-        action: "approval.requested",
-        targetType: "approval",
-        targetId: approval.id,
-        message: `已请求 ${approval.kind} 审批：${approval.requestedReason}`,
-        requirementId: approval.requirementId,
-        prdId: approval.prdId,
-        workItemId: approval.workItemId,
-        runId: approval.runId
-      });
-      if (isExpired) this.addApprovalExpiredAudit(approval, now);
-
+      const approval = this.createApprovalRecord(input, now);
       await this.save();
       return structuredClone(approval);
     });
@@ -193,6 +185,7 @@ export class PatchPilotStore {
     requirement.updatedAt = new Date().toISOString();
 
     const prd = createPrd(requirement);
+    this.applyConfiguredBudgets(prd);
     this.snapshot.prds = this.snapshot.prds.filter((item) => item.requirementId !== requirementId);
     this.snapshot.prds.unshift(prd);
     this.snapshot.interfaceContracts = [
@@ -249,6 +242,7 @@ export class PatchPilotStore {
     requirement.status = "prd_draft";
     requirement.updatedAt = now;
     const prd = createPrd(requirement);
+    this.applyConfiguredBudgets(prd);
     this.snapshot.prds = this.snapshot.prds.filter((item) => item.requirementId !== requirementId);
     this.snapshot.prds.unshift(prd);
     this.snapshot.interfaceContracts = [
@@ -264,6 +258,7 @@ export class PatchPilotStore {
     const prd = this.findPrd(prdId);
     if (prd.status === "approved") {
       const existingWorkItems = this.snapshot.workItems.filter((item) => item.prdId === prdId);
+      this.applyConfiguredBudgets(prd, existingWorkItems);
       let existingInterfaceContracts = this.snapshot.interfaceContracts.filter((item) => item.prdId === prdId);
       if (existingInterfaceContracts.length === 0) {
         existingInterfaceContracts = createInterfaceContracts(prd);
@@ -285,6 +280,7 @@ export class PatchPilotStore {
     requirement.updatedAt = new Date().toISOString();
 
     const workItems = createWorkItems(prd);
+    this.applyConfiguredBudgets(prd, workItems);
     const interfaceContracts = createInterfaceContracts(prd);
     const testCases = createTestCasesForWorkItems(prd, workItems);
     this.snapshot.workItems = [
@@ -367,6 +363,7 @@ export class PatchPilotStore {
       title: input.title,
       now
     });
+    this.applyConfiguredBudgets(prd, [workItem]);
     const bug: BugReport = {
       id: bugId,
       title: input.title,
@@ -544,6 +541,10 @@ export class PatchPilotStore {
       const prd = this.findPrd(workItem.prdId);
       const runner = await this.resolveRunner(runnerOverride);
       const now = new Date().toISOString();
+      const budgetConfig = readPatchPilotConfig().budget;
+      this.applyConfiguredBudgets(prd, [workItem], budgetConfig);
+      const budgetCheck = this.evaluateBudget(prd, workItem, defaultRunCostEstimateUsd, budgetConfig);
+      const needsBudgetApproval = budgetCheck.hardExceeded.length > 0;
 
       if (workItem.status === "claimed") {
         if (this.isClaimExpired(workItem, now)) {
@@ -569,10 +570,11 @@ export class PatchPilotStore {
         workItem.heartbeatAt = now;
         workItem.leaseExpiresAt = new Date(Date.parse(now) + defaultClaimLeaseMs).toISOString();
       }
-      workItem.status = "running";
+      const runActor = workItem.assignedAgentId || "scheduler";
+      workItem.status = needsBudgetApproval ? "blocked" : "running";
       workItem.version = (workItem.version ?? 0) + 1;
       workItem.updatedAt = now;
-      if (workItem.sourceBugId) {
+      if (!needsBudgetApproval && workItem.sourceBugId) {
         const bug = this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId);
         if (bug) {
           bug.status = workItem.role === "test" ? "confirmed" : "fixing";
@@ -586,19 +588,36 @@ export class PatchPilotStore {
         prdId: prd.id,
         workItemId,
         runner,
-        status: "running",
+        status: needsBudgetApproval ? "needs_approval" : "running",
         currentStep: "understanding",
         timeline: createTimeline(),
         events: [],
-        costEstimateUsd: 0.42,
+        ...(budgetCheck.effectiveBudgetUsd !== undefined ? { budgetUsd: budgetCheck.effectiveBudgetUsd } : {}),
+        ...(budgetCheck.effectiveSoftThresholdUsd !== undefined
+          ? { budgetSoftThresholdUsd: budgetCheck.effectiveSoftThresholdUsd }
+          : {}),
+        costEstimateUsd: defaultRunCostEstimateUsd,
         startedAt: now
       };
       run.events.push(this.makeEvent("requirement.understood", "已读取需求说明，正在生成执行计划"));
       this.snapshot.agentRuns.unshift(run);
+
+      if (needsBudgetApproval) {
+        run.events.push(this.makeEvent("agent.progress", "预算硬阈值已触发，run 暂停等待审批"));
+        const approval = this.createBudgetApproval(run, budgetCheck, now);
+        run.budgetApprovalId = approval.id;
+        this.addBudgetExceededAudit(run, budgetCheck, runActor, now);
+        if (workItem.assignedAgentId) this.releaseAgentAssignment(workItem.assignedAgentId, now);
+        this.clearClaim(workItem);
+        await this.save();
+        return run;
+      }
+
+      this.addBudgetSoftThresholdAudits(run, budgetCheck, runActor, now);
       const workspaceRun = this.createWorkspaceRun(run, workItem, now);
       this.snapshot.workspaceRuns.unshift(workspaceRun);
       this.addAuditEvent({
-        actor: workItem.assignedAgentId || "scheduler",
+        actor: runActor,
         action: "work_item.started",
         targetType: "work_item",
         targetId: workItem.id,
@@ -960,6 +979,53 @@ export class PatchPilotStore {
     };
   }
 
+  private createApprovalRecord(
+    input: Pick<
+      ApprovalRecord,
+      | "kind"
+      | "targetType"
+      | "targetId"
+      | "requestedBy"
+      | "requestedReason"
+      | "riskLevel"
+      | "expiresAt"
+      | "requirementId"
+      | "prdId"
+      | "workItemId"
+      | "runId"
+    >,
+    now: string
+  ) {
+    const isExpired = this.isApprovalExpired(input.expiresAt, now);
+    const approval: ApprovalRecord = {
+      id: `approval_${randomUUID()}`,
+      ...input,
+      status: isExpired ? "expired" : "pending",
+      ...(isExpired ? {
+        decisionReason: "Approval expired before a decision was recorded.",
+        decidedAt: now
+      } : {}),
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.snapshot.approvals.unshift(approval);
+    this.addAuditEvent({
+      actor: input.requestedBy,
+      action: "approval.requested",
+      targetType: "approval",
+      targetId: approval.id,
+      message: `已请求 ${approval.kind} 审批：${approval.requestedReason}`,
+      requirementId: approval.requirementId,
+      prdId: approval.prdId,
+      workItemId: approval.workItemId,
+      runId: approval.runId,
+      createdAt: now
+    });
+    if (isExpired) this.addApprovalExpiredAudit(approval, now);
+    return approval;
+  }
+
   private async decideApproval(
     id: string,
     status: Extract<ApprovalRecord["status"], "approved" | "denied">,
@@ -993,9 +1059,108 @@ export class PatchPilotStore {
         runId: approval.runId
       });
 
+      const resumeRunId =
+        status === "approved"
+          ? this.resumeBudgetGatedRun(approval, input.decidedBy, now)
+          : this.recordBudgetApprovalDenied(approval, input.decidedBy, now);
+      const output = structuredClone(approval);
       await this.save();
-      return structuredClone(approval);
+      if (resumeRunId) void this.executeRun(resumeRunId);
+      return output;
     });
+  }
+
+  private resumeBudgetGatedRun(approval: ApprovalRecord, actor: string, now: string) {
+    if (approval.kind !== "budget_exceeded" || approval.targetType !== "agent_run") return undefined;
+    const runId = approval.runId || approval.targetId;
+    const run = this.snapshot.agentRuns.find((item) => item.id === runId);
+    if (!run || run.status !== "needs_approval") return undefined;
+    const workItem = this.findWorkItem(run.workItemId);
+
+    if (!workItem.assignedAgentId) {
+      const agent = this.findAvailableAgentForRole(workItem.role);
+      if (agent) {
+        workItem.assignedAgentId = agent.id;
+        workItem.claimedAt = now;
+        workItem.claimToken = randomUUID();
+        agent.status = "busy";
+        agent.currentWorkItemId = workItem.id;
+        agent.lastSeenAt = now;
+      }
+    }
+    if (workItem.assignedAgentId) {
+      workItem.heartbeatAt = now;
+      workItem.leaseExpiresAt = new Date(Date.parse(now) + defaultClaimLeaseMs).toISOString();
+    }
+
+    run.status = "running";
+    run.events.push(this.makeEvent("agent.progress", "预算审批已通过，run 继续执行"));
+    workItem.status = "running";
+    workItem.version = (workItem.version ?? 0) + 1;
+    workItem.updatedAt = now;
+
+    if (workItem.sourceBugId) {
+      const bug = this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId);
+      if (bug) {
+        bug.status = workItem.role === "test" ? "confirmed" : "fixing";
+        bug.updatedAt = now;
+      }
+    }
+
+    const workspaceRun = this.snapshot.workspaceRuns.find((item) => item.runId === run.id) ??
+      this.createWorkspaceRun(run, workItem, now);
+    if (!this.snapshot.workspaceRuns.some((item) => item.id === workspaceRun.id)) {
+      this.snapshot.workspaceRuns.unshift(workspaceRun);
+    }
+    workspaceRun.status = "active";
+    workspaceRun.updatedAt = now;
+
+    this.addAuditEvent({
+      actor,
+      action: "agent_run.resumed",
+      targetType: "agent_run",
+      targetId: run.id,
+      message: "预算审批通过，已恢复暂停的 agent run。",
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: run.workItemId,
+      runId: run.id,
+      createdAt: now
+    });
+    this.addAuditEvent({
+      actor: "workspace_manager",
+      action: "workspace_run.created",
+      targetType: "workspace_run",
+      targetId: workspaceRun.id,
+      message: `已为恢复执行创建 ${workspaceRun.isolation === "git_worktree" ? "git worktree" : "模拟"}工作区。`,
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: run.workItemId,
+      runId: run.id,
+      createdAt: now
+    });
+    return run.id;
+  }
+
+  private recordBudgetApprovalDenied(approval: ApprovalRecord, actor: string, now: string) {
+    if (approval.kind !== "budget_exceeded" || approval.targetType !== "agent_run") return undefined;
+    const runId = approval.runId || approval.targetId;
+    const run = this.snapshot.agentRuns.find((item) => item.id === runId);
+    if (!run || run.status !== "needs_approval") return undefined;
+    run.events.push(this.makeEvent("agent.progress", "预算审批被拒绝，run 继续保持暂停"));
+    this.addAuditEvent({
+      actor,
+      action: "budget.approval_denied",
+      targetType: "agent_run",
+      targetId: run.id,
+      message: "预算审批被拒绝，agent run 保持 needs_approval。",
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: run.workItemId,
+      runId: run.id,
+      createdAt: now
+    });
+    return undefined;
   }
 
   private expireOverdueApprovals(now = new Date().toISOString()) {
@@ -1025,6 +1190,139 @@ export class PatchPilotStore {
       runId: approval.runId,
       createdAt: now
     });
+  }
+
+  private applyConfiguredBudgets(
+    prd: PatchPilotSnapshot["prds"][number],
+    workItems: WorkItem[] = [],
+    budgetConfig = readPatchPilotConfig().budget
+  ) {
+    if (prd.budgetUsd === undefined && budgetConfig.prdUsd > 0) {
+      prd.budgetUsd = budgetConfig.prdUsd;
+    }
+    for (const workItem of workItems) {
+      if (workItem.budgetUsd === undefined && budgetConfig.workItemUsd > 0) {
+        workItem.budgetUsd = budgetConfig.workItemUsd;
+      }
+    }
+  }
+
+  private evaluateBudget(
+    prd: PatchPilotSnapshot["prds"][number],
+    workItem: WorkItem,
+    costEstimateUsd: number,
+    budgetConfig = readPatchPilotConfig().budget
+  ): BudgetCheckResult {
+    const scopes: BudgetScopeCheck[] = [];
+    if (budgetConfig.runUsd > 0) {
+      scopes.push({
+        type: "agent_run",
+        limitUsd: budgetConfig.runUsd,
+        spentUsd: 0,
+        nextSpendUsd: costEstimateUsd
+      });
+    }
+    if (workItem.budgetUsd !== undefined && workItem.budgetUsd > 0) {
+      const spentUsd = this.costSpentForWorkItem(workItem.id);
+      scopes.push({
+        type: "work_item",
+        limitUsd: workItem.budgetUsd,
+        spentUsd,
+        nextSpendUsd: spentUsd + costEstimateUsd
+      });
+    }
+    if (prd.budgetUsd !== undefined && prd.budgetUsd > 0) {
+      const spentUsd = this.costSpentForPrd(prd.id);
+      scopes.push({
+        type: "prd",
+        limitUsd: prd.budgetUsd,
+        spentUsd,
+        nextSpendUsd: spentUsd + costEstimateUsd
+      });
+    }
+
+    const hardExceeded = scopes.filter((scope) => scope.nextSpendUsd > scope.limitUsd);
+    const softExceeded = scopes.filter(
+      (scope) => scope.nextSpendUsd <= scope.limitUsd && scope.nextSpendUsd >= scope.limitUsd * budgetConfig.softThresholdRatio
+    );
+    const remainingBudgets = scopes.map((scope) => Math.max(0, scope.limitUsd - scope.spentUsd));
+    const softThresholds = scopes.map((scope) =>
+      Math.max(0, scope.limitUsd * budgetConfig.softThresholdRatio - scope.spentUsd)
+    );
+
+    return {
+      ...(remainingBudgets.length > 0 ? { effectiveBudgetUsd: roundUsd(Math.min(...remainingBudgets)) } : {}),
+      ...(softThresholds.length > 0 ? { effectiveSoftThresholdUsd: roundUsd(Math.min(...softThresholds)) } : {}),
+      hardExceeded,
+      softExceeded
+    };
+  }
+
+  private createBudgetApproval(run: AgentRun, budgetCheck: BudgetCheckResult, now: string) {
+    return this.createApprovalRecord({
+      kind: "budget_exceeded",
+      targetType: "agent_run",
+      targetId: run.id,
+      requestedBy: "budget-governor",
+      requestedReason: this.describeBudgetScopes("预算硬阈值触发", budgetCheck.hardExceeded),
+      riskLevel: "high",
+      expiresAt: new Date(Date.parse(now) + budgetApprovalTtlMs).toISOString(),
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: run.workItemId,
+      runId: run.id
+    }, now);
+  }
+
+  private addBudgetExceededAudit(run: AgentRun, budgetCheck: BudgetCheckResult, actor: string, now: string) {
+    this.addAuditEvent({
+      actor,
+      action: "budget.hard_threshold_exceeded",
+      targetType: "agent_run",
+      targetId: run.id,
+      message: this.describeBudgetScopes("预算硬阈值触发，agent run 已暂停", budgetCheck.hardExceeded),
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: run.workItemId,
+      runId: run.id,
+      createdAt: now
+    });
+  }
+
+  private addBudgetSoftThresholdAudits(run: AgentRun, budgetCheck: BudgetCheckResult, actor: string, now: string) {
+    for (const scope of budgetCheck.softExceeded) {
+      this.addAuditEvent({
+        actor,
+        action: "budget.soft_threshold_exceeded",
+        targetType: "agent_run",
+        targetId: run.id,
+        message: `${scopeLabel(scope.type)} 预算软阈值已触发：预计累计 ${formatUsd(scope.nextSpendUsd)} / 预算 ${formatUsd(scope.limitUsd)}。`,
+        requirementId: run.requirementId,
+        prdId: run.prdId,
+        workItemId: run.workItemId,
+        runId: run.id,
+        createdAt: now
+      });
+    }
+  }
+
+  private describeBudgetScopes(prefix: string, scopes: BudgetScopeCheck[]) {
+    const details = scopes.map((scope) =>
+      `${scopeLabel(scope.type)} 预计累计 ${formatUsd(scope.nextSpendUsd)} / 预算 ${formatUsd(scope.limitUsd)}`
+    );
+    return `${prefix}：${details.join("；")}`;
+  }
+
+  private costSpentForWorkItem(workItemId: string) {
+    return this.snapshot.agentRuns
+      .filter((run) => run.workItemId === workItemId && run.status !== "cancelled")
+      .reduce((total, run) => total + (run.costActualUsd ?? run.costEstimateUsd ?? 0), 0);
+  }
+
+  private costSpentForPrd(prdId: string) {
+    return this.snapshot.agentRuns
+      .filter((run) => run.prdId === prdId && run.status !== "cancelled")
+      .reduce((total, run) => total + (run.costActualUsd ?? run.costEstimateUsd ?? 0), 0);
   }
 
   private isApprovalExpired(expiresAt: string, now: string) {
@@ -1604,6 +1902,7 @@ export class PatchPilotStore {
       title: bug.title,
       now
     });
+    this.applyConfiguredBudgets(this.findPrd(sourceWorkItem.prdId), [fixWorkItem]);
     this.snapshot.workItems.unshift(fixWorkItem);
     this.ensureTestCasesForWorkItems(this.findPrd(sourceWorkItem.prdId), [fixWorkItem], now);
   }
@@ -1635,6 +1934,20 @@ function buildFallbackBranchName(workItem: WorkItem, runId: string) {
 
 function slugSegment(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "item";
+}
+
+function roundUsd(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function formatUsd(value: number) {
+  return `$${roundUsd(value).toFixed(2)}`;
+}
+
+function scopeLabel(scope: BudgetScopeType) {
+  if (scope === "prd") return "PRD";
+  if (scope === "work_item") return "WorkItem";
+  return "AgentRun";
 }
 
 export class DomainError extends Error {

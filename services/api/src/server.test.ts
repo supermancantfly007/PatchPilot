@@ -186,6 +186,124 @@ describe("PatchPilot API", () => {
     await app.close();
   });
 
+  it("pauses over-budget runs and records budget approval evidence", async () => {
+    const restoreBudgetEnv = setBudgetEnv({
+      PATCHPILOT_BUDGET_RUN_USD: "0.2"
+    });
+    const app = await buildServer({ store: new PatchPilotStore() });
+
+    try {
+      const workItem = await createApprovedWorkItem(app, "验证超预算 agent run 会暂停等待审批");
+      const start = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/start`,
+        payload: { runner: "simulated" }
+      });
+      expect(start.statusCode).toBe(201);
+      const run = start.json();
+      expect(run).toMatchObject({
+        status: "needs_approval",
+        budgetUsd: 0.2,
+        budgetApprovalId: expect.any(String),
+        costEstimateUsd: 0.42
+      });
+
+      const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      const pausedWorkItem = snapshot.json().workItems.find((item: { id: string }) => item.id === workItem.id);
+      const approval = snapshot.json().approvals.find((item: { id: string }) => item.id === run.budgetApprovalId);
+      const auditActions = snapshot.json().auditEvents.map((event: { action: string }) => event.action);
+      expect(pausedWorkItem).toMatchObject({ status: "blocked" });
+      expect(pausedWorkItem.assignedAgentId).toBeUndefined();
+      expect(approval).toMatchObject({
+        kind: "budget_exceeded",
+        status: "pending",
+        targetType: "agent_run",
+        targetId: run.id,
+        runId: run.id
+      });
+      expect(auditActions).toEqual(
+        expect.arrayContaining(["budget.hard_threshold_exceeded", "approval.requested"])
+      );
+    } finally {
+      restoreBudgetEnv();
+      await app.close();
+    }
+  });
+
+  it("resumes a budget-gated run after approval", async () => {
+    const restoreBudgetEnv = setBudgetEnv({
+      PATCHPILOT_BUDGET_RUN_USD: "0.2"
+    });
+    const app = await buildServer({ store: new PatchPilotStore() });
+
+    try {
+      const workItem = await createApprovedWorkItem(app, "验证预算审批通过后继续执行原 run");
+      const start = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/start`,
+        payload: { runner: "simulated" }
+      });
+      expect(start.statusCode).toBe(201);
+      const pausedRun = start.json();
+      expect(pausedRun.status).toBe("needs_approval");
+
+      const approved = await app.inject({
+        method: "POST",
+        url: `/api/approvals/${pausedRun.budgetApprovalId}/approve`,
+        payload: { decidedBy: "finance-owner", decisionReason: "Approve this one-off budget overrun" }
+      });
+      expect(approved.statusCode).toBe(200);
+      expect(approved.json()).toMatchObject({ status: "approved", approvedBy: "finance-owner" });
+
+      const completedRun = await pollRun(app, pausedRun.id);
+      expect(completedRun.status).toBe("succeeded");
+      expect(completedRun.id).toBe(pausedRun.id);
+      const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      const resumedWorkItem = snapshot.json().workItems.find((item: { id: string }) => item.id === workItem.id);
+      const auditActions = snapshot.json().auditEvents.map((event: { action: string }) => event.action);
+      expect(resumedWorkItem.status).toBe("review");
+      expect(auditActions).toEqual(
+        expect.arrayContaining(["approval.approved", "agent_run.resumed", "agent_run.succeeded"])
+      );
+    } finally {
+      restoreBudgetEnv();
+      await app.close();
+    }
+  });
+
+  it("warns at the budget soft threshold without pausing the run", async () => {
+    const restoreBudgetEnv = setBudgetEnv({
+      PATCHPILOT_BUDGET_RUN_USD: "0.5",
+      PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO: "0.8"
+    });
+    const app = await buildServer({ store: new PatchPilotStore() });
+
+    try {
+      const workItem = await createApprovedWorkItem(app, "验证预算软阈值只告警不暂停");
+      const start = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/start`,
+        payload: { runner: "simulated" }
+      });
+      expect(start.statusCode).toBe(201);
+      expect(start.json()).toMatchObject({
+        status: "running",
+        budgetUsd: 0.5,
+        budgetSoftThresholdUsd: 0.4
+      });
+
+      const completedRun = await pollRun(app, start.json().id);
+      expect(completedRun.status).toBe("succeeded");
+      const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      const auditActions = snapshot.json().auditEvents.map((event: { action: string }) => event.action);
+      expect(snapshot.json().approvals).toHaveLength(0);
+      expect(auditActions).toContain("budget.soft_threshold_exceeded");
+    } finally {
+      restoreBudgetEnv();
+      await app.close();
+    }
+  });
+
   it("returns test command and preview URL overrides from .patchpilot/config.yaml", async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), "patchpilot-api-config-"));
     const configDir = join(fixtureRoot, ".patchpilot");
@@ -957,6 +1075,32 @@ async function pollRun(app: Awaited<ReturnType<typeof buildServer>>, runId: stri
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const budgetEnvKeys = [
+  "PATCHPILOT_BUDGET_MAX_COST_USD",
+  "PATCHPILOT_BUDGET_PRD_USD",
+  "PATCHPILOT_BUDGET_WORK_ITEM_USD",
+  "PATCHPILOT_BUDGET_RUN_USD",
+  "PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO"
+] as const;
+
+function setBudgetEnv(values: Partial<Record<(typeof budgetEnvKeys)[number], string>>) {
+  const previous = new Map<(typeof budgetEnvKeys)[number], string | undefined>();
+  for (const key of budgetEnvKeys) {
+    previous.set(key, process.env[key]);
+    const value = values[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+
+  return () => {
+    for (const key of budgetEnvKeys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
 }
 
 async function createApprovedWorkItem(app: Awaited<ReturnType<typeof buildServer>>, rawInput: string) {
