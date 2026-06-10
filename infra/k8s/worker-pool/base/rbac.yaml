@@ -1,0 +1,38 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: patchpilot-worker-controller
+  labels:
+    app.kubernetes.io/name: patchpilot-worker-pool
+    app.kubernetes.io/component: worker-controller
+    app.kubernetes.io/part-of: patchpilot
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["create", "delete", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patchpilot-worker-controller
+  labels:
+    app.kubernetes.io/name: patchpilot-worker-pool
+    app.kubernetes.io/component: worker-controller
+    app.kubernetes.io/part-of: patchpilot
+subjects:
+  - kind: ServiceAccount
+    name: patchpilot-worker-controller
+    namespace: patchpilot-workers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: patchpilot-worker-controller

@@ -1,0 +1,48 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - ../run-template
+images:
+  - name: ghcr.io/patchpilot/worker
+    newName: busybox
+    newTag: "1.36"
+  - name: ghcr.io/patchpilot/agent-runner
+    newName: busybox
+    newTag: "1.36"
+patches:
+  - target:
+      kind: Deployment
+      name: patchpilot-worker-controller
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: patchpilot-worker-controller
+      spec:
+        template:
+          spec:
+            containers:
+              - name: worker
+                command: ["/bin/sh", "-lc"]
+                args:
+                  - |
+                    echo "PatchPilot worker controller non-production placeholder";
+                    sleep 3600
+  - target:
+      kind: Job
+      name: patchpilot-agent-run-example
+    patch: |-
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: patchpilot-agent-run-example
+      spec:
+        template:
+          spec:
+            containers:
+              - name: agent-run
+                args:
+                  - |
+                    echo "PatchPilot per-run service account smoke for ${PATCHPILOT_AGENT_RUN_ID}";
+                    sleep 5

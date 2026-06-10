@@ -1,0 +1,83 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: patchpilot-agent-run-example
+  labels:
+    app.kubernetes.io/name: patchpilot-worker-pool
+    app.kubernetes.io/component: agent-run
+    app.kubernetes.io/part-of: patchpilot
+    patchpilot.dev/agent-run-id: example
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: patchpilot-worker-pool
+        app.kubernetes.io/component: agent-run
+        app.kubernetes.io/part-of: patchpilot
+        patchpilot.dev/agent-run-id: example
+        patchpilot.dev/network-profile: agent-run
+    spec:
+      serviceAccountName: patchpilot-run-example
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      nodeSelector:
+        patchpilot.dev/node-pool: workers
+      tolerations:
+        - key: patchpilot.dev/workload
+          operator: Equal
+          value: worker
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent-run
+          image: ghcr.io/patchpilot/agent-runner:nonprod
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-lc"]
+          args:
+            - |
+              echo "PatchPilot agent run template for ${PATCHPILOT_AGENT_RUN_ID}";
+              sleep 5
+          env:
+            - name: PATCHPILOT_AGENT_RUN_ID
+              value: example
+            - name: PATCHPILOT_WORKSPACE_ROOT
+              value: /workspace
+            - name: PATCHPILOT_API_BASE_URL
+              value: http://patchpilot-api.patchpilot-system.svc.cluster.local:4000
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector.patchpilot-observability.svc.cluster.local:4318
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+              ephemeral-storage: 4Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+              ephemeral-storage: 20Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: 20Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi

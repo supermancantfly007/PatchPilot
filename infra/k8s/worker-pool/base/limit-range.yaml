@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: patchpilot-worker-defaults
+  labels:
+    app.kubernetes.io/name: patchpilot-worker-pool
+    app.kubernetes.io/component: quota
+    app.kubernetes.io/part-of: patchpilot
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 250m
+        memory: 512Mi
+        ephemeral-storage: 2Gi
+      default:
+        cpu: "1"
+        memory: 2Gi
+        ephemeral-storage: 8Gi
+      max:
+        cpu: "4"
+        memory: 8Gi
+        ephemeral-storage: 40Gi

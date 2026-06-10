@@ -128,6 +128,17 @@ To point the API at compose Postgres:
 PATCHPILOT_DATABASE_URL=postgresql://patchpilot:patchpilot@localhost:5432/patchpilot pnpm dev:api
 ```
 
+## Kubernetes Worker Pool Templates
+
+Non-production Kubernetes worker pool manifests live in `infra/k8s/worker-pool`. They define an isolated worker namespace, worker-node scheduling rules, resource quota/default limits, default-deny NetworkPolicies, and the per-run ServiceAccount + Job pattern for AgentRun execution:
+
+```bash
+pnpm k8s:validate
+kubectl apply -k infra/k8s/worker-pool/nonprod
+```
+
+The non-production overlay uses placeholder containers so the manifest shape can be deployed before a PatchPilot worker image is published.
+
 ## What Works Now
 
 - White-background Next.js workbench for simple requirement intake

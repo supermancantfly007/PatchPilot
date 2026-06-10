@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchpilot-worker-controller
+  labels:
+    app.kubernetes.io/name: patchpilot-worker-pool
+    app.kubernetes.io/component: worker-controller
+    app.kubernetes.io/part-of: patchpilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: patchpilot-worker-pool
+      app.kubernetes.io/component: worker-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: patchpilot-worker-pool
+        app.kubernetes.io/component: worker-controller
+        app.kubernetes.io/part-of: patchpilot
+        patchpilot.dev/network-profile: control-plane-client
+    spec:
+      serviceAccountName: patchpilot-worker-controller
+      automountServiceAccountToken: true
+      nodeSelector:
+        patchpilot.dev/node-pool: workers
+      tolerations:
+        - key: patchpilot.dev/workload
+          operator: Equal
+          value: worker
+          effect: NoSchedule
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: ghcr.io/patchpilot/worker:nonprod
+          imagePullPolicy: IfNotPresent
+          command: ["node"]
+          args: ["services/worker/dist/index.js"]
+          env:
+            - name: PATCHPILOT_API_BASE_URL
+              value: http://patchpilot-api.patchpilot-system.svc.cluster.local:4000
+            - name: PATCHPILOT_WORKER_INTERVAL_MS
+              value: "5000"
+            - name: PATCHPILOT_WORKER_ONCE
+              value: "false"
+            - name: PATCHPILOT_RUN_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector.patchpilot-observability.svc.cluster.local:4318
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+              ephemeral-storage: 4Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
