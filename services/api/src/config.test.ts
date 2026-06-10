@@ -30,6 +30,17 @@ dev:
 security:
   codexSandbox: read-only
   codexBypass: false
+  containerSandbox:
+    enabled: true
+    runtime: docker
+    image: patchpilot/sandbox:test
+    cpus: 1.5
+    memoryMb: 512
+    workspaceDiskMb: 1024
+    tmpfsMb: 64
+    pidsLimit: 128
+    uid: 1001
+    gid: 1002
 budget:
   codexTimeoutMs: 123000
   maxCostUsd: 4.5
@@ -67,7 +78,22 @@ artifacts:
         workspaceRoot: join(fixture.root, ".patchpilot", "worktrees-fixture"),
         previewUrl: "http://fixture.local:3001"
       });
-      expect(config.security).toEqual({ codexSandbox: "read-only", codexBypass: false });
+      expect(config.security).toEqual({
+        codexSandbox: "read-only",
+        codexBypass: false,
+        containerSandbox: {
+          enabled: true,
+          runtime: "docker",
+          image: "patchpilot/sandbox:test",
+          cpus: 1.5,
+          memoryMb: 512,
+          workspaceDiskMb: 1024,
+          tmpfsMb: 64,
+          pidsLimit: 128,
+          uid: 1001,
+          gid: 1002
+        }
+      });
       expect(config.budget).toEqual({
         codexTimeoutMs: 123000,
         maxCostUsd: 4.5,
@@ -136,6 +162,16 @@ security:
           PATCHPILOT_PREVIEW_URL: "http://from-env.local",
           PATCHPILOT_RUNNER: "simulated",
           PATCHPILOT_CODEX_BYPASS: "true",
+          PATCHPILOT_CONTAINER_SANDBOX_ENABLED: "true",
+          PATCHPILOT_CONTAINER_SANDBOX_RUNTIME: "podman",
+          PATCHPILOT_CONTAINER_SANDBOX_IMAGE: "patchpilot/sandbox:env",
+          PATCHPILOT_CONTAINER_SANDBOX_CPUS: "0.5",
+          PATCHPILOT_CONTAINER_SANDBOX_MEMORY_MB: "256",
+          PATCHPILOT_CONTAINER_SANDBOX_WORKSPACE_DISK_MB: "512",
+          PATCHPILOT_CONTAINER_SANDBOX_TMPFS_MB: "32",
+          PATCHPILOT_CONTAINER_SANDBOX_PIDS_LIMIT: "64",
+          PATCHPILOT_CONTAINER_SANDBOX_UID: "1003",
+          PATCHPILOT_CONTAINER_SANDBOX_GID: "1004",
           PATCHPILOT_BUDGET_MAX_COST_USD: "6",
           PATCHPILOT_BUDGET_WORK_ITEM_USD: "3.25",
           PATCHPILOT_BUDGET_RUN_USD: "1.5",
@@ -156,6 +192,18 @@ security:
       expect(config.dev.previewUrl).toBe("http://from-env.local");
       expect(config.dev.runner).toBe("simulated");
       expect(config.security.codexBypass).toBe(true);
+      expect(config.security.containerSandbox).toEqual({
+        enabled: true,
+        runtime: "podman",
+        image: "patchpilot/sandbox:env",
+        cpus: 0.5,
+        memoryMb: 256,
+        workspaceDiskMb: 512,
+        tmpfsMb: 32,
+        pidsLimit: 64,
+        uid: 1003,
+        gid: 1004
+      });
       expect(config.test.timeoutMs).toBe(120000);
       expect(config.budget.codexTimeoutMs).toBe(600000);
       expect(config.budget.maxCostUsd).toBe(6);

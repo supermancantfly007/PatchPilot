@@ -41,6 +41,15 @@ dev:
 security:
   codexSandbox: workspace-write
   codexBypass: false
+  containerSandbox:
+    enabled: false
+    runtime: auto
+    image: node:24-alpine
+    cpus: 2
+    memoryMb: 4096
+    workspaceDiskMb: 8192
+    tmpfsMb: 256
+    pidsLimit: 512
 budget:
   codexTimeoutMs: 600000
   maxCostUsd: 0
@@ -182,12 +191,22 @@ PATCHPILOT_TEST_TIMEOUT_MS=120000
 PATCHPILOT_MAX_REPAIR_ATTEMPTS=1
 PATCHPILOT_CODEX_SANDBOX=workspace-write
 PATCHPILOT_CODEX_BYPASS=false
+PATCHPILOT_CONTAINER_SANDBOX_ENABLED=false
+PATCHPILOT_CONTAINER_SANDBOX_RUNTIME=auto
+PATCHPILOT_CONTAINER_SANDBOX_IMAGE=node:24-alpine
+PATCHPILOT_CONTAINER_SANDBOX_CPUS=2
+PATCHPILOT_CONTAINER_SANDBOX_MEMORY_MB=4096
+PATCHPILOT_CONTAINER_SANDBOX_WORKSPACE_DISK_MB=8192
+PATCHPILOT_CONTAINER_SANDBOX_TMPFS_MB=256
+PATCHPILOT_CONTAINER_SANDBOX_PIDS_LIMIT=512
 PATCHPILOT_PREVIEW_URL=http://localhost:3000
 ```
 
 The Codex runner requires a working `codex` CLI, an authenticated local Codex session, and a git worktree-capable checkout. Codex runner variables are read by the API process; worker variables are read by the worker process.
 
 The Codex runner does not auto-merge or publish. It creates an isolated worktree, writes `PATCHPILOT_TASK.md`, runs `codex exec`, delegates the configured test command to `@patchpilot/testing`, optionally asks Codex for one repair pass, then returns evidence to the UI. TestRun evidence includes the command, workspace, runner/environment, timestamps, exit code, failure summary, log artifact id, retry count, and flaky signal.
+
+Set `security.containerSandbox.enabled=true` to run Codex and the configured test command through a Docker or Podman container. The sandbox runs as a non-root UID/GID, never uses `--privileged`, drops Linux capabilities, sets `no-new-privileges`, does not mount the Docker socket or host home, mounts only the worktree at `/workspace` with write access, uses a read-only root filesystem, bounds `/tmp` and container home with tmpfs, applies CPU/memory/pid limits, and enforces the existing Codex/test timeout plus a workspace disk-usage limit from the API process. The container image must already include the tools your configured commands need. TD-211 does not implement network egress allowlists or a secret broker; those remain separate work items.
 
 Codex prompts are intentionally short. PatchPilot sends the task title, task file path, required skill (`/tdd` or `/diagnose`), and safety boundary; detailed context lives in `PATCHPILOT_TASK.md`, `AGENTS.md`, and the repo tests.
 

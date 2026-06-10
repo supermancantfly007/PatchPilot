@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import type { AgentRunnerKind, ArtifactStorageProvider } from "@patchpilot/domain";
+import type { AgentRunnerKind, ArtifactStorageProvider, ContainerRuntimeKind } from "@patchpilot/domain";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
@@ -24,6 +24,16 @@ export interface PatchPilotConfigEnv extends NodeJS.ProcessEnv {
   PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO?: string;
   PATCHPILOT_CODEX_SANDBOX?: string;
   PATCHPILOT_CODEX_BYPASS?: string;
+  PATCHPILOT_CONTAINER_SANDBOX_ENABLED?: string;
+  PATCHPILOT_CONTAINER_SANDBOX_RUNTIME?: string;
+  PATCHPILOT_CONTAINER_SANDBOX_IMAGE?: string;
+  PATCHPILOT_CONTAINER_SANDBOX_CPUS?: string;
+  PATCHPILOT_CONTAINER_SANDBOX_MEMORY_MB?: string;
+  PATCHPILOT_CONTAINER_SANDBOX_WORKSPACE_DISK_MB?: string;
+  PATCHPILOT_CONTAINER_SANDBOX_TMPFS_MB?: string;
+  PATCHPILOT_CONTAINER_SANDBOX_PIDS_LIMIT?: string;
+  PATCHPILOT_CONTAINER_SANDBOX_UID?: string;
+  PATCHPILOT_CONTAINER_SANDBOX_GID?: string;
   PATCHPILOT_PREVIEW_URL?: string;
   PATCHPILOT_ARTIFACT_STORE?: string;
   PATCHPILOT_ARTIFACT_ROOT?: string;
@@ -66,6 +76,18 @@ export interface ResolvedPatchPilotConfig {
   security: {
     codexSandbox: string;
     codexBypass: boolean;
+    containerSandbox: {
+      enabled: boolean;
+      runtime: ContainerRuntimeKind;
+      image: string;
+      cpus: number;
+      memoryMb: number;
+      workspaceDiskMb: number;
+      tmpfsMb: number;
+      pidsLimit: number;
+      uid: number;
+      gid: number;
+    };
   };
   budget: {
     codexTimeoutMs: number;
@@ -98,6 +120,7 @@ interface ReadConfigOptions {
 
 const configuredRunnerSchema = z.enum(["auto", "simulated", "codex"]);
 const artifactProviderSchema = z.enum(["local_fs", "s3"]);
+const containerRuntimeSchema = z.enum(["auto", "docker", "podman"]);
 const stringArraySchema = z.preprocess(
   (value) => (typeof value === "string" ? [value] : value),
   z.array(z.string())
@@ -130,7 +153,19 @@ const rawConfigSchema = z.object({
   }).optional(),
   security: z.object({
     codexSandbox: z.string().optional(),
-    codexBypass: z.boolean().optional()
+    codexBypass: z.boolean().optional(),
+    containerSandbox: z.object({
+      enabled: z.boolean().optional(),
+      runtime: containerRuntimeSchema.optional(),
+      image: z.string().optional(),
+      cpus: z.number().positive().optional(),
+      memoryMb: z.number().int().positive().optional(),
+      workspaceDiskMb: z.number().int().positive().optional(),
+      tmpfsMb: z.number().int().positive().optional(),
+      pidsLimit: z.number().int().positive().optional(),
+      uid: z.number().int().positive().optional(),
+      gid: z.number().int().positive().optional()
+    }).optional()
   }).optional(),
   budget: z.object({
     codexTimeoutMs: z.number().positive().optional(),
@@ -214,7 +249,55 @@ export function readPatchPilotConfig(options: ReadConfigOptions = {}): ResolvedP
     },
     security: {
       codexSandbox: pickString(env.PATCHPILOT_CODEX_SANDBOX, raw.security?.codexSandbox, "workspace-write"),
-      codexBypass: pickBoolean(env.PATCHPILOT_CODEX_BYPASS, raw.security?.codexBypass, false)
+      codexBypass: pickBoolean(env.PATCHPILOT_CODEX_BYPASS, raw.security?.codexBypass, false),
+      containerSandbox: {
+        enabled: pickBoolean(
+          env.PATCHPILOT_CONTAINER_SANDBOX_ENABLED,
+          raw.security?.containerSandbox?.enabled,
+          false
+        ),
+        runtime: pickContainerRuntime(
+          env.PATCHPILOT_CONTAINER_SANDBOX_RUNTIME,
+          raw.security?.containerSandbox?.runtime,
+          "auto"
+        ),
+        image: pickString(
+          env.PATCHPILOT_CONTAINER_SANDBOX_IMAGE,
+          raw.security?.containerSandbox?.image,
+          "node:24-alpine"
+        ),
+        cpus: pickNumber(env.PATCHPILOT_CONTAINER_SANDBOX_CPUS, raw.security?.containerSandbox?.cpus, 2),
+        memoryMb: pickInteger(
+          env.PATCHPILOT_CONTAINER_SANDBOX_MEMORY_MB,
+          raw.security?.containerSandbox?.memoryMb,
+          4096
+        ),
+        workspaceDiskMb: pickInteger(
+          env.PATCHPILOT_CONTAINER_SANDBOX_WORKSPACE_DISK_MB,
+          raw.security?.containerSandbox?.workspaceDiskMb,
+          8192
+        ),
+        tmpfsMb: pickInteger(
+          env.PATCHPILOT_CONTAINER_SANDBOX_TMPFS_MB,
+          raw.security?.containerSandbox?.tmpfsMb,
+          256
+        ),
+        pidsLimit: pickInteger(
+          env.PATCHPILOT_CONTAINER_SANDBOX_PIDS_LIMIT,
+          raw.security?.containerSandbox?.pidsLimit,
+          512
+        ),
+        uid: pickInteger(
+          env.PATCHPILOT_CONTAINER_SANDBOX_UID,
+          raw.security?.containerSandbox?.uid,
+          typeof process.getuid === "function" && process.getuid() > 0 ? process.getuid() : 1000
+        ),
+        gid: pickInteger(
+          env.PATCHPILOT_CONTAINER_SANDBOX_GID,
+          raw.security?.containerSandbox?.gid,
+          typeof process.getgid === "function" && process.getgid() > 0 ? process.getgid() : 1000
+        )
+      }
     },
     budget: {
       codexTimeoutMs: pickNumber(env.PATCHPILOT_CODEX_TIMEOUT_MS, raw.budget?.codexTimeoutMs, 10 * 60 * 1000),
@@ -301,6 +384,10 @@ function pickNumber(envValue: string | undefined, configValue: number | undefine
   return defaultValue;
 }
 
+function pickInteger(envValue: string | undefined, configValue: number | undefined, defaultValue: number) {
+  return Math.max(1, Math.floor(pickNumber(envValue, configValue, defaultValue)));
+}
+
 function pickBoolean(envValue: string | undefined, configValue: boolean | undefined, defaultValue: boolean) {
   if (envValue !== undefined) return ["1", "true", "yes"].includes(envValue.toLowerCase());
   if (configValue !== undefined) return configValue;
@@ -313,6 +400,15 @@ function pickRunner(
   defaultValue: ConfiguredRunner
 ): ConfiguredRunner {
   if (envValue === "auto" || envValue === "simulated" || envValue === "codex") return envValue;
+  return configValue ?? defaultValue;
+}
+
+function pickContainerRuntime(
+  envValue: string | undefined,
+  configValue: ContainerRuntimeKind | undefined,
+  defaultValue: ContainerRuntimeKind
+): ContainerRuntimeKind {
+  if (envValue === "auto" || envValue === "docker" || envValue === "podman") return envValue;
   return configValue ?? defaultValue;
 }
 

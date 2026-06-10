@@ -1181,7 +1181,8 @@
         "additionalProperties": false,
         "required": [
           "codexSandbox",
-          "codexBypass"
+          "codexBypass",
+          "containerSandbox"
         ],
         "properties": {
           "codexSandbox": {
@@ -1189,6 +1190,62 @@
           },
           "codexBypass": {
             "type": "boolean"
+          },
+          "containerSandbox": {
+            "$ref": "#/components/schemas/RuntimeContainerSandboxConfig"
+          }
+        }
+      },
+      "RuntimeContainerSandboxConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled",
+          "runtime",
+          "image",
+          "cpus",
+          "memoryMb",
+          "workspaceDiskMb",
+          "tmpfsMb",
+          "pidsLimit",
+          "uid",
+          "gid"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "runtime": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "docker",
+              "podman"
+            ]
+          },
+          "image": {
+            "type": "string"
+          },
+          "cpus": {
+            "type": "number"
+          },
+          "memoryMb": {
+            "type": "number"
+          },
+          "workspaceDiskMb": {
+            "type": "number"
+          },
+          "tmpfsMb": {
+            "type": "number"
+          },
+          "pidsLimit": {
+            "type": "number"
+          },
+          "uid": {
+            "type": "number"
+          },
+          "gid": {
+            "type": "number"
           }
         }
       },

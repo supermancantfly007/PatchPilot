@@ -4,6 +4,11 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { runTestCommand } from "@patchpilot/testing";
 import { GitWorkspaceManager, type WorkspaceManager } from "@patchpilot/workspace-manager";
+import {
+  RootlessContainerSandbox,
+  toContainerWorkspacePath,
+  type ContainerSandboxConfig
+} from "./containerSandbox";
 import type {
   AgentRunDiffSummary,
   AgentRunEvent,
@@ -45,6 +50,7 @@ export interface CodexRunnerConfig {
   security: {
     codexSandbox: string;
     codexBypass: boolean;
+    containerSandbox: ContainerSandboxConfig;
   };
   budget: {
     codexTimeoutMs: number;
@@ -89,6 +95,16 @@ interface CodexExecResult {
   capture: CodexExecCapture;
 }
 
+export {
+  RootlessContainerSandbox,
+  buildRootlessContainerRunArgs,
+  defaultContainerSandboxConfig,
+  resolveContainerRuntime,
+  toContainerWorkspacePath,
+  type ContainerRuntimeKind,
+  type ContainerSandboxConfig
+} from "./containerSandbox";
+
 export class LocalCodexRunner implements CodexRunner {
   constructor(private readonly workspaceManager: WorkspaceManager = new GitWorkspaceManager()) {}
 
@@ -119,7 +135,21 @@ export class LocalCodexRunner implements CodexRunner {
       message: `已创建隔离 worktree：${workspace.path}`
     });
 
-    const prompt = buildCodexPrompt(context, workspace.taskFilePath);
+    const containerSandbox = config.security.containerSandbox.enabled
+      ? new RootlessContainerSandbox(config.security.containerSandbox)
+      : undefined;
+    if (containerSandbox) {
+      await emit({
+        step: "developing",
+        type: "workspace.created",
+        message: `已启用 rootless container sandbox：${config.security.containerSandbox.runtime}/${config.security.containerSandbox.image}`
+      });
+    }
+
+    const taskFilePath = containerSandbox
+      ? toContainerWorkspacePath(workspace.path, workspace.taskFilePath)
+      : workspace.taskFilePath;
+    const prompt = buildCodexPrompt(context, taskFilePath);
     await emit({
       step: "developing",
       type: "codex.started",
@@ -127,7 +157,7 @@ export class LocalCodexRunner implements CodexRunner {
     });
 
     const codexExecResults: CodexExecResult[] = [];
-    const firstCodexRun = await runCodexExec(workspace.path, prompt, emit, config);
+    const firstCodexRun = await runCodexExec(workspace.path, prompt, emit, config, containerSandbox);
     codexExecResults.push(firstCodexRun);
     await emit({
       step: "testing",
@@ -135,7 +165,7 @@ export class LocalCodexRunner implements CodexRunner {
       message: "Codex 执行结束，开始运行项目测试"
     });
 
-    let testRun = await runConfiguredTests(context, workspace.path, config);
+    let testRun = await runConfiguredTests(context, workspace.path, config, containerSandbox);
     const repairAttempts = config.test.maxRepairAttempts;
 
     for (let attempt = 1; testRun.status === "failed" && attempt <= repairAttempts; attempt += 1) {
@@ -144,14 +174,20 @@ export class LocalCodexRunner implements CodexRunner {
         type: "test.failed",
         message: `测试未通过，启动第 ${attempt} 次 Codex 修复回合`
       });
-      const repairCodexRun = await runCodexExec(workspace.path, buildRepairPrompt(context, testRun.summary), emit, config);
+      const repairCodexRun = await runCodexExec(
+        workspace.path,
+        buildRepairPrompt(context, testRun.summary),
+        emit,
+        config,
+        containerSandbox
+      );
       codexExecResults.push(repairCodexRun);
       await emit({
         step: "testing",
         type: "test.started",
         message: `第 ${attempt} 次修复完成，重新运行测试`
       });
-      testRun = await runConfiguredTests(context, workspace.path, config);
+      testRun = await runConfiguredTests(context, workspace.path, config, containerSandbox);
     }
 
     if (testRun.status !== "passed") {
@@ -211,7 +247,8 @@ export class LocalCodexRunner implements CodexRunner {
 async function runConfiguredTests(
   context: CodexRunContext,
   workspacePath: string,
-  config: CodexRunnerConfig
+  config: CodexRunnerConfig,
+  containerSandbox: RootlessContainerSandbox | undefined
 ): Promise<TestRun> {
   return runTestCommand({
     command: config.test.command,
@@ -220,7 +257,31 @@ async function runConfiguredTests(
     runId: context.runId,
     prdId: context.prd.id,
     workItemId: context.workItem.id,
-    workspacePath
+    workspacePath,
+    ...(containerSandbox
+      ? {
+          runner: "patchpilot-container-test-runner",
+          environmentImage: config.security.containerSandbox.image,
+          executor: async (options) => {
+            const result = await containerSandbox.run({
+              workspacePath: options.cwd,
+              command: options.command,
+              timeoutMs: options.timeoutMs,
+              env: { ...options.env, CI: "1" },
+              maxOutputBytes: options.maxOutputBytes
+            });
+            const quotaOutput = result.diskLimitExceeded
+              ? `${result.output}\nContainer sandbox workspace disk quota exceeded.`
+              : result.output;
+            return {
+              exitCode: result.diskLimitExceeded && result.exitCode === 0 ? 1 : result.exitCode,
+              output: quotaOutput,
+              timedOut: result.timedOut,
+              durationMs: result.durationMs
+            };
+          }
+        }
+      : {})
   });
 }
 
@@ -228,20 +289,32 @@ async function runCodexExec(
   workspacePath: string,
   prompt: string,
   emit: EmitCodexRunnerEvent,
-  config: CodexRunnerConfig
+  config: CodexRunnerConfig,
+  containerSandbox: RootlessContainerSandbox | undefined
 ): Promise<CodexExecResult> {
-  const lastMessagePath = join(workspacePath, `.patchpilot-codex-${randomUUID()}.md`);
+  const lastMessageFileName = `.patchpilot-codex-${randomUUID()}.md`;
+  const lastMessagePath = join(workspacePath, lastMessageFileName);
+  const codexWorkspacePath = containerSandbox ? "/workspace" : workspacePath;
+  const codexLastMessagePath = containerSandbox ? `/workspace/${lastMessageFileName}` : lastMessagePath;
   const sandbox = config.security.codexSandbox;
-  const args = ["exec", "--json", "--sandbox", sandbox, "-C", workspacePath, "-o", lastMessagePath, "-"];
+  const args = ["exec", "--json", "--sandbox", sandbox, "-C", codexWorkspacePath, "-o", codexLastMessagePath, "-"];
   const useBypass = config.security.codexBypass;
   if (useBypass) {
     args.splice(2, 2, "--dangerously-bypass-approvals-and-sandbox");
   }
-  if (!existsSync(join(workspacePath, ".git"))) {
+  if (containerSandbox || !existsSync(join(workspacePath, ".git"))) {
     args.splice(args.length - 1, 0, "--skip-git-repo-check");
   }
 
-  const child = spawn("codex", args, {
+  const sandboxedProcess = containerSandbox
+    ? await containerSandbox.spawn({
+        workspacePath,
+        command: shellJoin(["codex", ...args]),
+        timeoutMs: config.budget.codexTimeoutMs,
+        env: { CI: "1" }
+      })
+    : undefined;
+  const child = sandboxedProcess?.child ?? spawn("codex", args, {
     cwd: workspacePath,
     env: { ...process.env, CI: "1" },
     stdio: ["pipe", "pipe", "pipe"]
@@ -249,7 +322,7 @@ async function runCodexExec(
 
   child.stdin.end(prompt);
 
-  const timeout = setTimeout(() => child.kill("SIGTERM"), config.budget.codexTimeoutMs);
+  const timeout = sandboxedProcess ? undefined : setTimeout(() => child.kill("SIGTERM"), config.budget.codexTimeoutMs);
   let stdoutBuffer = "";
   let stderr = "";
   let sessionId: string | undefined;
@@ -286,12 +359,15 @@ async function runCodexExec(
   const exitCode = await new Promise<number | null>((resolve) => {
     child.on("close", resolve);
   });
-  clearTimeout(timeout);
+  if (timeout) clearTimeout(timeout);
+  const sandboxCompletion = sandboxedProcess ? await sandboxedProcess.done : undefined;
   await pendingEmit;
 
-  if (exitCode !== 0) {
+  if (exitCode !== 0 || sandboxCompletion?.diskLimitExceeded) {
     const message = summarizeCodexExecFailure({
-      stderr,
+      stderr: sandboxCompletion?.diskLimitExceeded
+        ? `${stderr}\nContainer sandbox workspace disk quota exceeded.`
+        : stderr,
       stdoutRemainder: stdoutBuffer,
       exitCode
     });
@@ -705,6 +781,14 @@ function runShell(command: string, cwd: string, timeoutMs: number) {
       resolve({ exitCode, output });
     });
   });
+}
+
+function shellJoin(values: string[]) {
+  return values.map(shellQuote).join(" ");
+}
+
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function tail(value: string, max: number) {
