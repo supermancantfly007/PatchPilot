@@ -3,6 +3,7 @@
 import type {
   AgentRun,
   ApprovalRecord,
+  AuditChainVerification,
   BugReport,
   PatchPilotSnapshot,
   Requirement,
@@ -25,8 +26,10 @@ import {
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { ProductMetricsDashboard } from "@/components/ProductMetricsDashboard";
 import { StatusNotice } from "@/components/StatusNotice";
 import { api } from "@/lib/api";
+import { computeProductMetrics } from "@/lib/productMetrics";
 import {
   approvalKindLabels,
   approvalRiskLabels,
@@ -130,6 +133,7 @@ function approvalSortDate(approval: ApprovalRecord) {
 
 export default function ControlPage() {
   const [snapshot, setSnapshot] = useState<PatchPilotSnapshot | null>(null);
+  const [auditVerification, setAuditVerification] = useState<AuditChainVerification | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const [decidingApprovalId, setDecidingApprovalId] = useState<string | null>(null);
@@ -139,9 +143,13 @@ export default function ControlPage() {
 
     async function refresh() {
       try {
-        const nextSnapshot = await api.getSnapshot();
+        const [nextSnapshot, nextAuditVerification] = await Promise.all([
+          api.getSnapshot(),
+          api.verifyAudit().catch(() => null)
+        ]);
         if (cancelled) return;
         setSnapshot(nextSnapshot);
+        setAuditVerification(nextAuditVerification);
         setError(null);
       } catch (nextError) {
         if (!cancelled) {
@@ -184,6 +192,7 @@ export default function ControlPage() {
   const visibleApprovals = sortByDate(approvals, approvalSortDate).slice(0, 10);
   const visibleBudgetRuns = sortByDate(budgetedRuns.length ? budgetedRuns : runs, (item) => item.startedAt).slice(0, 8);
   const visibleAuditEvents = sortByDate(auditEvents, (item) => item.createdAt).slice(0, 10);
+  const productMetrics = snapshot ? computeProductMetrics(snapshot, { auditVerification }) : null;
 
   async function decideApproval(approval: ApprovalRecord, decision: "approve" | "deny") {
     setDecisionError(null);
@@ -279,6 +288,8 @@ export default function ControlPage() {
             {decisionError}
           </StatusNotice>
         ) : null}
+
+        <ProductMetricsDashboard metrics={productMetrics} />
 
         <div className="dashboard-grid">
           <section aria-label="需求管理" className="dashboard-panel">
