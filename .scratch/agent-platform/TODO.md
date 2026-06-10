@@ -120,7 +120,7 @@ Status: ready-for-agent
 ## E. ADR 待办
 
 - [x] `ADR-0001` 生产工作流引擎选择 Temporal，以及 polling MVP 的退出标准。Status: done. Role: architecture. Owner: codex-adr-0001-temporal-exit-criteria. Evidence: `docs/adr/0001-temporal-for-durable-workflows.md` records Temporal TypeScript SDK as the production Workflow Engine, polling MVP boundaries, alternatives, consequences, and concrete exit criteria. Verification: code review; `pnpm lint`; `pnpm test`; targeted Node path/link sanity check for ADR and required docs.
-- [ ] `ADR-0002` 项目事实源选择 `.scratch` Markdown、JSON、Postgres 或混合事件存储。Status: todo. Role: architecture. Owner: unclaimed.
+- [x] `ADR-0002` 项目事实源选择 `.scratch` Markdown、JSON、Postgres 或混合事件存储。Status: done. Role: architecture. Owner: codex-adr-0002-source-of-truth. Evidence: `docs/adr/0002-postgres-for-product-state.md` records Postgres/Drizzle as the production product-state source of truth, JSON-backed `PatchPilotStore` as the transitional local MVP runtime authority until `TD-202`, `.scratch` Markdown as planning/import-export rather than a second live runtime store, Audit Events as append-only product-state records, and Temporal/object-storage boundaries. Verification: code review; `pnpm lint`; `pnpm test`; targeted Node path/link sanity check for ADR references; generated-noise check clean; no runtime E2E run because this is docs-only.
 - [ ] `ADR-0003` Codex 集成主路径：SDK、`codex exec --json`、MCP 的分工和适配器接口。Status: todo. Role: architecture. Owner: unclaimed.
 - [ ] `ADR-0004` worktree + container/sandbox 隔离模型。Status: todo. Role: architecture. Owner: unclaimed.
 - [ ] `ADR-0005` WorkItem 并发领取与 lease/fencing 机制。Status: todo. Role: architecture. Owner: unclaimed.
