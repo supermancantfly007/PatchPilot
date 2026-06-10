@@ -16,6 +16,7 @@
     "@patchpilot/artifacts": "workspace:*",
     "@patchpilot/codex-runner": "workspace:*",
     "@patchpilot/contracts": "workspace:*",
+    "@patchpilot/db": "workspace:*",
     "@patchpilot/domain": "workspace:*",
     "@patchpilot/telemetry": "workspace:*",
     "fastify": "^5.8.5",

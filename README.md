@@ -17,6 +17,8 @@ pnpm dev:team
 
 The defaults are enough for local boot. Use `.env.example` as a template when you need to export overrides, for example `PATCHPILOT_RUNNER=simulated pnpm dev:team` or `PATCHPILOT_RUNNER=codex pnpm dev:team`.
 
+Product state is stored through `@patchpilot/db`. By default the API uses a file-backed PGlite database under `PATCHPILOT_DATA_DIR` so local boot still does not require Docker. Set `PATCHPILOT_DATABASE_URL` to use a real Postgres database. `patchpilot-store.json` is retained as a legacy JSON import/export fixture, not as the runtime source of truth.
+
 PatchPilot also reads `.patchpilot/config.yaml` from the repo root. Environment variables still override config file values, and missing config values fall back to the same local defaults:
 
 ```yaml
@@ -120,6 +122,12 @@ docker compose -f infra/docker-compose.yml ps
 
 Compose provides Postgres, Redis, and MinIO with health checks. It does not containerize the API, web app, or worker; keep using the pnpm scripts above for those processes.
 
+To point the API at compose Postgres:
+
+```bash
+PATCHPILOT_DATABASE_URL=postgresql://patchpilot:patchpilot@localhost:5432/patchpilot pnpm dev:api
+```
+
 ## What Works Now
 
 - White-background Next.js workbench for simple requirement intake
@@ -134,7 +142,7 @@ Compose provides Postgres, Redis, and MinIO with health checks. It does not cont
 - Rejected acceptance requeues the same work items as a new rework round, preserves the rejection reason, and creates fresh agent runs on the next team start
 - Bug reports that first go to the test agent for reproduction, then create a backend fix task for the developer agent
 - Failed agent runs are classified as transient, deterministic, test_failed, policy_denied, budget_exhausted, or environment_failed; failed TestRun evidence can be stored as a reported Defect linked to the run, work item, test run, and commit
-- JSON-backed local state for fast iteration
+- Postgres/PGlite-backed product state with JSON fixture import/export for local demos and migrations
 
 ## Runner Modes
 

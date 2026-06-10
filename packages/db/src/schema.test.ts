@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { patchPilotTableNames } from ".";
 
 const expectedTableNames = [
+  "acceptance_decisions",
   "agent_runs",
   "agents",
   "approvals",
@@ -22,6 +23,7 @@ const expectedTableNames = [
   "projects",
   "pull_requests",
   "repositories",
+  "review_records",
   "requirements",
   "test_cases",
   "test_runs",
@@ -95,7 +97,10 @@ describe("PatchPilot Drizzle schema", () => {
         "audit_events_trace_id_created_at_idx",
         "test_runs_work_item_id_created_at_idx",
         "pull_requests_provider_url_unique",
-        "pull_requests_work_item_id_unique",
+        "pull_requests_agent_run_id_unique",
+        "pull_requests_work_item_id_idx",
+        "review_records_agent_run_id_unique",
+        "acceptance_decisions_project_id_idx",
         "budgets_scope_unique"
       ])
     );
@@ -150,6 +155,13 @@ describe("PatchPilot Drizzle schema", () => {
         'pr_1', 'proj_1', 'local', 'draft', 'Create schema', 'req_1', 'prd_1_v1', 'wi_1', 'run_1',
         'agent/schema', 'main', 'local://pull-requests/pr_1', '# PR', 'Looks ok', 'Tests pending'
       );
+      insert into review_records (
+        id, project_id, status, requirement_id, prd_version_id, work_item_id, agent_run_id, linked_pull_request_id,
+        reviewer_agent_id, summary, test_summary, risk_level
+      ) values (
+        'review_1', 'proj_1', 'approved', 'req_1', 'prd_1_v1', 'wi_1', 'run_1', 'pr_1',
+        'agent_backend', 'Approved', 'Tests passed', 'low'
+      );
       insert into test_cases (
         id, project_id, requirement_id, prd_version_id, work_item_id, title, kind, status, priority, expected_result
       ) values (
@@ -175,6 +187,8 @@ describe("PatchPilot Drizzle schema", () => {
         'approval_1', 'proj_1', 'prd_approval', 'pending', 'prd', 'prd_1_v1', 'user_1', 'Approve PRD', 'low',
         now() + interval '1 day', 'req_1', 'prd_1_v1', 'wi_1', 'run_1'
       );
+      insert into acceptance_decisions (run_id, project_id, status, reason, decided_at)
+        values ('run_1', 'proj_1', 'accepted', 'Looks good', now());
       insert into audit_events (
         id, project_id, trace_id, actor_type, actor_id, action, target_type, target_id, message, hash,
         requirement_id, prd_version_id, work_item_id, agent_run_id
@@ -324,8 +338,7 @@ describe("PatchPilot Drizzle schema", () => {
       );
     `);
 
-    await expect(
-      db.query(`
+    await db.exec(`
         insert into pull_requests (
           id, project_id, provider, status, title, requirement_id, prd_version_id, work_item_id, agent_run_id,
           branch_name, base_branch, url, body_markdown, reviewer_summary, test_summary
@@ -333,6 +346,18 @@ describe("PatchPilot Drizzle schema", () => {
           'pr_2', 'proj_1', 'local', 'draft', 'Create schema again', 'req_1', 'prd_1_v1', 'wi_claimed',
           'run_failed_retry', 'agent/schema-retry', 'main', 'local://pull-requests/pr_2', '# PR', 'Looks ok',
           'Tests pending'
+        )
+      `);
+
+    await expect(
+      db.query(`
+        insert into pull_requests (
+          id, project_id, provider, status, title, requirement_id, prd_version_id, work_item_id, agent_run_id,
+          branch_name, base_branch, url, body_markdown, reviewer_summary, test_summary
+        ) values (
+          'pr_duplicate_run', 'proj_1', 'local', 'draft', 'Duplicate run PR', 'req_1', 'prd_1_v1',
+          'wi_claimed', 'run_failed_retry', 'agent/schema-retry-2', 'main',
+          'local://pull-requests/pr_duplicate_run', '# PR', 'Looks ok', 'Tests pending'
         )
       `)
     ).rejects.toThrow();

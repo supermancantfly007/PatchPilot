@@ -1,6 +1,6 @@
 # Scratch Markdown Mode
 
-PatchPilot's API runtime currently uses the JSON-backed store. The local `.scratch` Markdown mode is a separate prototype/import-export surface for agents and CLI experiments, not an automatic second source of truth.
+PatchPilot's API runtime uses the Postgres repository layer from `@patchpilot/db` and defaults to local PGlite when no external Postgres URL is configured. The local `.scratch` Markdown mode is a separate prototype/import-export surface for agents and CLI experiments, not an automatic second source of truth.
 
 ## Files
 
@@ -22,4 +22,4 @@ This means multiple local workers can race to claim the same `.scratch` work ite
 
 ## Boundary
 
-The JSON API store remains authoritative for the current Web/API/worker MVP. Markdown mode is explicit import/export through `@patchpilot/scratch-store`; it does not silently sync with API state. A future Postgres repository layer can import these Markdown files or export reports, but it should keep one authoritative runtime store at a time.
+The Postgres repository is authoritative for the current Web/API/worker MVP. Markdown mode is explicit import/export through `@patchpilot/scratch-store`; it does not silently sync with API state. JSON snapshots remain a compatibility fixture import/export format, but they are not the live runtime store.

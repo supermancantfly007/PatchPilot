@@ -97,6 +97,8 @@ export const pullRequestStatus = pgEnum("pull_request_status", [
   "merged",
   "closed"
 ]);
+export const reviewStatus = pgEnum("review_status", ["approved", "changes_requested", "blocked"]);
+export const acceptanceStatus = pgEnum("acceptance_status", ["pending", "accepted", "rejected"]);
 export const defectSeverity = pgEnum("defect_severity", ["low", "medium", "high", "critical"]);
 export const defectStatus = pgEnum("defect_status", [
   "reported",
@@ -548,14 +550,81 @@ export const pullRequests = pgTable(
   },
   (table) => [
     uniqueIndex("pull_requests_provider_url_unique").on(table.provider, table.url),
-    uniqueIndex("pull_requests_work_item_id_unique").on(table.workItemId),
+    uniqueIndex("pull_requests_agent_run_id_unique").on(table.agentRunId),
     index("pull_requests_project_id_idx").on(table.projectId),
+    index("pull_requests_work_item_id_idx").on(table.workItemId),
     index("pull_requests_agent_run_id_idx").on(table.agentRunId),
     index("pull_requests_status_idx").on(table.status),
     check("pull_requests_title_not_empty", sql`length(${table.title}) > 0`),
     check("pull_requests_branch_name_not_empty", sql`length(${table.branchName}) > 0`),
     check("pull_requests_base_branch_not_empty", sql`length(${table.baseBranch}) > 0`),
     check("pull_requests_url_not_empty", sql`length(${table.url}) > 0`)
+  ]
+);
+
+export const reviewRecords = pgTable(
+  "review_records",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    status: reviewStatus("status").notNull(),
+    requirementId: text("requirement_id")
+      .notNull()
+      .references(() => requirements.id, { onDelete: "cascade" }),
+    prdVersionId: text("prd_version_id")
+      .notNull()
+      .references(() => prdVersions.id, { onDelete: "cascade" }),
+    workItemId: text("work_item_id")
+      .notNull()
+      .references(() => workItems.id, { onDelete: "cascade" }),
+    agentRunId: text("agent_run_id")
+      .notNull()
+      .references(() => agentRuns.id, { onDelete: "cascade" }),
+    linkedPullRequestId: text("linked_pull_request_id")
+      .notNull()
+      .references(() => pullRequests.id, { onDelete: "cascade" }),
+    reviewerAgentId: text("reviewer_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    summary: text("summary").notNull(),
+    testSummary: text("test_summary").notNull(),
+    riskLevel: text("risk_level").notNull(),
+    findings: jsonb("findings").$type<string[]>().notNull().default(emptyJsonArray),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("review_records_agent_run_id_unique").on(table.agentRunId),
+    index("review_records_project_id_idx").on(table.projectId),
+    index("review_records_prd_version_id_idx").on(table.prdVersionId),
+    index("review_records_work_item_id_idx").on(table.workItemId),
+    index("review_records_linked_pull_request_id_idx").on(table.linkedPullRequestId),
+    index("review_records_status_idx").on(table.status),
+    check("review_records_summary_not_empty", sql`length(${table.summary}) > 0`),
+    check("review_records_test_summary_not_empty", sql`length(${table.testSummary}) > 0`),
+    check("review_records_risk_level_valid", sql`${table.riskLevel} in ('low', 'medium', 'high')`)
+  ]
+);
+
+export const acceptanceDecisions = pgTable(
+  "acceptance_decisions",
+  {
+    runId: text("run_id")
+      .primaryKey()
+      .references(() => agentRuns.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    status: acceptanceStatus("status").notNull(),
+    reason: text("reason"),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    index("acceptance_decisions_project_id_idx").on(table.projectId),
+    index("acceptance_decisions_status_idx").on(table.status),
+    index("acceptance_decisions_decided_at_idx").on(table.decidedAt)
   ]
 );
 
