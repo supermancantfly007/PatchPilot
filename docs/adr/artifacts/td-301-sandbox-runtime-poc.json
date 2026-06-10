@@ -1,0 +1,50 @@
+{
+  "status": "passed",
+  "startedAt": "2026-06-10T18:38:53.354Z",
+  "completedAt": "2026-06-10T18:38:53.701Z",
+  "image": "postgres:16-alpine",
+  "requestedRuntime": "auto",
+  "selectedRuntime": {
+    "family": "docker-runc",
+    "label": "Docker default runc runtime",
+    "engine": "docker",
+    "available": true
+  },
+  "selectedProductionRuntime": false,
+  "toolAvailability": {
+    "docker": true,
+    "podman": false,
+    "runsc": false,
+    "kataRuntime": false,
+    "firecracker": false
+  },
+  "dockerRuntimes": [
+    {
+      "name": "io.containerd.runc.v2"
+    },
+    {
+      "name": "runc"
+    }
+  ],
+  "command": "docker run --rm --interactive --name patchpilot-sandbox-poc-4994 --workdir /workspace --user 501:20 --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --cpus 1 --memory 256m --read-only --tmpfs /tmp:rw,nosuid,nodev,size=32m --tmpfs /home/patchpilot:rw,nosuid,nodev,size=32m --mount type=bind,src=<temp-poc-root>/workspace,dst=/workspace --env HOME=/home/patchpilot --env PATCHPILOT_CONTAINER_SANDBOX=1 postgres:16-alpine sh -lc set -eu\ndenied_host_path_readable=false\nif cat '<temp-poc-root>/denied-host-path/secret.txt' >/dev/null 2>&1; then denied_host_path_readable=true; fi\ndocker_socket_visible=false\nif [ -e /var/run/docker.sock ] || [ -S /var/run/docker.sock ]; then docker_socket_visible=true; fi\nworkspace_writable=false\nif printf sandbox-poc-ok > /workspace/result.txt; then workspace_writable=true; fi\nnon_root=false\nif [ \"$(id -u)\" != \"0\" ]; then non_root=true; fi\ncat > /workspace/result.json <<EOF\n{\n  \"workItem\": \"TD-301 minimal sandbox runtime PoC\",\n  \"nonRoot\": $non_root,\n  \"uid\": $(id -u),\n  \"gid\": $(id -g),\n  \"home\": \"$HOME\",\n  \"dockerSocketVisible\": $docker_socket_visible,\n  \"deniedHostPathReadable\": $denied_host_path_readable,\n  \"workspaceWritable\": $workspace_writable\n}\nEOF\ncat /workspace/result.json",
+  "process": {
+    "exitCode": 0,
+    "stdout": "{\n  \"workItem\": \"TD-301 minimal sandbox runtime PoC\",\n  \"nonRoot\": true,\n  \"uid\": 501,\n  \"gid\": 20,\n  \"home\": \"/home/patchpilot\",\n  \"dockerSocketVisible\": false,\n  \"deniedHostPathReadable\": false,\n  \"workspaceWritable\": true\n}",
+    "stderr": ""
+  },
+  "workspaceResult": {
+    "workItem": "TD-301 minimal sandbox runtime PoC",
+    "nonRoot": true,
+    "uid": 501,
+    "gid": 20,
+    "home": "/home/patchpilot",
+    "dockerSocketVisible": false,
+    "deniedHostPathReadable": false,
+    "workspaceWritable": true
+  },
+  "residualRisk": [
+    "The selected production runtime is gVisor, but this host did not expose a runnable gVisor Docker runtime.",
+    "The PoC used Docker default runc runtime as the best local substitute, so it does not prove production gVisor syscall compatibility or isolation.",
+    "Run this script on a Linux worker with Docker/containerd gVisor integration or complete the Kubernetes RuntimeClass E2E before production acceptance."
+  ]
+}

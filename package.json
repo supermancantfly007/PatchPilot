@@ -22,6 +22,7 @@
     "events:generate": "tsx scripts/generate-event-schema.mjs",
     "events:check": "tsx scripts/generate-event-schema.mjs --check",
     "k8s:validate": "node scripts/validate-k8s-worker-pool.mjs",
+    "sandbox:poc": "node scripts/poc-sandbox-runtime.mjs",
     "e2e:cli": "node scripts/e2e-cli.mjs",
     "e2e:approvals": "node scripts/e2e-approvals.mjs",
     "e2e:budget": "node scripts/e2e-budget-governance.mjs",
