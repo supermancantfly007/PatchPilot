@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runTestCommand } from "@patchpilot/testing";
+import { GitWorkspaceManager, type WorkspaceManager } from "@patchpilot/workspace-manager";
 import type {
   AgentRunEvent,
   AgentRunResult,
@@ -55,6 +55,8 @@ export interface CodexRunner {
 }
 
 export class LocalCodexRunner implements CodexRunner {
+  constructor(private readonly workspaceManager: WorkspaceManager = new GitWorkspaceManager()) {}
+
   async isAvailable() {
     try {
       const result = await runShell("codex --version", process.cwd(), 5000);
@@ -65,8 +67,7 @@ export class LocalCodexRunner implements CodexRunner {
   }
 
   async isGitWorkspaceAvailable(cwd = process.cwd()) {
-    const result = await runShell("git rev-parse --is-inside-work-tree", cwd, 5000);
-    return result.exitCode === 0 && result.output.trim() === "true";
+    return this.workspaceManager.isGitWorkspaceAvailable(cwd);
   }
 
   async run(
@@ -74,7 +75,9 @@ export class LocalCodexRunner implements CodexRunner {
     emit: EmitCodexRunnerEvent,
     config: CodexRunnerConfig
   ): Promise<AgentRunResult> {
-    const workspace = await prepareWorkspace(context, config);
+    const workspace = await this.workspaceManager.prepareWorkspace(context, {
+      workspaceRoot: config.dev.workspaceRoot
+    });
     await emit({
       step: "developing",
       type: "workspace.created",
@@ -123,7 +126,10 @@ export class LocalCodexRunner implements CodexRunner {
       message: "目标测试通过，正在整理 diff 和审查摘要"
     });
 
-    const changedFiles = await listChangedFiles(workspace.path);
+    const artifacts = await this.workspaceManager.collectArtifacts(workspace, {
+      summaryPath: firstCodexRun.lastMessagePath
+    });
+    const changedFiles = artifacts.changedFiles;
     await emit({
       step: "confirming",
       type: "git.diff.created",
@@ -131,7 +137,7 @@ export class LocalCodexRunner implements CodexRunner {
     });
 
     return {
-      summary: await readSummary(firstCodexRun.lastMessagePath, changedFiles),
+      summary: artifacts.summary,
       previewUrl: config.dev.previewUrl,
       riskLevel: changedFiles.length > 12 ? "medium" : "low",
       changedFiles,
@@ -143,26 +149,6 @@ export class LocalCodexRunner implements CodexRunner {
       codexSessionId: firstCodexRun.sessionId
     };
   }
-}
-
-async function prepareWorkspace(context: CodexRunContext, config: CodexRunnerConfig) {
-  const root = config.dev.workspaceRoot;
-  await mkdir(root, { recursive: true });
-
-  const workspacePath = join(root, context.runId);
-  const worktreeResult = await runShell(`git worktree add --detach ${shellQuote(workspacePath)} HEAD`, process.cwd(), 30000);
-
-  if (worktreeResult.exitCode !== 0) {
-    throw new Error(`无法创建隔离 git worktree：${tail(worktreeResult.output, 1200)}`);
-  }
-
-  const taskFilePath = join(workspacePath, "PATCHPILOT_TASK.md");
-  await writeFile(taskFilePath, buildTaskMarkdown(context));
-
-  return {
-    path: workspacePath,
-    taskFilePath
-  };
 }
 
 async function runConfiguredTests(
@@ -255,51 +241,6 @@ async function runCodexExec(
   return { lastMessagePath, sessionId };
 }
 
-async function listChangedFiles(workspacePath: string) {
-  const result = await runShell("git status --short", workspacePath, 30000);
-  if (result.exitCode !== 0) return ["PATCHPILOT_TASK.md"];
-  return result.output
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => line.replace(/^..?\s+/, ""))
-    .filter((file) => file !== "PATCHPILOT_TASK.md" && !file.startsWith(".patchpilot-codex-"));
-}
-
-async function readSummary(path: string, changedFiles: string[]) {
-  try {
-    const summary = (await readFile(path, "utf8")).trim();
-    if (summary) return summary.slice(0, 2000);
-  } catch {
-    // The JSONL stream is still authoritative if Codex did not write the optional summary file.
-  }
-  if (changedFiles.length === 0) return "Codex 执行完成，但没有产生文件变更。";
-  return `Codex 执行完成，产生 ${changedFiles.length} 个变更文件。`;
-}
-
-function buildTaskMarkdown(context: CodexRunContext) {
-  return [
-    `# PatchPilot Task ${context.runId}`,
-    "",
-    "Workspace: git worktree",
-    "",
-    "## Requirement",
-    context.requirement.rawInput,
-    "",
-    "## PRD",
-    context.prd.bodyMarkdown,
-    "",
-    "## Work Item",
-    `- Title: ${context.workItem.title}`,
-    `- Scope: ${context.workItem.scope}`,
-    "",
-    "## Acceptance Criteria",
-    ...context.workItem.acceptanceCriteria.map((criterion) => `- ${criterion}`),
-    "",
-    "## Test Suggestions",
-    ...context.workItem.testSuggestions.map((suggestion) => `- ${suggestion}`)
-  ].join("\n");
-}
 
 function buildCodexPrompt(context: CodexRunContext, taskFilePath: string) {
   const method = context.workItem.sourceBugId ? "使用 /diagnose。" : "使用 /tdd。";
@@ -387,10 +328,6 @@ function runShell(command: string, cwd: string, timeoutMs: number) {
       resolve({ exitCode, output });
     });
   });
-}
-
-function shellQuote(value: string) {
-  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function tail(value: string, max: number) {

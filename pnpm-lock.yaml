@@ -109,6 +109,9 @@ importers:
       '@patchpilot/testing':
         specifier: workspace:*
         version: link:../testing
+      '@patchpilot/workspace-manager':
+        specifier: workspace:*
+        version: link:../workspace-manager
     devDependencies:
       '@types/node':
         specifier: ^24.10.1
@@ -146,6 +149,22 @@ importers:
         version: 4.1.8(@types/node@24.13.1)(vite@8.0.16(@types/node@24.13.1)(esbuild@0.28.0)(tsx@4.22.4)(yaml@2.9.0))
 
   packages/testing:
+    dependencies:
+      '@patchpilot/domain':
+        specifier: workspace:*
+        version: link:../domain
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.13.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.0.15
+        version: 4.1.8(@types/node@24.13.1)(vite@8.0.16(@types/node@24.13.1)(esbuild@0.28.0)(tsx@4.22.4)(yaml@2.9.0))
+
+  packages/workspace-manager:
     dependencies:
       '@patchpilot/domain':
         specifier: workspace:*

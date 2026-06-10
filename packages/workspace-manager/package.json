@@ -1,5 +1,5 @@
 {
-  "name": "@patchpilot/codex-runner",
+  "name": "@patchpilot/workspace-manager",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,9 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@patchpilot/domain": "workspace:*",
-    "@patchpilot/testing": "workspace:*",
-    "@patchpilot/workspace-manager": "workspace:*"
+    "@patchpilot/domain": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
