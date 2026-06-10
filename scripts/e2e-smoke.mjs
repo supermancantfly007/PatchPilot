@@ -76,6 +76,26 @@ try {
 
   await page.waitForURL(baseUrl);
   await page.getByText(/你说目标，PatchPilot 负责推进到可验收结果/).waitFor();
+  await page.getByRole("link", { name: /专业控制台/ }).click();
+
+  await page.waitForURL(/\/control/);
+  await page.getByRole("heading", { name: "专业控制台" }).waitFor();
+  await page.getByText(/[1-9]\d* 个工作项/).first().waitFor();
+  await page.getByText(/[1-9]\d* 条测试用例/).first().waitFor();
+  await page.getByText(/[1-9]\d* 个 Agent Run/).first().waitFor();
+  await page.getByText(/[1-9]\d* 条审计事件/).first().waitFor();
+  await page.getByRole("heading", { name: "需求管理" }).waitFor();
+  await page.getByRole("heading", { name: "工作项看板" }).waitFor();
+  await page.getByRole("heading", { name: "测试用例管理" }).waitFor();
+  await page.getByRole("heading", { name: "Bug 队列" }).waitFor();
+  await page.getByRole("heading", { name: "Agent Run 证据" }).waitFor();
+  const requirementRegion = page.getByRole("region", { name: "需求管理" });
+  await requirementRegion.getByText(/端到端可用的 agent 平台/).first().waitFor();
+  await requirementRegion.getByText(/4 个工作项 · 8 个 Agent Run · 4 条测试用例/).first().waitFor();
+  const workItemRegion = page.getByRole("region", { name: "工作项看板" });
+  await workItemRegion.getByText(/返工第 1 轮/).first().waitFor();
+  await workItemRegion.getByText("首页需要明确显示返工任务已重新进入队列。").first().waitFor();
+  await page.getByRole("region", { name: "交付审计" }).getByText("acceptance.accepted").first().waitFor();
 
   if (process.env.PATCHPILOT_E2E_SCREENSHOT) {
     await page.screenshot({ path: process.env.PATCHPILOT_E2E_SCREENSHOT, fullPage: true });

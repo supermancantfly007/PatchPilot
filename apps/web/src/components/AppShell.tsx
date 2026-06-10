@@ -1,4 +1,4 @@
-import { Bot, CircleDot } from "lucide-react";
+import { Bot, CircleDot, ClipboardList } from "lucide-react";
 import Link from "next/link";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -12,9 +12,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </span>
             <span>PatchPilot</span>
           </Link>
-          <div className="project-pill">
-            <CircleDot size={14} />
-            本地 MVP 工作区
+          <div className="topbar-actions">
+            <Link className="topbar-link" href="/control">
+              <ClipboardList size={15} />
+              专业控制台
+            </Link>
+            <div className="project-pill">
+              <CircleDot size={14} />
+              本地 MVP 工作区
+            </div>
           </div>
         </div>
       </header>

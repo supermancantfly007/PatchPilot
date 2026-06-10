@@ -1,0 +1,440 @@
+"use client";
+
+import type {
+  AgentRun,
+  BugReport,
+  PatchPilotSnapshot,
+  Requirement,
+  TestCase,
+  WorkItem
+} from "@patchpilot/domain";
+import { Activity, AlertTriangle, Bug, ClipboardList, FileCheck2, GitPullRequest, ShieldCheck } from "lucide-react";
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { AppShell } from "@/components/AppShell";
+import { StatusNotice } from "@/components/StatusNotice";
+import { api } from "@/lib/api";
+
+const requirementStatusLabels: Record<Requirement["status"], string> = {
+  submitted: "已提交",
+  clarifying: "待澄清",
+  prd_draft: "需求说明待确认",
+  approved: "已批准",
+  rejected: "已拒绝"
+};
+
+const workItemStatusLabels: Record<WorkItem["status"], string> = {
+  proposed: "待规划",
+  ready: "可执行",
+  claimed: "已领取",
+  running: "执行中",
+  review: "审查中",
+  blocked: "阻塞",
+  done: "完成",
+  cancelled: "取消"
+};
+
+const roleLabels: Record<WorkItem["role"], string> = {
+  product: "产品",
+  frontend: "前端",
+  backend: "后端",
+  test: "测试",
+  ops: "运维",
+  reviewer: "审查"
+};
+
+const runStatusLabels: Record<AgentRun["status"], string> = {
+  queued: "排队中",
+  running: "执行中",
+  needs_approval: "等待批准",
+  succeeded: "待验收",
+  failed: "失败",
+  cancelled: "取消"
+};
+
+const testCaseStatusLabels: Record<TestCase["status"], string> = {
+  draft: "草稿",
+  ready: "待执行",
+  passed: "已通过",
+  failed: "未通过",
+  blocked: "阻塞"
+};
+
+const bugStatusLabels: Record<BugReport["status"], string> = {
+  reported: "已报告",
+  confirmed: "已复现",
+  fixing: "修复中",
+  fixed: "已修复",
+  rejected: "已拒绝"
+};
+
+function statusTone(status: Requirement["status"] | WorkItem["status"] | AgentRun["status"] | TestCase["status"] | BugReport["status"]) {
+  if (["approved", "done", "succeeded", "passed", "fixed"].includes(status)) return "green";
+  if (["rejected", "blocked", "failed", "cancelled"].includes(status)) return "red";
+  if (["prd_draft", "review", "needs_approval", "ready", "reported", "confirmed", "fixing"].includes(status)) return "amber";
+  return "blue";
+}
+
+function formatShortDate(value?: string) {
+  if (!value) return "暂无时间";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
+function sortByDate<T>(items: T[], getDate: (item: T) => string | undefined) {
+  return [...items].sort((left, right) => {
+    const leftTime = new Date(getDate(left) ?? 0).getTime();
+    const rightTime = new Date(getDate(right) ?? 0).getTime();
+    return rightTime - leftTime;
+  });
+}
+
+export default function ControlPage() {
+  const [snapshot, setSnapshot] = useState<PatchPilotSnapshot | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refresh() {
+      try {
+        const nextSnapshot = await api.getSnapshot();
+        if (cancelled) return;
+        setSnapshot(nextSnapshot);
+        setError(null);
+      } catch (nextError) {
+        if (!cancelled) {
+          setError(nextError instanceof Error ? nextError.message : "专业控制台加载失败。");
+        }
+      }
+    }
+
+    void refresh();
+    const interval = setInterval(() => void refresh(), 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const requirements = snapshot?.requirements ?? [];
+  const prds = snapshot?.prds ?? [];
+  const workItems = snapshot?.workItems ?? [];
+  const bugs = snapshot?.bugs ?? [];
+  const testCases = snapshot?.testCases ?? [];
+  const runs = snapshot?.agentRuns ?? [];
+  const reviewRecords = snapshot?.reviewRecords ?? [];
+  const auditEvents = snapshot?.auditEvents ?? [];
+  const pullRequests = snapshot?.pullRequests ?? [];
+  const openWorkItems = workItems.filter((item) => !["done", "cancelled"].includes(item.status));
+  const openBugs = bugs.filter((bug) => !["fixed", "rejected"].includes(bug.status));
+  const failedRuns = runs.filter((run) => run.status === "failed" || run.status === "cancelled");
+  const recentRequirements = sortByDate(requirements, (item) => item.updatedAt).slice(0, 8);
+  const visibleWorkItems = sortByDate(workItems, (item) => item.updatedAt ?? item.createdAt).slice(0, 10);
+  const visibleTestCases = sortByDate(testCases, (item) => item.updatedAt).slice(0, 10);
+  const visibleRuns = sortByDate(runs, (item) => item.startedAt).slice(0, 10);
+  const visibleAuditEvents = sortByDate(auditEvents, (item) => item.createdAt).slice(0, 10);
+
+  return (
+    <AppShell>
+      <section className="section-heading">
+        <div>
+          <span className="eyebrow compact">
+            <ClipboardList size={15} />
+            专业模式
+          </span>
+          <h1 style={{ margin: "12px 0 0", fontSize: 42 }}>专业控制台</h1>
+          <p className="muted" style={{ margin: "10px 0 0", maxWidth: 760, lineHeight: 1.6 }}>
+            集中查看需求、工作项、bug、测试用例、Agent Run、PR 和审计事件，方便项目负责人判断 agent team 是否真实推进。
+          </p>
+        </div>
+      </section>
+
+      <div className="grid" style={{ marginTop: 26 }}>
+        {error ? (
+          <StatusNotice title="专业控制台暂时不可用" tone="error">
+            {error}
+          </StatusNotice>
+        ) : null}
+        {!snapshot && !error ? (
+          <StatusNotice title="正在同步项目事实" tone="info">
+            正在读取 control plane snapshot。
+          </StatusNotice>
+        ) : null}
+
+        <div className="summary-strip">
+          <div className="summary-stat">
+            <span className="muted">需求</span>
+            <strong>{requirements.length} 个需求</strong>
+          </div>
+          <div className="summary-stat">
+            <span className="muted">工作项</span>
+            <strong>{workItems.length} 个工作项</strong>
+            <small className="muted">{openWorkItems.length} 个未完成</small>
+          </div>
+          <div className="summary-stat">
+            <span className="muted">Bug</span>
+            <strong>{bugs.length} 个 bug</strong>
+            <small className="muted">{openBugs.length} 个待处理</small>
+          </div>
+          <div className="summary-stat">
+            <span className="muted">测试用例</span>
+            <strong>{testCases.length} 条测试用例</strong>
+          </div>
+          <div className="summary-stat">
+            <span className="muted">Agent Run</span>
+            <strong>{runs.length} 个 Agent Run</strong>
+            <small className="muted">{failedRuns.length} 个失败或取消</small>
+          </div>
+          <div className="summary-stat">
+            <span className="muted">审计</span>
+            <strong>{auditEvents.length} 条审计事件</strong>
+          </div>
+        </div>
+
+        <div className="dashboard-grid">
+          <section aria-label="需求管理" className="dashboard-panel">
+            <div className="panel-title">
+              <h3>需求管理</h3>
+              <span className="status-pill">{requirements.length} 个</span>
+            </div>
+            <div className="dashboard-list compact-list-panel">
+              {recentRequirements.length ? (
+                recentRequirements.map((requirement) => {
+                  const prdIds = prds
+                    .filter((prd) => prd.requirementId === requirement.id)
+                    .map((prd) => prd.id);
+                  const requirementWorkItems = workItems.filter((item) => prdIds.includes(item.prdId));
+                  const requirementRuns = runs.filter((run) => prdIds.includes(run.prdId));
+                  const requirementTestCases = testCases.filter((testCase) => prdIds.includes(testCase.prdId));
+                  const requirementReviews = reviewRecords.filter((review) => prdIds.includes(review.prdId));
+
+                  return (
+                    <Link className="dashboard-row" href={`/requirements/${requirement.id}/confirm`} key={requirement.id}>
+                      <span>
+                        <strong>{requirement.simpleSummary}</strong>
+                        <small>
+                          {requirementStatusLabels[requirement.status]} · {formatShortDate(requirement.updatedAt)}
+                        </small>
+                        <small>
+                          {requirementWorkItems.length} 个工作项 · {requirementRuns.length} 个 Agent Run ·{" "}
+                          {requirementTestCases.length} 条测试用例 · {requirementReviews.length} 条审查证据
+                        </small>
+                      </span>
+                      <span className={`status-pill ${statusTone(requirement.status)}`}>
+                        {requirementStatusLabels[requirement.status]}
+                      </span>
+                    </Link>
+                  );
+                })
+              ) : (
+                <p className="empty-copy">还没有需求。提交一个想法后，这里会显示 PRD 和交付证据计数。</p>
+              )}
+            </div>
+          </section>
+
+          <section aria-label="工作项看板" className="dashboard-panel">
+            <div className="panel-title">
+              <h3>工作项看板</h3>
+              <span className="status-pill">{openWorkItems.length} 个未完成</span>
+            </div>
+            <div className="dashboard-list compact-list-panel">
+              {visibleWorkItems.length ? (
+                visibleWorkItems.map((item) => (
+                  <div className="dashboard-row" key={item.id}>
+                    <span>
+                      <strong>{item.title}</strong>
+                      <small>
+                        {roleLabels[item.role]} agent · {item.scope}
+                      </small>
+                      {(item.reworkCount ?? 0) > 0 ? (
+                        <small className="rework-reason">
+                          返工第 {item.reworkCount} 轮
+                          {item.lastRejectionReason ? ` · ${item.lastRejectionReason}` : ""}
+                        </small>
+                      ) : null}
+                    </span>
+                    <span className={`status-pill ${statusTone(item.status)}`}>{workItemStatusLabels[item.status]}</span>
+                  </div>
+                ))
+              ) : (
+                <p className="empty-copy">PRD 批准后会生成可领取的工作项。</p>
+              )}
+            </div>
+          </section>
+
+          <section aria-label="Bug 队列" className="dashboard-panel">
+            <div className="panel-title">
+              <h3>Bug 队列</h3>
+              <span className="status-pill">{openBugs.length} 个待处理</span>
+            </div>
+            <div className="dashboard-list compact-list-panel">
+              {bugs.length ? (
+                sortByDate(bugs, (bug) => bug.updatedAt).slice(0, 8).map((bug) => (
+                  <div className="dashboard-row" key={bug.id}>
+                    <span>
+                      <strong>{bug.title}</strong>
+                      <small>
+                        {bug.severity} · {bug.expectedBehavior}
+                      </small>
+                    </span>
+                    <span className={`status-pill ${statusTone(bug.status)}`}>{bugStatusLabels[bug.status]}</span>
+                  </div>
+                ))
+              ) : (
+                <p className="empty-copy">通过“修 bug”模板提交问题后，测试 agent 会先复现，再交给开发 agent 修复。</p>
+              )}
+            </div>
+          </section>
+
+          <section aria-label="测试用例管理" className="dashboard-panel">
+            <div className="panel-title">
+              <h3>测试用例管理</h3>
+              <span className="status-pill">{testCases.length} 条</span>
+            </div>
+            <div className="dashboard-list compact-list-panel">
+              {visibleTestCases.length ? (
+                visibleTestCases.map((testCase) => (
+                  <div className="dashboard-row" key={testCase.id}>
+                    <span>
+                      <strong>
+                        <FileCheck2 size={16} />
+                        {testCase.title}
+                      </strong>
+                      <small>
+                        {testCase.kind} · {testCase.expectedResult}
+                      </small>
+                    </span>
+                    <span className={`status-pill ${statusTone(testCase.status)}`}>
+                      {testCaseStatusLabels[testCase.status]}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <p className="empty-copy">批准 PRD 后，平台会把验收标准映射成 TestCase。</p>
+              )}
+            </div>
+          </section>
+
+          <section aria-label="Agent Run 证据" className="dashboard-panel">
+            <div className="panel-title">
+              <h3>Agent Run 证据</h3>
+              <span className="status-pill">{runs.length} 个</span>
+            </div>
+            <div className="dashboard-list compact-list-panel">
+              {visibleRuns.length ? (
+                visibleRuns.map((run) => (
+                  <Link className="dashboard-row" href={`/runs/${run.id}`} key={run.id}>
+                    <span>
+                      <strong>
+                        <Activity size={16} />
+                        {run.id.replace(/^run_/, "").slice(0, 8)}
+                      </strong>
+                      <small>
+                        {run.runner} · {run.currentStep} · {formatShortDate(run.startedAt)}
+                      </small>
+                    </span>
+                    <span className={`status-pill ${statusTone(run.status)}`}>{runStatusLabels[run.status]}</span>
+                  </Link>
+                ))
+              ) : (
+                <p className="empty-copy">工作项开始执行后会产生 Agent Run 记录。</p>
+              )}
+            </div>
+          </section>
+
+          <section aria-label="交付审计" className="dashboard-panel">
+            <div className="panel-title">
+              <h3>交付审计</h3>
+              <span className="status-pill">{auditEvents.length} 条</span>
+            </div>
+            <div className="dashboard-list compact-list-panel">
+              {visibleAuditEvents.length ? (
+                visibleAuditEvents.map((event) => (
+                  <div className="dashboard-row" key={event.id}>
+                    <span>
+                      <strong>
+                        <ShieldCheck size={16} />
+                        {event.action}
+                      </strong>
+                      <small>{event.message}</small>
+                    </span>
+                    <span className="status-pill">{formatShortDate(event.createdAt)}</span>
+                  </div>
+                ))
+              ) : (
+                <p className="empty-copy">需求、执行、返工和验收会写入审计链路。</p>
+              )}
+            </div>
+          </section>
+        </div>
+
+        <div className="dashboard-grid">
+          <section className="dashboard-panel">
+            <div className="panel-title">
+              <h3>PR 交付</h3>
+              <span className="status-pill">{pullRequests.length} 个</span>
+            </div>
+            <div className="dashboard-list compact-list-panel">
+              {pullRequests.length ? (
+                sortByDate(pullRequests, (pullRequest) => pullRequest.createdAt).slice(0, 8).map((pullRequest) => (
+                  <div className="dashboard-row" key={pullRequest.id}>
+                    <span>
+                      <strong>
+                        <GitPullRequest size={16} />
+                        {pullRequest.title}
+                      </strong>
+                      <small>
+                        {pullRequest.branchName} {"->"} {pullRequest.baseBranch}
+                      </small>
+                    </span>
+                    <span className="status-pill">{pullRequest.status}</span>
+                  </div>
+                ))
+              ) : (
+                <p className="empty-copy">成功的 agent run 会生成本地 PullRequest 交付记录。</p>
+              )}
+            </div>
+          </section>
+
+          <section className="dashboard-panel">
+            <div className="panel-title">
+              <h3>风险队列</h3>
+              <span className="status-pill">{failedRuns.length + openBugs.length} 个线索</span>
+            </div>
+            <div className="rework-stack">
+              {failedRuns.length || openBugs.length ? (
+                <>
+                  {failedRuns.slice(0, 4).map((run) => (
+                    <div className="rework-item" key={run.id}>
+                      <AlertTriangle size={18} />
+                      <span>
+                        <strong>{runStatusLabels[run.status]} · {run.id.replace(/^run_/, "").slice(0, 8)}</strong>
+                        <small>{run.failureSummary ?? "需要查看 Agent Run 证据。"}</small>
+                      </span>
+                    </div>
+                  ))}
+                  {openBugs.slice(0, 4).map((bug) => (
+                    <div className="rework-item" key={bug.id}>
+                      <Bug size={18} />
+                      <span>
+                        <strong>{bug.title}</strong>
+                        <small>{bugStatusLabels[bug.status]} · {bug.reproductionSteps}</small>
+                      </span>
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <p className="empty-copy">当前没有失败 run 或待处理 bug。</p>
+              )}
+            </div>
+          </section>
+        </div>
+      </div>
+    </AppShell>
+  );
+}
