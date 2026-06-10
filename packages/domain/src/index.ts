@@ -146,13 +146,47 @@ export interface EgressPolicyEvidence {
 }
 
 export type SecretBrokerTokenEnvironment = "dev" | "ci";
+export type SecretBrokerSecretProviderKind = "env" | "local_fake" | "vault";
+
+export interface SecretBrokerEnvProviderConfig {
+  kind: "env";
+  sourceEnv: string;
+  ttlSeconds?: number;
+}
+
+export interface SecretBrokerLocalFakeProviderConfig {
+  kind: "local_fake";
+  ttlSeconds?: number;
+  seedEnv?: string;
+}
+
+export interface SecretBrokerVaultProviderConfig {
+  kind: "vault";
+  address: string;
+  tokenEnv: string;
+  mount: string;
+  path: string;
+  key: string;
+  kvVersion?: 1 | 2;
+  namespaceEnv?: string;
+  ttlSeconds?: number;
+  rotatePath?: string;
+  revokePath?: string;
+}
+
+export type SecretBrokerSecretProviderConfig =
+  | SecretBrokerEnvProviderConfig
+  | SecretBrokerLocalFakeProviderConfig
+  | SecretBrokerVaultProviderConfig;
 
 export interface SecretBrokerSecretConfig {
   id: string;
   envVar: string;
-  sourceEnv: string;
+  sourceEnv?: string;
   environment: SecretBrokerTokenEnvironment;
   description?: string;
+  ttlSeconds?: number;
+  provider?: SecretBrokerSecretProviderConfig;
 }
 
 export interface SecretBrokerRuntimeConfig {
@@ -164,8 +198,18 @@ export interface SecretBrokerRuntimeConfig {
 export interface SecretBrokerInjectedSecretEvidence {
   id: string;
   envVar: string;
-  sourceEnv: string;
+  sourceEnv?: string;
   environment: SecretBrokerTokenEnvironment;
+  provider: SecretBrokerSecretProviderKind;
+  leaseId?: string;
+  issuedAt: string;
+  expiresAt?: string;
+  ttlSeconds?: number;
+  renewable: boolean;
+  rotationSupported: boolean;
+  revocationSupported: boolean;
+  valueFingerprint: string;
+  providerAuditId?: string;
 }
 
 export interface SecretBrokerDeniedSecretEvidence {
@@ -174,15 +218,32 @@ export interface SecretBrokerDeniedSecretEvidence {
     | "broker_disabled"
     | "not_configured"
     | "source_env_missing"
-    | "production_secret_denied";
+    | "production_secret_denied"
+    | "provider_auth_missing"
+    | "provider_read_failed"
+    | "provider_revoked";
+  provider?: SecretBrokerSecretProviderKind;
+}
+
+export interface SecretBrokerGrantOperationEvidence {
+  id: string;
+  provider: SecretBrokerSecretProviderKind;
+  action: "rotate" | "revoke";
+  status: "succeeded" | "unsupported" | "failed";
+  occurredAt: string;
+  leaseId?: string;
+  rotationVersion?: string;
+  providerAuditId?: string;
+  reason?: string;
 }
 
 export interface SecretBrokerEvidence {
   enabled: boolean;
-  mode: "env";
+  mode: "env" | "adapter";
   requestedSecretIds: string[];
   injected: SecretBrokerInjectedSecretEvidence[];
   denied: SecretBrokerDeniedSecretEvidence[];
+  revoked: SecretBrokerGrantOperationEvidence[];
 }
 
 export interface ContainerSandboxRuntimeConfig {

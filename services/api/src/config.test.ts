@@ -58,6 +58,28 @@ security:
         sourceEnv: PATCHPILOT_DEV_NPM_TOKEN
         environment: ci
         description: Fixture npm read-only token
+      - id: fake-package-token
+        envVar: PACKAGE_TOKEN
+        environment: ci
+        ttlSeconds: 120
+        provider:
+          kind: local_fake
+          seedEnv: PATCHPILOT_FAKE_SECRET_SEED
+      - id: vault-db-token
+        envVar: DATABASE_TOKEN
+        environment: ci
+        provider:
+          kind: vault
+          address: http://vault.fixture:8200/
+          tokenEnv: PATCHPILOT_VAULT_TOKEN
+          mount: /secret/
+          path: /patchpilot/db/
+          key: token
+          kvVersion: 2
+          namespaceEnv: PATCHPILOT_VAULT_NAMESPACE
+          ttlSeconds: 600
+          rotatePath: /sys/rotate/db/
+          revokePath: /sys/revoke/db/
 budget:
   codexTimeoutMs: 123000
   maxCostUsd: 4.5
@@ -128,7 +150,39 @@ artifacts:
               envVar: "NPM_TOKEN",
               sourceEnv: "PATCHPILOT_DEV_NPM_TOKEN",
               environment: "ci",
-              description: "Fixture npm read-only token"
+              description: "Fixture npm read-only token",
+              provider: {
+                kind: "env",
+                sourceEnv: "PATCHPILOT_DEV_NPM_TOKEN"
+              }
+            },
+            {
+              id: "fake-package-token",
+              envVar: "PACKAGE_TOKEN",
+              environment: "ci",
+              ttlSeconds: 120,
+              provider: {
+                kind: "local_fake",
+                seedEnv: "PATCHPILOT_FAKE_SECRET_SEED"
+              }
+            },
+            {
+              id: "vault-db-token",
+              envVar: "DATABASE_TOKEN",
+              environment: "ci",
+              provider: {
+                kind: "vault",
+                address: "http://vault.fixture:8200",
+                tokenEnv: "PATCHPILOT_VAULT_TOKEN",
+                mount: "secret",
+                path: "patchpilot/db",
+                key: "token",
+                kvVersion: 2,
+                namespaceEnv: "PATCHPILOT_VAULT_NAMESPACE",
+                ttlSeconds: 600,
+                rotatePath: "sys/rotate/db",
+                revokePath: "sys/revoke/db"
+              }
             }
           ],
           allowProductionSecrets: false
@@ -276,7 +330,11 @@ security:
             id: "github-ci-token",
             envVar: "GITHUB_TOKEN",
             sourceEnv: "PATCHPILOT_CI_GITHUB_TOKEN",
-            environment: "ci"
+            environment: "ci",
+            provider: {
+              kind: "env",
+              sourceEnv: "PATCHPILOT_CI_GITHUB_TOKEN"
+            }
           }
         ],
         allowProductionSecrets: false

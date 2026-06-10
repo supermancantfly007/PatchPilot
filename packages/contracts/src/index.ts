@@ -1574,8 +1574,25 @@ export const openApiSchemas = {
     envVar: { type: "string" },
     sourceEnv: { type: "string" },
     environment: enumSchema(["dev", "ci"]),
-    description: { type: "string" }
-  }, ["id", "envVar", "sourceEnv", "environment"]),
+    description: { type: "string" },
+    ttlSeconds: { type: "number" },
+    provider: schemaRef("RuntimeSecretBrokerProviderConfig")
+  }, ["id", "envVar", "environment"]),
+  RuntimeSecretBrokerProviderConfig: objectSchema({
+    kind: enumSchema(["env", "local_fake", "vault"]),
+    sourceEnv: { type: "string" },
+    address: { type: "string" },
+    tokenEnv: { type: "string" },
+    mount: { type: "string" },
+    path: { type: "string" },
+    key: { type: "string" },
+    kvVersion: { type: "number", enum: [1, 2] },
+    namespaceEnv: { type: "string" },
+    ttlSeconds: { type: "number" },
+    seedEnv: { type: "string" },
+    rotatePath: { type: "string" },
+    revokePath: { type: "string" }
+  }, ["kind"]),
   RuntimeBudgetConfig: objectSchema({
     codexTimeoutMs: { type: "number" },
     maxCostUsd: { type: "number" },
@@ -1866,21 +1883,62 @@ export const openApiSchemas = {
   }, ["at", "decision", "reason", "protocol", "host", "port", "target"]),
   SecretBrokerEvidence: looseObjectSchema({
     enabled: { type: "boolean" },
-    mode: enumSchema(["env"]),
+    mode: enumSchema(["env", "adapter"]),
     requestedSecretIds: arrayOf({ type: "string" }),
     injected: arrayOf(schemaRef("SecretBrokerInjectedSecretEvidence")),
-    denied: arrayOf(schemaRef("SecretBrokerDeniedSecretEvidence"))
-  }, ["enabled", "mode", "requestedSecretIds", "injected", "denied"]),
+    denied: arrayOf(schemaRef("SecretBrokerDeniedSecretEvidence")),
+    revoked: arrayOf(schemaRef("SecretBrokerGrantOperationEvidence"))
+  }, ["enabled", "mode", "requestedSecretIds", "injected", "denied", "revoked"]),
   SecretBrokerInjectedSecretEvidence: looseObjectSchema({
     id: { type: "string" },
     envVar: { type: "string" },
     sourceEnv: { type: "string" },
-    environment: enumSchema(["dev", "ci"])
-  }, ["id", "envVar", "sourceEnv", "environment"]),
+    environment: enumSchema(["dev", "ci"]),
+    provider: enumSchema(["env", "local_fake", "vault"]),
+    leaseId: { type: "string" },
+    issuedAt: isoDate,
+    expiresAt: isoDate,
+    ttlSeconds: { type: "number" },
+    renewable: { type: "boolean" },
+    rotationSupported: { type: "boolean" },
+    revocationSupported: { type: "boolean" },
+    valueFingerprint: { type: "string" },
+    providerAuditId: { type: "string" }
+  }, [
+    "id",
+    "envVar",
+    "environment",
+    "provider",
+    "issuedAt",
+    "renewable",
+    "rotationSupported",
+    "revocationSupported",
+    "valueFingerprint"
+  ]),
   SecretBrokerDeniedSecretEvidence: looseObjectSchema({
     id: { type: "string" },
-    reason: enumSchema(["broker_disabled", "not_configured", "source_env_missing", "production_secret_denied"])
+    reason: enumSchema([
+      "broker_disabled",
+      "not_configured",
+      "source_env_missing",
+      "production_secret_denied",
+      "provider_auth_missing",
+      "provider_read_failed",
+      "provider_revoked"
+    ]),
+    provider: enumSchema(["env", "local_fake", "vault"])
   }, ["id", "reason"]),
+  SecretBrokerGrantOperationEvidence: looseObjectSchema({
+    id: { type: "string" },
+    provider: enumSchema(["env", "local_fake", "vault"]),
+    action: enumSchema(["rotate", "revoke"]),
+    status: enumSchema(["succeeded", "unsupported", "failed"]),
+    occurredAt: isoDate,
+    leaseId: { type: "string" },
+    rotationVersion: { type: "string" },
+    providerAuditId: { type: "string" },
+    reason: { type: "string" }
+  }, ["id", "provider", "action", "status", "occurredAt"]),
   WorkspaceRun: looseObjectSchema({
     id,
     runId: id,

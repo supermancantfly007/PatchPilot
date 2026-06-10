@@ -154,16 +154,44 @@ const containerRuntimeSchema = z.enum(["auto", "docker", "podman"]);
 const secretTokenEnvironmentSchema = z.enum(["dev", "ci"]);
 const envVarNameSchema = z.string().regex(/^[A-Z_][A-Z0-9_]*$/u);
 const secretIdSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u);
+const secretTtlSecondsSchema = z.number().int().positive().max(24 * 60 * 60);
 const stringArraySchema = z.preprocess(
   (value) => (typeof value === "string" ? [value] : value),
   z.array(z.string())
 );
+const secretProviderSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("env"),
+    sourceEnv: envVarNameSchema,
+    ttlSeconds: secretTtlSecondsSchema.optional()
+  }),
+  z.object({
+    kind: z.literal("local_fake"),
+    ttlSeconds: secretTtlSecondsSchema.optional(),
+    seedEnv: envVarNameSchema.optional()
+  }),
+  z.object({
+    kind: z.literal("vault"),
+    address: z.string().url(),
+    tokenEnv: envVarNameSchema,
+    mount: z.string().min(1),
+    path: z.string().min(1),
+    key: z.string().min(1),
+    kvVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+    namespaceEnv: envVarNameSchema.optional(),
+    ttlSeconds: secretTtlSecondsSchema.optional(),
+    rotatePath: z.string().min(1).optional(),
+    revokePath: z.string().min(1).optional()
+  })
+]);
 const secretConfigSchema = z.object({
   id: secretIdSchema,
   envVar: envVarNameSchema,
-  sourceEnv: envVarNameSchema,
+  sourceEnv: envVarNameSchema.optional(),
   environment: secretTokenEnvironmentSchema,
-  description: z.string().optional()
+  description: z.string().optional(),
+  ttlSeconds: secretTtlSecondsSchema.optional(),
+  provider: secretProviderSchema.optional()
 });
 
 const rawConfigSchema = z.object({
@@ -489,14 +517,52 @@ function normalizeSecretBrokerSecrets(secrets: SecretBrokerSecretConfig[]) {
     if (byEnvVar.has(secret.envVar)) throw new Error(`Duplicate secret broker env var: ${secret.envVar}`);
     byId.add(secret.id);
     byEnvVar.add(secret.envVar);
+    const provider = normalizeSecretBrokerProvider(secret);
     return {
       id: secret.id,
       envVar: secret.envVar,
-      sourceEnv: secret.sourceEnv,
+      ...(provider.kind === "env" ? { sourceEnv: provider.sourceEnv } : {}),
       environment: secret.environment,
-      ...(secret.description?.trim() ? { description: secret.description.trim() } : {})
+      ...(secret.description?.trim() ? { description: secret.description.trim() } : {}),
+      ...(secret.ttlSeconds ? { ttlSeconds: secret.ttlSeconds } : {}),
+      provider
     };
   });
+}
+
+function normalizeSecretBrokerProvider(secret: SecretBrokerSecretConfig) {
+  const provider = secret.provider ?? (secret.sourceEnv ? { kind: "env" as const, sourceEnv: secret.sourceEnv } : undefined);
+  if (!provider) throw new Error(`Secret broker secret ${secret.id} must define sourceEnv or provider.`);
+  if (provider.kind === "env") {
+    if (secret.sourceEnv && secret.sourceEnv !== provider.sourceEnv) {
+      throw new Error(`Secret broker secret ${secret.id} has conflicting env provider sourceEnv values.`);
+    }
+    return {
+      kind: "env" as const,
+      sourceEnv: provider.sourceEnv,
+      ...(provider.ttlSeconds ? { ttlSeconds: provider.ttlSeconds } : {})
+    };
+  }
+  if (provider.kind === "local_fake") {
+    return {
+      kind: "local_fake" as const,
+      ...(provider.ttlSeconds ? { ttlSeconds: provider.ttlSeconds } : {}),
+      ...(provider.seedEnv ? { seedEnv: provider.seedEnv } : {})
+    };
+  }
+  return {
+    kind: "vault" as const,
+    address: provider.address.replace(/\/+$/u, ""),
+    tokenEnv: provider.tokenEnv,
+    mount: provider.mount.replace(/^\/+|\/+$/gu, ""),
+    path: provider.path.replace(/^\/+|\/+$/gu, ""),
+    key: provider.key,
+    ...(provider.kvVersion ? { kvVersion: provider.kvVersion } : {}),
+    ...(provider.namespaceEnv ? { namespaceEnv: provider.namespaceEnv } : {}),
+    ...(provider.ttlSeconds ? { ttlSeconds: provider.ttlSeconds } : {}),
+    ...(provider.rotatePath ? { rotatePath: provider.rotatePath.replace(/^\/+|\/+$/gu, "") } : {}),
+    ...(provider.revokePath ? { revokePath: provider.revokePath.replace(/^\/+|\/+$/gu, "") } : {})
+  };
 }
 
 function splitList(value: string) {
