@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   createRequirementIntakeActivities,
   InMemoryRequirementIntakeActivityStore,
-  InMemoryTemporalCanaryActivityStore
+  InMemoryTemporalCanaryActivityStore,
+  InMemoryWorkItemPlanningActivityStore
 } from "./activities";
+import type { Prd } from "@patchpilot/domain";
 
 describe("Temporal canary activities", () => {
   it("deduplicates activity completion by idempotency key", async () => {
@@ -99,3 +101,86 @@ describe("Requirement intake activities", () => {
     expect(recorded.requirement.clarificationTurns.at(-1)?.speaker).toBe("agent");
   });
 });
+
+describe("Work item planning activities", () => {
+  it("creates vertical work items, test cases, and a contract baseline", async () => {
+    const store = new InMemoryWorkItemPlanningActivityStore();
+    const result = await store.planWorkItems({
+      workflowId: "workflow-td-206",
+      idempotencyKey: "td-206:plan",
+      prd: planningPrd(),
+      maxWorkItems: 4
+    });
+
+    expect(result.workItems).toHaveLength(3);
+    expect(result.workItems.every((item) => item.status === "ready")).toBe(true);
+    expect(result.workItems.every((item) => item.scope.includes("垂直切片"))).toBe(true);
+    expect(result.workItems.every((item) => item.testSuggestions.length >= 3)).toBe(true);
+    expect(result.workItems.map((item) => item.role)).toEqual(["backend", "frontend", "test"]);
+    expect(new Set(result.workItems.map((item) => item.id)).size).toBe(result.workItems.length);
+    expect(result.testCases.map((testCase) => testCase.workItemId)).toEqual(result.workItems.map((item) => item.id));
+    expect(result.testCases.every((testCase) => testCase.status === "ready")).toBe(true);
+    expect(result.interfaceContracts).toHaveLength(3);
+    expect(result.interfaceContracts.every((contract) => contract.status === "approved")).toBe(true);
+  });
+
+  it("deduplicates planning by activity key and PRD id", async () => {
+    const store = new InMemoryWorkItemPlanningActivityStore();
+    const prd = planningPrd();
+    const first = await store.planWorkItems({
+      workflowId: "workflow-td-206",
+      idempotencyKey: "td-206:plan",
+      prd,
+      maxWorkItems: 4
+    });
+    const sameActivity = await store.planWorkItems({
+      workflowId: "workflow-td-206",
+      idempotencyKey: "td-206:plan",
+      prd,
+      maxWorkItems: 1
+    });
+    const samePrd = await store.planWorkItems({
+      workflowId: "workflow-td-206-retry",
+      idempotencyKey: "td-206:plan:duplicate-start",
+      prd,
+      maxWorkItems: 1
+    });
+
+    expect(sameActivity).toEqual(first);
+    expect(samePrd).toEqual(first);
+    expect(store.plansByPrdId.size).toBe(1);
+    expect(store.planned.size).toBe(2);
+  });
+
+  it("clamps planning to four work items", async () => {
+    const store = new InMemoryWorkItemPlanningActivityStore();
+    const result = await store.planWorkItems({
+      workflowId: "workflow-td-206",
+      idempotencyKey: "td-206:plan:many",
+      prd: planningPrd([
+        "Criterion 1 passes",
+        "Criterion 2 passes",
+        "Criterion 3 passes",
+        "Criterion 4 passes",
+        "Criterion 5 passes"
+      ]),
+      maxWorkItems: 9
+    });
+
+    expect(result.workItems).toHaveLength(4);
+    expect(result.workItems[0]?.acceptanceCriteria).toEqual(["Criterion 1 passes", "Criterion 5 passes"]);
+  });
+});
+
+function planningPrd(acceptanceCriteria = ["Submit requirement", "Generate PRD", "Plan work items"]): Prd {
+  return {
+    id: "prd_req_td_206",
+    requirementId: "req_td_206",
+    version: 1,
+    status: "approved",
+    title: "Temporal work item planning",
+    bodyMarkdown: "# Temporal work item planning\n\n## 如何验收\n" + acceptanceCriteria.map((item) => `- ${item}`).join("\n"),
+    acceptanceCriteria,
+    approvedAt: "2026-06-10T00:00:00.000Z"
+  };
+}

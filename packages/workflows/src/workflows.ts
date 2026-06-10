@@ -1,7 +1,8 @@
 import { condition, defineQuery, defineSignal, proxyActivities, setHandler, workflowInfo } from "@temporalio/workflow";
-import type { RequirementIntakeActivities, TemporalCanaryActivities } from "./activities";
+import type { RequirementIntakeActivities, TemporalCanaryActivities, WorkItemPlanningActivities } from "./activities";
 import type {
   DraftRequirementPrdActivityResult,
+  PlanWorkItemsActivityResult,
   RequirementClarificationAnswerSignalInput,
   RequirementIntakeProgress,
   RequirementIntakeWorkflowInput,
@@ -11,9 +12,16 @@ import type {
   TemporalCanaryProgress,
   TemporalCanarySignalInput,
   TemporalCanaryWorkflowInput,
-  TemporalCanaryWorkflowResult
+  TemporalCanaryWorkflowResult,
+  WorkItemPlanningProgress,
+  WorkItemPlanningWorkflowInput,
+  WorkItemPlanningWorkflowResult
 } from "./types";
-import { requirementIntakeActivityOptions, temporalCanaryActivityOptions } from "./policies";
+import {
+  requirementIntakeActivityOptions,
+  temporalCanaryActivityOptions,
+  workItemPlanningActivityOptions
+} from "./policies";
 
 export const approveTemporalCanarySignal = defineSignal<[TemporalCanarySignalInput]>("approveTemporalCanary");
 export const temporalCanaryProgressQuery = defineQuery<TemporalCanaryProgress>("temporalCanaryProgress");
@@ -24,9 +32,11 @@ export const confirmRequirementPrdSignal = defineSignal<[RequirementPrdConfirmat
   "confirmRequirementPrd"
 );
 export const requirementIntakeProgressQuery = defineQuery<RequirementIntakeProgress>("requirementIntakeProgress");
+export const workItemPlanningProgressQuery = defineQuery<WorkItemPlanningProgress>("workItemPlanningProgress");
 
 const activities = proxyActivities<TemporalCanaryActivities>(temporalCanaryActivityOptions);
 const requirementActivities = proxyActivities<RequirementIntakeActivities>(requirementIntakeActivityOptions);
+const workItemPlanningActivities = proxyActivities<WorkItemPlanningActivities>(workItemPlanningActivityOptions);
 
 export async function temporalCanaryWorkflow(
   input: TemporalCanaryWorkflowInput
@@ -170,5 +180,48 @@ export async function requirementIntakeWorkflow(
     prd,
     confirmation: confirmed.confirmation,
     completedAt: confirmed.confirmedAt
+  };
+}
+
+export async function workItemPlanningWorkflow(
+  input: WorkItemPlanningWorkflowInput
+): Promise<WorkItemPlanningWorkflowResult> {
+  const workflowId = workflowInfo().workflowId;
+  let status: WorkItemPlanningProgress["status"] = "planning";
+  const planningState: { plan?: PlanWorkItemsActivityResult } = {};
+
+  setHandler(workItemPlanningProgressQuery, () => ({
+    workflowId,
+    idempotencyKey: input.idempotencyKey,
+    prdId: input.prd.id,
+    status,
+    ...(planningState.plan
+      ? {
+          workItems: planningState.plan.workItems,
+          testCases: planningState.plan.testCases,
+          interfaceContracts: planningState.plan.interfaceContracts
+        }
+      : {})
+  }));
+
+  const plan = await workItemPlanningActivities.planWorkItemsActivity({
+    workflowId,
+    idempotencyKey: `${input.idempotencyKey}:plan:${input.prd.id}`,
+    prd: input.prd,
+    ...(input.maxWorkItems !== undefined ? { maxWorkItems: input.maxWorkItems } : {}),
+    ...(input.contractStatus ? { contractStatus: input.contractStatus } : {})
+  });
+  planningState.plan = plan;
+  status = "completed";
+
+  return {
+    workflowId,
+    idempotencyKey: input.idempotencyKey,
+    prdId: input.prd.id,
+    status,
+    workItems: plan.workItems,
+    testCases: plan.testCases,
+    interfaceContracts: plan.interfaceContracts,
+    completedAt: plan.plannedAt
   };
 }

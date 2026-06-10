@@ -15,7 +15,9 @@ import {
   requirementIntakeProgressQuery,
   requirementIntakeWorkflow,
   temporalCanaryProgressQuery,
-  temporalCanaryWorkflow
+  temporalCanaryWorkflow,
+  workItemPlanningProgressQuery,
+  workItemPlanningWorkflow
 } from "./workflows";
 import {
   type RequirementClarificationAnswerSignalInput,
@@ -31,11 +33,15 @@ import {
   type TemporalCanaryWorkflowInput,
   type TemporalCanaryWorkflowResult,
   type TemporalConnectionConfig,
-  type TemporalEnv
+  type TemporalEnv,
+  type WorkItemPlanningProgress,
+  type WorkItemPlanningWorkflowInput,
+  type WorkItemPlanningWorkflowResult
 } from "./types";
 
 export type TemporalCanaryWorkflowHandle = WorkflowHandle<typeof temporalCanaryWorkflow>;
 export type RequirementIntakeWorkflowHandle = WorkflowHandle<typeof requirementIntakeWorkflow>;
+export type WorkItemPlanningWorkflowHandle = WorkflowHandle<typeof workItemPlanningWorkflow>;
 
 export function readTemporalConfig(env: TemporalEnv = process.env): TemporalConnectionConfig {
   return {
@@ -58,6 +64,10 @@ export function requirementIntakeWorkflowId(idempotencyKey: string): string {
   return temporalWorkflowId("patchpilot-requirement-intake", idempotencyKey);
 }
 
+export function workItemPlanningWorkflowId(idempotencyKey: string): string {
+  return temporalWorkflowId("patchpilot-work-item-planning", idempotencyKey);
+}
+
 export function temporalCanaryWorkflowStartOptions(
   input: TemporalCanaryWorkflowInput,
   config = readTemporalConfig()
@@ -78,6 +88,19 @@ export function requirementIntakeWorkflowStartOptions(
   return {
     taskQueue: config.taskQueue,
     workflowId: requirementIntakeWorkflowId(input.idempotencyKey),
+    workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
+    workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
+    args: [input]
+  };
+}
+
+export function workItemPlanningWorkflowStartOptions(
+  input: WorkItemPlanningWorkflowInput,
+  config = readTemporalConfig()
+): WorkflowStartOptions<typeof workItemPlanningWorkflow> {
+  return {
+    taskQueue: config.taskQueue,
+    workflowId: workItemPlanningWorkflowId(input.idempotencyKey),
     workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
     workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
     args: [input]
@@ -118,6 +141,23 @@ export async function startRequirementIntakeWorkflow(
   }
 }
 
+export async function startWorkItemPlanningWorkflow(
+  client: Client,
+  input: WorkItemPlanningWorkflowInput,
+  config = readTemporalConfig()
+): Promise<WorkItemPlanningWorkflowHandle> {
+  const startOptions = workItemPlanningWorkflowStartOptions(input, config);
+
+  try {
+    return await client.workflow.start(workItemPlanningWorkflow, startOptions);
+  } catch (error) {
+    if (error instanceof WorkflowExecutionAlreadyStartedError) {
+      return client.workflow.getHandle(startOptions.workflowId) as WorkItemPlanningWorkflowHandle;
+    }
+    throw error;
+  }
+}
+
 export function queryTemporalCanaryProgress(handle: TemporalCanaryWorkflowHandle): Promise<TemporalCanaryProgress> {
   return handle.query(temporalCanaryProgressQuery);
 }
@@ -133,6 +173,12 @@ export function queryRequirementIntakeProgress(
   handle: RequirementIntakeWorkflowHandle
 ): Promise<RequirementIntakeProgress> {
   return handle.query(requirementIntakeProgressQuery);
+}
+
+export function queryWorkItemPlanningProgress(
+  handle: WorkItemPlanningWorkflowHandle
+): Promise<WorkItemPlanningProgress> {
+  return handle.query(workItemPlanningProgressQuery);
 }
 
 export function signalRequirementClarificationAnswer(
@@ -170,6 +216,15 @@ export async function runRequirementIntakeWorkflow(
   const handle = await startRequirementIntakeWorkflow(client, input, config);
   await signalRequirementClarificationAnswer(handle, answer);
   await signalRequirementPrdConfirmation(handle, confirmation);
+  return handle.result();
+}
+
+export async function runWorkItemPlanningWorkflow(
+  client: Client,
+  input: WorkItemPlanningWorkflowInput,
+  config = readTemporalConfig()
+): Promise<WorkItemPlanningWorkflowResult> {
+  const handle = await startWorkItemPlanningWorkflow(client, input, config);
   return handle.result();
 }
 

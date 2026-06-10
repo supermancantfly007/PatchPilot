@@ -1,9 +1,13 @@
 import type {
   ClarificationQuestion,
+  InterfaceContract,
+  InterfaceContractStatus,
   IntakeArtifactReference,
   Prd,
   Requirement,
-  RequirementTemplate
+  RequirementTemplate,
+  TestCase,
+  WorkItem
 } from "@patchpilot/domain";
 
 export const defaultTemporalAddress = "localhost:7233";
@@ -169,4 +173,47 @@ export interface RecordRequirementPrdConfirmationActivityResult {
   prdId: string;
   confirmation: RequirementPrdConfirmationSignalInput;
   confirmedAt: string;
+}
+
+export type WorkItemPlanningWorkflowStatus = "planning" | "completed";
+
+export interface WorkItemPlanningWorkflowInput {
+  idempotencyKey: string;
+  prd: Prd;
+  maxWorkItems?: number;
+  contractStatus?: InterfaceContractStatus;
+}
+
+export interface WorkItemPlanningProgress {
+  workflowId: string;
+  idempotencyKey: string;
+  prdId: string;
+  status: WorkItemPlanningWorkflowStatus;
+  workItems?: WorkItem[];
+  testCases?: TestCase[];
+  interfaceContracts?: InterfaceContract[];
+}
+
+export interface WorkItemPlanningWorkflowResult extends WorkItemPlanningProgress {
+  status: "completed";
+  workItems: WorkItem[];
+  testCases: TestCase[];
+  interfaceContracts: InterfaceContract[];
+  completedAt: string;
+}
+
+export interface PlanWorkItemsActivityInput {
+  workflowId: string;
+  idempotencyKey: string;
+  prd: Prd;
+  maxWorkItems?: number;
+  contractStatus?: InterfaceContractStatus;
+}
+
+export interface PlanWorkItemsActivityResult {
+  prdId: string;
+  workItems: WorkItem[];
+  testCases: TestCase[];
+  interfaceContracts: InterfaceContract[];
+  plannedAt: string;
 }

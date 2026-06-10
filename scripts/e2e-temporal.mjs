@@ -9,12 +9,14 @@ import {
   signalRequirementPrdConfirmation,
   signalTemporalCanary,
   startRequirementIntakeWorkflow,
-  startTemporalCanaryWorkflow
+  startTemporalCanaryWorkflow,
+  startWorkItemPlanningWorkflow
 } from "../packages/workflows/src/index.ts";
 
 const config = readTemporalConfig();
 const canaryIdempotencyKey = `td-204-${randomUUID()}`;
 const intakeIdempotencyKey = `td-205-${randomUUID()}`;
+const planningIdempotencyKey = `td-206-${randomUUID()}`;
 
 const worker = await createPatchPilotTemporalWorker({ config });
 const client = await createTemporalClient(config);
@@ -128,11 +130,89 @@ await worker.runUntil(async () => {
       2
     )
   );
+
+  const planningHandle = await startWorkItemPlanningWorkflow(
+    client,
+    {
+      idempotencyKey: planningIdempotencyKey,
+      prd: intakeResult.prd,
+      maxWorkItems: 4
+    },
+    config
+  );
+  const planningResult = await planningHandle.result();
+  assertEqual(planningResult.status, "completed", "work item planning result should complete");
+  assertEqual(planningResult.prdId, intakeResult.prd.id, "work item planning should expose the source PRD");
+  assertBetween(planningResult.workItems.length, 1, 4, "work item planning should create 1-4 work items");
+  assertEqual(
+    planningResult.testCases.length,
+    planningResult.workItems.length,
+    "work item planning should create one TestCase per WorkItem"
+  );
+  assertEqual(planningResult.interfaceContracts.length, 3, "work item planning should create the contract baseline");
+  assertEqual(
+    new Set(planningResult.workItems.map((item) => item.id)).size,
+    planningResult.workItems.length,
+    "work item planning should not duplicate WorkItem ids"
+  );
+  if (!planningResult.workItems.every((item) => item.scope.includes("垂直切片") && item.testSuggestions.length > 0)) {
+    throw new Error("planned WorkItems did not include vertical scope and test suggestions");
+  }
+  if (!planningResult.interfaceContracts.every((contract) => contract.status === "approved")) {
+    throw new Error("planned InterfaceContracts were not approved baselines");
+  }
+
+  const planningDescription = await planningHandle.describe();
+  const duplicatePlanningHandle = await startWorkItemPlanningWorkflow(
+    client,
+    {
+      idempotencyKey: planningIdempotencyKey,
+      prd: intakeResult.prd,
+      maxWorkItems: 1
+    },
+    config
+  );
+  const duplicatePlanningDescription = await duplicatePlanningHandle.describe();
+  assertEqual(
+    duplicatePlanningDescription.runId,
+    planningDescription.runId,
+    "duplicate planning idempotency key should not create a second Temporal run"
+  );
+  const duplicatePlanningResult = await duplicatePlanningHandle.result();
+  assertEqual(
+    duplicatePlanningResult.workItems.length,
+    planningResult.workItems.length,
+    "duplicate planning start should not create a different WorkItem plan"
+  );
+
+  console.log(
+    JSON.stringify(
+      {
+        workflowId: planningHandle.workflowId,
+        runId: planningDescription.runId,
+        duplicateRunId: duplicatePlanningDescription.runId,
+        status: planningResult.status,
+        idempotencyKey: planningResult.idempotencyKey,
+        prdId: planningResult.prdId,
+        workItemIds: planningResult.workItems.map((item) => item.id),
+        testCaseIds: planningResult.testCases.map((testCase) => testCase.id),
+        interfaceContractIds: planningResult.interfaceContracts.map((contract) => contract.id)
+      },
+      null,
+      2
+    )
+  );
 });
 
 function assertEqual(actual, expected, message) {
   if (actual !== expected) {
     throw new Error(`${message}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+  }
+}
+
+function assertBetween(actual, minimum, maximum, message) {
+  if (actual < minimum || actual > maximum) {
+    throw new Error(`${message}: expected ${actual} to be between ${minimum} and ${maximum}`);
   }
 }
 
