@@ -5,7 +5,9 @@ import {
   requirementIntakeWorkflowId,
   requirementIntakeWorkflowStartOptions,
   temporalCanaryWorkflowId,
-  temporalCanaryWorkflowStartOptions
+  temporalCanaryWorkflowStartOptions,
+  workItemPlanningWorkflowId,
+  workItemPlanningWorkflowStartOptions
 } from "./client";
 
 describe("Temporal client helpers", () => {
@@ -71,6 +73,39 @@ describe("Temporal client helpers", () => {
     ).toEqual({
       taskQueue: "patchpilot-test",
       workflowId: requirementIntakeWorkflowId(input.idempotencyKey),
+      workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
+      workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
+      args: [input]
+    });
+  });
+
+  it("derives idempotent start options for work item planning workflows", () => {
+    const input = {
+      idempotencyKey: "TD-206 / Work Item Planning!",
+      prd: {
+        id: "prd_req_td_206",
+        requirementId: "req_td_206",
+        version: 1,
+        status: "approved" as const,
+        title: "Planning workflow",
+        bodyMarkdown: "# Planning workflow",
+        acceptanceCriteria: ["Plans 1-4 vertical work items"]
+      },
+      maxWorkItems: 4
+    };
+
+    expect(workItemPlanningWorkflowId(input.idempotencyKey)).toMatch(
+      /^patchpilot-work-item-planning-td-206-work-item-planning-[a-f0-9]{12}$/
+    );
+    expect(
+      workItemPlanningWorkflowStartOptions(input, {
+        address: "temporal.test:7233",
+        namespace: "default",
+        taskQueue: "patchpilot-test"
+      })
+    ).toEqual({
+      taskQueue: "patchpilot-test",
+      workflowId: workItemPlanningWorkflowId(input.idempotencyKey),
       workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
       workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
       args: [input]

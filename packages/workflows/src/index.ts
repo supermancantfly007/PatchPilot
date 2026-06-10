@@ -1,31 +1,41 @@
 export {
   createRequirementIntakeActivities,
   createTemporalCanaryActivities,
+  createWorkItemPlanningActivities,
   InMemoryRequirementIntakeActivityStore,
   InMemoryTemporalCanaryActivityStore,
+  InMemoryWorkItemPlanningActivityStore,
   type RequirementIntakeActivities,
   type RequirementIntakeActivityStore,
   type TemporalCanaryActivities,
-  type TemporalCanaryActivityStore
+  type TemporalCanaryActivityStore,
+  type WorkItemPlanningActivities,
+  type WorkItemPlanningActivityStore
 } from "./activities";
 export {
   createTemporalClient,
   queryRequirementIntakeProgress,
   queryTemporalCanaryProgress,
+  queryWorkItemPlanningProgress,
   readTemporalConfig,
   requirementIntakeWorkflowId,
   requirementIntakeWorkflowStartOptions,
   runRequirementIntakeWorkflow,
   runTemporalCanaryWorkflow,
+  runWorkItemPlanningWorkflow,
   signalRequirementClarificationAnswer,
   signalRequirementPrdConfirmation,
   signalTemporalCanary,
   startRequirementIntakeWorkflow,
   startTemporalCanaryWorkflow,
+  startWorkItemPlanningWorkflow,
   temporalCanaryWorkflowStartOptions,
   temporalCanaryWorkflowId,
   type RequirementIntakeWorkflowHandle,
-  type TemporalCanaryWorkflowHandle
+  type TemporalCanaryWorkflowHandle,
+  type WorkItemPlanningWorkflowHandle,
+  workItemPlanningWorkflowId,
+  workItemPlanningWorkflowStartOptions
 } from "./client";
 export {
   createPatchPilotTemporalWorker,
@@ -38,7 +48,9 @@ export {
   requirementIntakeActivityOptions,
   requirementIntakeActivityRetryPolicy,
   temporalCanaryActivityOptions,
-  temporalCanaryActivityRetryPolicy
+  temporalCanaryActivityRetryPolicy,
+  workItemPlanningActivityOptions,
+  workItemPlanningActivityRetryPolicy
 } from "./policies";
 export * from "./types";
 export {
@@ -48,5 +60,7 @@ export {
   requirementIntakeProgressQuery,
   requirementIntakeWorkflow,
   temporalCanaryProgressQuery,
-  temporalCanaryWorkflow
+  temporalCanaryWorkflow,
+  workItemPlanningProgressQuery,
+  workItemPlanningWorkflow
 } from "./workflows";

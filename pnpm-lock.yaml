@@ -272,6 +272,9 @@ importers:
 
   packages/workflows:
     dependencies:
+      '@patchpilot/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@patchpilot/domain':
         specifier: workspace:*
         version: link:../domain

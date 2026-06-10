@@ -21,3 +21,15 @@ export const requirementIntakeActivityOptions = {
   startToCloseTimeout: "15 seconds",
   retry: requirementIntakeActivityRetryPolicy
 } as const;
+
+export const workItemPlanningActivityRetryPolicy = {
+  initialInterval: "500 milliseconds",
+  backoffCoefficient: 2,
+  maximumInterval: "5 seconds",
+  maximumAttempts: 5
+} as const;
+
+export const workItemPlanningActivityOptions = {
+  startToCloseTimeout: "15 seconds",
+  retry: workItemPlanningActivityRetryPolicy
+} as const;

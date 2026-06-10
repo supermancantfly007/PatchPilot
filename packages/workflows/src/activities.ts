@@ -1,16 +1,22 @@
 import { createHash } from "node:crypto";
+import { createInterfaceContracts } from "@patchpilot/contracts";
 import {
   createGrillMeQuestion,
   createPrd,
+  createTestCasesForWorkItems,
   makeSimpleSummary,
+  type AgentRole,
   type ClarificationQuestion,
   type IntakeArtifactReference,
   type Prd,
-  type Requirement
+  type Requirement,
+  type WorkItem
 } from "@patchpilot/domain";
 import type {
   DraftRequirementPrdActivityInput,
   DraftRequirementPrdActivityResult,
+  PlanWorkItemsActivityInput,
+  PlanWorkItemsActivityResult,
   RecordRequirementClarificationAnswerActivityInput,
   RecordRequirementClarificationAnswerActivityResult,
   RecordRequirementPrdConfirmationActivityInput,
@@ -242,12 +248,132 @@ export function createRequirementIntakeActivities(
 
 export type RequirementIntakeActivities = ReturnType<typeof createRequirementIntakeActivities>;
 
+export interface WorkItemPlanningActivityStore {
+  planWorkItems(input: PlanWorkItemsActivityInput): Promise<PlanWorkItemsActivityResult>;
+}
+
+export class InMemoryWorkItemPlanningActivityStore implements WorkItemPlanningActivityStore {
+  readonly planned = new Map<string, PlanWorkItemsActivityResult>();
+  readonly plansByPrdId = new Map<string, PlanWorkItemsActivityResult>();
+
+  async planWorkItems(input: PlanWorkItemsActivityInput): Promise<PlanWorkItemsActivityResult> {
+    const existing = this.planned.get(input.idempotencyKey);
+    if (existing) return clone(existing);
+
+    const existingForPrd = this.plansByPrdId.get(input.prd.id);
+    if (existingForPrd) {
+      this.planned.set(input.idempotencyKey, clone(existingForPrd));
+      return clone(existingForPrd);
+    }
+
+    const now = new Date().toISOString();
+    const workItems = createVerticalWorkItems(input.prd, input.maxWorkItems, now);
+    const result: PlanWorkItemsActivityResult = {
+      prdId: input.prd.id,
+      workItems,
+      testCases: createTestCasesForWorkItems(input.prd, workItems, now),
+      interfaceContracts: createInterfaceContracts(input.prd, input.contractStatus ?? "approved", now),
+      plannedAt: now
+    };
+
+    this.planned.set(input.idempotencyKey, clone(result));
+    this.plansByPrdId.set(input.prd.id, clone(result));
+    return clone(result);
+  }
+}
+
+export function createWorkItemPlanningActivities(
+  store: WorkItemPlanningActivityStore = new InMemoryWorkItemPlanningActivityStore()
+) {
+  return {
+    planWorkItemsActivity(input: PlanWorkItemsActivityInput) {
+      return store.planWorkItems(input);
+    }
+  };
+}
+
+export type WorkItemPlanningActivities = ReturnType<typeof createWorkItemPlanningActivities>;
+
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
 function stableId(prefix: string, seed: string): string {
   return `${prefix}_${createHash("sha256").update(seed).digest("hex").slice(0, 16)}`;
+}
+
+const verticalPlanningRoles: AgentRole[] = ["backend", "frontend", "test", "ops"];
+
+function createVerticalWorkItems(prd: Prd, maxWorkItems: number | undefined, now: string): WorkItem[] {
+  const criteria = normalizeAcceptanceCriteria(prd);
+  const workItemCount = resolveWorkItemCount(maxWorkItems, criteria.length);
+  const criteriaBuckets = bucketCriteria(criteria, workItemCount);
+
+  return criteriaBuckets.map((acceptanceCriteria, index) => {
+    const role = verticalPlanningRoles[index] ?? "backend";
+    const primaryCriterion = acceptanceCriteria[0] ?? "PRD scope is implemented and verifiable.";
+
+    return {
+      id: stableId("wi", `${prd.id}:vertical:${index}:${acceptanceCriteria.join("|")}`),
+      prdId: prd.id,
+      title: `垂直切片 ${index + 1}: ${summarizeCriterion(primaryCriterion)}`,
+      status: "ready",
+      role,
+      scope: [
+        `交付一个可独立验收的垂直切片，覆盖：${acceptanceCriteria.join("；")}。`,
+        "范围包含必要的产品状态、接口使用、用户可见行为、测试证据和交付说明。"
+      ].join(" "),
+      nonGoals: ["不拆成只改前端或后端的横向任务", "不自动合并到主分支", "不绕过接口契约或测试质量门"],
+      acceptanceCriteria,
+      testSuggestions: testSuggestionsForVerticalSlice(role, acceptanceCriteria),
+      requiredCapabilities: ["repo:read", "repo:write", "test:run", "contract:read"],
+      version: 1,
+      createdAt: now,
+      updatedAt: now
+    };
+  });
+}
+
+function normalizeAcceptanceCriteria(prd: Prd): string[] {
+  const criteria = prd.acceptanceCriteria.map((criterion) => criterion.trim()).filter(Boolean);
+  if (criteria.length > 0) return criteria;
+  return [`${prd.title} 的主要用户可见行为已实现，并留下可审查验证证据。`];
+}
+
+function resolveWorkItemCount(maxWorkItems: number | undefined, criteriaCount: number): number {
+  const requested = Number.isFinite(maxWorkItems) ? Math.trunc(maxWorkItems as number) : 4;
+  const boundedRequest = Math.min(4, Math.max(1, requested));
+  return Math.min(boundedRequest, Math.max(1, criteriaCount));
+}
+
+function bucketCriteria(criteria: string[], workItemCount: number): string[][] {
+  const buckets = Array.from({ length: workItemCount }, () => [] as string[]);
+  criteria.forEach((criterion, index) => {
+    buckets[index % workItemCount]?.push(criterion);
+  });
+  return buckets.map((bucket) => (bucket.length > 0 ? bucket : ["PRD scope is implemented and verifiable."]));
+}
+
+function summarizeCriterion(criterion: string): string {
+  const normalized = criterion.replace(/^[-*\d.\s]+/, "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= 48) return normalized;
+  return `${normalized.slice(0, 47)}...`;
+}
+
+function testSuggestionsForVerticalSlice(role: AgentRole, acceptanceCriteria: string[]): string[] {
+  const criterionSummary = summarizeCriterion(acceptanceCriteria[0] ?? "PRD scope is implemented and verifiable.");
+  const roleSuggestion: Partial<Record<AgentRole, string>> = {
+    backend: "运行相关 domain/API/worker 测试，确认状态写入、幂等性和错误路径。",
+    frontend: "运行相关 Web 组件或浏览器 smoke，确认桌面和移动端关键动作可用。",
+    test: "新增或更新可复用 TestCase，并证明失败路径会留下可处理证据。",
+    ops: "验证本地运行、配置、端口或脚本说明，确保交付路径可重复。"
+  };
+
+  return [
+    `为验收标准补齐目标测试：${criterionSummary}`,
+    roleSuggestion[role] ?? "运行相关目标测试，确认垂直切片可独立验收。",
+    "记录测试命令、结果和风险，并将证据追溯到该 WorkItem。"
+  ];
 }
 
 function prepareArtifactReferences(
