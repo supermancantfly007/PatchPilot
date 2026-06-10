@@ -31,19 +31,20 @@ const expectedTableNames = [
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-async function readInitialMigration(): Promise<string> {
+async function readMigrationArtifacts(): Promise<string[]> {
   const migrationDir = resolve(packageRoot, "drizzle");
-  const migrationFiles = (await readdir(migrationDir)).filter((file) => file.endsWith(".sql"));
-  expect(migrationFiles).toHaveLength(1);
+  const migrationFiles = (await readdir(migrationDir)).filter((file) => file.endsWith(".sql")).sort();
+  expect(migrationFiles.length).toBeGreaterThan(0);
 
-  const migrationPath = resolve(migrationDir, migrationFiles[0] ?? "");
-  return readFile(migrationPath, "utf8");
+  return Promise.all(migrationFiles.map((file) => readFile(resolve(migrationDir, file), "utf8")));
 }
 
-async function applyInitialMigration(db: PGlite): Promise<string> {
-  const migrationSql = await readInitialMigration();
-  await db.exec(migrationSql);
-  return migrationSql;
+async function applyMigrations(db: PGlite): Promise<string> {
+  const migrationSqlArtifacts = await readMigrationArtifacts();
+  for (const migrationSql of migrationSqlArtifacts) {
+    await db.exec(migrationSql);
+  }
+  return migrationSqlArtifacts.join("\n");
 }
 
 describe("PatchPilot Drizzle schema", () => {
@@ -60,7 +61,7 @@ describe("PatchPilot Drizzle schema", () => {
 
   it("ships a migration artifact that creates Postgres tables, constraints, and indexes", async () => {
     db = new PGlite();
-    const migrationSql = await applyInitialMigration(db);
+    const migrationSql = await applyMigrations(db);
 
     for (const tableName of expectedTableNames) {
       expect(migrationSql).toContain(`CREATE TABLE "${tableName}"`);
@@ -84,9 +85,17 @@ describe("PatchPilot Drizzle schema", () => {
         "projects_organization_slug_unique",
         "requirements_project_id_idx",
         "work_items_status_idx",
+        "work_items_status_lease_expires_at_idx",
+        "work_items_active_claim_token_unique",
+        "work_items_active_agent_claim_unique",
         "agent_runs_work_item_id_idx",
+        "agent_runs_work_item_status_idx",
+        "agent_runs_active_work_item_unique",
         "audit_events_trace_id_idx",
+        "audit_events_trace_id_created_at_idx",
+        "test_runs_work_item_id_created_at_idx",
         "pull_requests_provider_url_unique",
+        "pull_requests_work_item_id_unique",
         "budgets_scope_unique"
       ])
     );
@@ -107,7 +116,7 @@ describe("PatchPilot Drizzle schema", () => {
 
   it("accepts a minimal valid product-state graph across every table", async () => {
     db = new PGlite();
-    await applyInitialMigration(db);
+    await applyMigrations(db);
 
     await db.exec(`
       insert into organizations (id, slug, name) values ('org_1', 'patchpilot', 'PatchPilot');
@@ -194,7 +203,7 @@ describe("PatchPilot Drizzle schema", () => {
 
   it("enforces generated foreign key, enum, check, and unique constraints", async () => {
     db = new PGlite();
-    await applyInitialMigration(db);
+    await applyMigrations(db);
 
     await db.exec(`
       insert into organizations (id, slug, name) values ('org_1', 'patchpilot', 'PatchPilot');
@@ -220,6 +229,111 @@ describe("PatchPilot Drizzle schema", () => {
       db.query(`
         insert into budgets (id, project_id, scope_type, scope_id, limit_usd, created_by)
         values ('budget_bad', 'proj_1', 'project', 'proj_1', -1, 'planner')
+      `)
+    ).rejects.toThrow();
+  });
+
+  it("enforces TD-203 claim fencing, active run, and pull request uniqueness", async () => {
+    db = new PGlite();
+    await applyMigrations(db);
+
+    await db.exec(`
+      insert into organizations (id, slug, name) values ('org_1', 'patchpilot', 'PatchPilot');
+      insert into projects (id, organization_id, slug, name) values ('proj_1', 'org_1', 'platform', 'Agent Platform');
+      insert into requirements (id, project_id, title, raw_input, input_type, status, simple_summary, created_by)
+        values ('req_1', 'proj_1', 'Claim fencing', 'Create schema', 'feature', 'submitted', 'DB schema', 'user_1');
+      insert into prd_versions (id, project_id, requirement_id, version, status, title, body_markdown)
+        values ('prd_1_v1', 'proj_1', 'req_1', 1, 'draft', 'DB schema PRD', '# DB schema');
+      insert into agents (id, project_id, name, role, status)
+        values
+          ('agent_backend', 'proj_1', 'Backend Agent', 'backend', 'busy'),
+          ('agent_reviewer', 'proj_1', 'Reviewer Agent', 'reviewer', 'idle');
+      insert into work_items (
+        id, project_id, requirement_id, prd_version_id, title, status, role, scope, assigned_agent_id,
+        claimed_at, claim_token, lease_expires_at, heartbeat_at
+      ) values (
+        'wi_claimed', 'proj_1', 'req_1', 'prd_1_v1', 'Create schema', 'claimed', 'backend', 'Schema only',
+        'agent_backend', '2026-06-10T00:00:00.000Z', 'claim_token_1', '2026-06-10T00:05:00.000Z',
+        '2026-06-10T00:01:00.000Z'
+      );
+      insert into agent_runs (id, project_id, requirement_id, prd_version_id, work_item_id, agent_id, runner, status)
+        values ('run_1', 'proj_1', 'req_1', 'prd_1_v1', 'wi_claimed', 'agent_backend', 'simulated', 'queued');
+    `);
+
+    await expect(
+      db.query(`
+        insert into work_items (
+          id, project_id, requirement_id, prd_version_id, title, status, role, scope, assigned_agent_id,
+          claimed_at, claim_token, lease_expires_at, heartbeat_at
+        ) values (
+          'wi_duplicate_token', 'proj_1', 'req_1', 'prd_1_v1', 'Duplicate token', 'claimed', 'backend',
+          'Schema only', 'agent_reviewer', '2026-06-10T00:00:00.000Z', 'claim_token_1',
+          '2026-06-10T00:05:00.000Z', '2026-06-10T00:01:00.000Z'
+        )
+      `)
+    ).rejects.toThrow();
+
+    await expect(
+      db.query(`
+        insert into work_items (
+          id, project_id, requirement_id, prd_version_id, title, status, role, scope, assigned_agent_id,
+          claimed_at, claim_token, lease_expires_at, heartbeat_at
+        ) values (
+          'wi_duplicate_agent', 'proj_1', 'req_1', 'prd_1_v1', 'Duplicate agent', 'claimed', 'backend',
+          'Schema only', 'agent_backend', '2026-06-10T00:00:00.000Z', 'claim_token_2',
+          '2026-06-10T00:05:00.000Z', '2026-06-10T00:01:00.000Z'
+        )
+      `)
+    ).rejects.toThrow();
+
+    await expect(
+      db.query(`
+        insert into work_items (id, project_id, requirement_id, prd_version_id, title, status, role, scope)
+        values ('wi_claimed_without_token', 'proj_1', 'req_1', 'prd_1_v1', 'Missing token', 'claimed', 'backend', 'Schema only')
+      `)
+    ).rejects.toThrow();
+
+    await expect(
+      db.query(`
+        insert into work_items (
+          id, project_id, requirement_id, prd_version_id, title, status, role, scope,
+          claimed_at, claim_token, lease_expires_at
+        ) values (
+          'wi_ready_with_token', 'proj_1', 'req_1', 'prd_1_v1', 'Stale token', 'ready', 'backend',
+          'Schema only', '2026-06-10T00:00:00.000Z', 'claim_token_3', '2026-06-10T00:05:00.000Z'
+        )
+      `)
+    ).rejects.toThrow();
+
+    await expect(
+      db.query(`
+        insert into agent_runs (id, project_id, requirement_id, prd_version_id, work_item_id, agent_id, runner, status)
+        values ('run_duplicate_active', 'proj_1', 'req_1', 'prd_1_v1', 'wi_claimed', 'agent_backend', 'simulated', 'running')
+      `)
+    ).rejects.toThrow();
+
+    await db.exec(`
+      insert into agent_runs (id, project_id, requirement_id, prd_version_id, work_item_id, agent_id, runner, status)
+        values ('run_failed_retry', 'proj_1', 'req_1', 'prd_1_v1', 'wi_claimed', 'agent_backend', 'simulated', 'failed');
+      insert into pull_requests (
+        id, project_id, provider, status, title, requirement_id, prd_version_id, work_item_id, agent_run_id,
+        branch_name, base_branch, url, body_markdown, reviewer_summary, test_summary
+      ) values (
+        'pr_1', 'proj_1', 'local', 'draft', 'Create schema', 'req_1', 'prd_1_v1', 'wi_claimed', 'run_1',
+        'agent/schema', 'main', 'local://pull-requests/pr_1', '# PR', 'Looks ok', 'Tests pending'
+      );
+    `);
+
+    await expect(
+      db.query(`
+        insert into pull_requests (
+          id, project_id, provider, status, title, requirement_id, prd_version_id, work_item_id, agent_run_id,
+          branch_name, base_branch, url, body_markdown, reviewer_summary, test_summary
+        ) values (
+          'pr_2', 'proj_1', 'local', 'draft', 'Create schema again', 'req_1', 'prd_1_v1', 'wi_claimed',
+          'run_failed_retry', 'agent/schema-retry', 'main', 'local://pull-requests/pr_2', '# PR', 'Looks ok',
+          'Tests pending'
+        )
       `)
     ).rejects.toThrow();
   });

@@ -343,12 +343,42 @@ export const workItems = pgTable(
     index("work_items_prd_version_id_idx").on(table.prdVersionId),
     index("work_items_assigned_agent_id_idx").on(table.assignedAgentId),
     index("work_items_status_idx").on(table.status),
+    index("work_items_status_lease_expires_at_idx").on(table.status, table.leaseExpiresAt),
+    uniqueIndex("work_items_active_claim_token_unique")
+      .on(table.claimToken)
+      .where(sql`${table.claimToken} is not null and ${table.status} in ('claimed', 'running')`),
+    uniqueIndex("work_items_active_agent_claim_unique")
+      .on(table.assignedAgentId)
+      .where(sql`${table.assignedAgentId} is not null and ${table.status} in ('claimed', 'running')`),
     check("work_items_title_not_empty", sql`length(${table.title}) > 0`),
     check("work_items_scope_not_empty", sql`length(${table.scope}) > 0`),
     check("work_items_budget_usd_nonnegative", sql`${table.budgetUsd} is null or ${table.budgetUsd} >= 0`),
     check("work_items_max_concurrent_positive", sql`${table.maxConcurrent} is null or ${table.maxConcurrent} > 0`),
     check("work_items_version_positive", sql`${table.version} > 0`),
-    check("work_items_rework_count_nonnegative", sql`${table.reworkCount} >= 0`)
+    check("work_items_rework_count_nonnegative", sql`${table.reworkCount} >= 0`),
+    check("work_items_claim_token_not_empty", sql`${table.claimToken} is null or length(${table.claimToken}) > 0`),
+    check(
+      "work_items_claim_fields_consistent",
+      sql`(
+        ${table.status} in ('claimed', 'running')
+        and ${table.claimToken} is not null
+        and ${table.claimedAt} is not null
+        and ${table.leaseExpiresAt} is not null
+      ) or (
+        ${table.status} not in ('claimed', 'running')
+        and ${table.claimToken} is null
+        and ${table.claimedAt} is null
+        and ${table.leaseExpiresAt} is null
+      )`
+    ),
+    check(
+      "work_items_claim_lease_after_claimed",
+      sql`${table.leaseExpiresAt} is null or ${table.claimedAt} is null or ${table.leaseExpiresAt} > ${table.claimedAt}`
+    ),
+    check(
+      "work_items_heartbeat_after_claimed",
+      sql`${table.heartbeatAt} is null or ${table.claimedAt} is null or ${table.heartbeatAt} >= ${table.claimedAt}`
+    )
   ]
 );
 
@@ -430,8 +460,12 @@ export const agentRuns = pgTable(
     index("agent_runs_requirement_id_idx").on(table.requirementId),
     index("agent_runs_prd_version_id_idx").on(table.prdVersionId),
     index("agent_runs_work_item_id_idx").on(table.workItemId),
+    index("agent_runs_work_item_status_idx").on(table.workItemId, table.status),
     index("agent_runs_agent_id_idx").on(table.agentId),
     index("agent_runs_status_idx").on(table.status),
+    uniqueIndex("agent_runs_active_work_item_unique")
+      .on(table.workItemId)
+      .where(sql`${table.status} in ('queued', 'running', 'needs_approval')`),
     check("agent_runs_budget_usd_nonnegative", sql`${table.budgetUsd} is null or ${table.budgetUsd} >= 0`),
     check(
       "agent_runs_budget_soft_threshold_usd_nonnegative",
@@ -514,8 +548,8 @@ export const pullRequests = pgTable(
   },
   (table) => [
     uniqueIndex("pull_requests_provider_url_unique").on(table.provider, table.url),
+    uniqueIndex("pull_requests_work_item_id_unique").on(table.workItemId),
     index("pull_requests_project_id_idx").on(table.projectId),
-    index("pull_requests_work_item_id_idx").on(table.workItemId),
     index("pull_requests_agent_run_id_idx").on(table.agentRunId),
     index("pull_requests_status_idx").on(table.status),
     check("pull_requests_title_not_empty", sql`length(${table.title}) > 0`),
@@ -602,6 +636,7 @@ export const testRuns = pgTable(
   },
   (table) => [
     index("test_runs_project_id_idx").on(table.projectId),
+    index("test_runs_work_item_id_created_at_idx").on(table.workItemId, table.createdAt),
     index("test_runs_test_case_id_idx").on(table.testCaseId),
     index("test_runs_agent_run_id_idx").on(table.agentRunId),
     index("test_runs_pull_request_id_idx").on(table.pullRequestId),
@@ -730,6 +765,7 @@ export const auditEvents = pgTable(
     index("audit_events_project_id_idx").on(table.projectId),
     index("audit_events_trace_id_idx").on(table.traceId),
     index("audit_events_created_at_idx").on(table.createdAt),
+    index("audit_events_trace_id_created_at_idx").on(table.traceId, table.createdAt),
     index("audit_events_target_idx").on(table.targetType, table.targetId),
     index("audit_events_agent_run_id_idx").on(table.agentRunId),
     check("audit_events_trace_id_not_empty", sql`length(${table.traceId}) > 0`),
