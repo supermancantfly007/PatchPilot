@@ -720,7 +720,21 @@ export const openApiSchemas = {
     summary: { type: "string" },
     durationMs: { type: "number" },
     startedAt: isoDate,
-    endedAt: isoDate
+    endedAt: isoDate,
+    commit: { type: "string" },
+    branch: { type: "string" },
+    pullRequestId: id,
+    workspacePath: { type: "string" },
+    runner: { type: "string" },
+    environmentImage: { type: "string" },
+    exitCode: { type: ["number", "null"] },
+    failureSummary: { type: "string" },
+    logArtifactId: id,
+    artifactIds: arrayOf(id),
+    retryCount: { type: "number" },
+    attempt: { type: "number" },
+    maxAttempts: { type: "number" },
+    flakySignal: { type: "boolean" }
   }, ["id", "status", "command", "summary", "durationMs"]),
   PullRequestRecord: looseObjectSchema({
     id,

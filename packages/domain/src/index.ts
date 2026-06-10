@@ -268,6 +268,20 @@ export interface TestRun {
   durationMs: number;
   startedAt?: string;
   endedAt?: string;
+  commit?: string;
+  branch?: string;
+  pullRequestId?: string;
+  workspacePath?: string;
+  runner?: string;
+  environmentImage?: string;
+  exitCode?: number | null;
+  failureSummary?: string;
+  logArtifactId?: string;
+  artifactIds?: string[];
+  retryCount?: number;
+  attempt?: number;
+  maxAttempts?: number;
+  flakySignal?: boolean;
 }
 
 export interface TestCase {

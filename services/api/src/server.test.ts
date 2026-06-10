@@ -342,6 +342,27 @@ dev:
     expect(prdTestRuns).toHaveLength(4);
     expect(prdTestRuns.every((test: { status: string }) => test.status === "passed")).toBe(true);
     expect(prdTestRuns.every((test: { testCaseId?: string }) => test.testCaseId)).toBe(true);
+    expect(
+      prdTestRuns.every((test: {
+        runner?: string;
+        environmentImage?: string;
+        workspacePath?: string;
+        exitCode?: number | null;
+        logArtifactId?: string;
+        artifactIds?: string[];
+        retryCount?: number;
+        flakySignal?: boolean;
+      }) =>
+        test.runner === "simulated-test-runner" &&
+        test.environmentImage === "simulated" &&
+        test.workspacePath?.startsWith("simulated://") &&
+        test.exitCode === 0 &&
+        Boolean(test.logArtifactId) &&
+        test.artifactIds?.includes(test.logArtifactId || "") &&
+        test.retryCount === 0 &&
+        test.flakySignal === false
+      )
+    ).toBe(true);
     expect(prdPullRequests).toHaveLength(4);
     expect(
       prdPullRequests.every((pullRequest: { status: string }) => pullRequest.status === "ready_for_review")

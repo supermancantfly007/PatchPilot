@@ -126,6 +126,22 @@ importers:
         specifier: ^4.0.15
         version: 4.1.8(@types/node@24.13.1)(vite@8.0.16(@types/node@24.13.1)(esbuild@0.28.0)(tsx@4.22.4)(yaml@2.9.0))
 
+  packages/testing:
+    dependencies:
+      '@patchpilot/domain':
+        specifier: workspace:*
+        version: link:../domain
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.13.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.0.15
+        version: 4.1.8(@types/node@24.13.1)(vite@8.0.16(@types/node@24.13.1)(esbuild@0.28.0)(tsx@4.22.4)(yaml@2.9.0))
+
   services/api:
     dependencies:
       '@fastify/cors':
@@ -137,6 +153,9 @@ importers:
       '@patchpilot/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@patchpilot/testing':
+        specifier: workspace:*
+        version: link:../../packages/testing
       fastify:
         specifier: ^5.8.5
         version: 5.8.5

@@ -951,15 +951,29 @@ export class PatchPilotStore {
   private recordCompletedRunEvidence(run: AgentRun, workItem: WorkItem, tests: TestRun[], endedAt: string) {
     const prd = this.findPrd(run.prdId);
     const testCase = this.ensureTestCasesForWorkItems(prd, [workItem], endedAt)[0];
-    const normalizedTests = tests.map((test) => ({
-      ...test,
-      testCaseId: test.testCaseId || testCase?.id,
-      runId: run.id,
-      prdId: run.prdId,
-      workItemId: workItem.id,
-      startedAt: test.startedAt || new Date(new Date(endedAt).getTime() - test.durationMs).toISOString(),
-      endedAt: test.endedAt || endedAt
-    }));
+    const normalizedTests = tests.map((test) => {
+      const logArtifactId = test.logArtifactId || `artifact_test_log_${test.id}`;
+      const workspacePath = test.workspacePath || run.result?.workspacePath || `simulated://${run.id}`;
+      return {
+        ...test,
+        testCaseId: test.testCaseId || testCase?.id,
+        runId: run.id,
+        prdId: run.prdId,
+        workItemId: workItem.id,
+        startedAt: test.startedAt || new Date(new Date(endedAt).getTime() - test.durationMs).toISOString(),
+        endedAt: test.endedAt || endedAt,
+        runner: test.runner || (run.runner === "codex" ? "patchpilot-test-runner" : "simulated-test-runner"),
+        environmentImage: test.environmentImage || (run.runner === "codex" ? "local" : "simulated"),
+        workspacePath,
+        exitCode: test.exitCode !== undefined ? test.exitCode : test.status === "passed" ? 0 : 1,
+        retryCount: test.retryCount ?? 0,
+        attempt: test.attempt ?? 1,
+        maxAttempts: test.maxAttempts ?? 1,
+        flakySignal: test.flakySignal ?? false,
+        logArtifactId,
+        artifactIds: test.artifactIds || [logArtifactId]
+      };
+    });
 
     if (run.result) {
       run.result.tests = normalizedTests;

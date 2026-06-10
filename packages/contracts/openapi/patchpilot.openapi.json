@@ -1734,6 +1734,57 @@
           "endedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "commit": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "pullRequestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspacePath": {
+            "type": "string"
+          },
+          "runner": {
+            "type": "string"
+          },
+          "environmentImage": {
+            "type": "string"
+          },
+          "exitCode": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "failureSummary": {
+            "type": "string"
+          },
+          "logArtifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "retryCount": {
+            "type": "number"
+          },
+          "attempt": {
+            "type": "number"
+          },
+          "maxAttempts": {
+            "type": "number"
+          },
+          "flakySignal": {
+            "type": "boolean"
           }
         }
       },

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { runTestCommand } from "@patchpilot/testing";
 import type {
   AgentRunEvent,
   AgentRunResult,
@@ -69,7 +70,7 @@ export async function runCodexAgent(
     message: "Codex 执行结束，开始运行项目测试"
   });
 
-  let testRun = await runProjectTests(workspace.path, config);
+  let testRun = await runConfiguredTests(context, workspace.path, config);
   const repairAttempts = config.test.maxRepairAttempts;
 
   for (let attempt = 1; testRun.status === "failed" && attempt <= repairAttempts; attempt += 1) {
@@ -84,7 +85,7 @@ export async function runCodexAgent(
       type: "test.started",
       message: `第 ${attempt} 次修复完成，重新运行测试`
     });
-    testRun = await runProjectTests(workspace.path, config);
+    testRun = await runConfiguredTests(context, workspace.path, config);
   }
 
   if (testRun.status !== "passed") {
@@ -136,6 +137,22 @@ async function prepareWorkspace(context: CodexRunContext, config: ResolvedPatchP
     path: workspacePath,
     taskFilePath
   };
+}
+
+async function runConfiguredTests(
+  context: CodexRunContext,
+  workspacePath: string,
+  config: ResolvedPatchPilotConfig
+): Promise<TestRun> {
+  return runTestCommand({
+    command: config.test.command,
+    cwd: workspacePath,
+    timeoutMs: config.test.timeoutMs,
+    runId: context.runId,
+    prdId: context.prd.id,
+    workItemId: context.workItem.id,
+    workspacePath
+  });
 }
 
 async function runCodexExec(
@@ -206,19 +223,6 @@ async function runCodexExec(
   }
 
   return { lastMessagePath, sessionId };
-}
-
-async function runProjectTests(workspacePath: string, config: ResolvedPatchPilotConfig): Promise<TestRun> {
-  const command = config.test.command;
-  const startedAt = Date.now();
-  const result = await runShell(command, workspacePath, config.test.timeoutMs);
-  return {
-    id: `test_${randomUUID()}`,
-    status: result.exitCode === 0 ? "passed" : "failed",
-    command,
-    summary: result.exitCode === 0 ? "项目测试通过" : tail(result.output, 1600),
-    durationMs: Date.now() - startedAt
-  };
 }
 
 async function listChangedFiles(workspacePath: string) {
