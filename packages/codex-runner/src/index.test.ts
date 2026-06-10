@@ -51,6 +51,25 @@ describe("codex-runner", () => {
     });
   });
 
+  it("redacts secrets from Codex events and tool calls", () => {
+    const event = parseCodexEvent(JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "tool-call-secret",
+        type: "command_execution",
+        command: "curl https://example.com?token=patchpilot_fixture_secret_tool_123",
+        status: "completed",
+        summary: "printed ci-token-value"
+      },
+      message: "done patchpilot_fixture_secret_message_123"
+    }), { knownSecrets: ["ci-token-value"] });
+
+    expect(JSON.stringify(event)).not.toContain("patchpilot_fixture_secret_tool_123");
+    expect(JSON.stringify(event)).not.toContain("patchpilot_fixture_secret_message_123");
+    expect(JSON.stringify(event)).not.toContain("ci-token-value");
+    expect(event.toolCall?.command).toContain("[REDACTED:secret]");
+  });
+
   it("parses plain-text fallback output", () => {
     expect(parseCodexEvent("plain progress")).toEqual({
       message: "Codex：plain progress",
@@ -70,6 +89,15 @@ describe("codex-runner", () => {
 
     expect(summary).toHaveLength("Codex 执行失败：".length + 1600);
     expect(summary).toMatch(/^Codex 执行失败：x+$/);
+  });
+
+  it("redacts secrets from Codex exec failure summaries", () => {
+    const summary = summarizeCodexExecFailure({
+      stderr: "failed with ci-token-value",
+      exitCode: 1
+    }, { knownSecrets: ["ci-token-value"] });
+
+    expect(summary).toBe("Codex 执行失败：failed with [REDACTED:secret]");
   });
 
   it("classifies structured runner failures", () => {

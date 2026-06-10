@@ -109,6 +109,9 @@ importers:
       '@patchpilot/domain':
         specifier: workspace:*
         version: link:../domain
+      '@patchpilot/security':
+        specifier: workspace:*
+        version: link:../security
     devDependencies:
       '@types/node':
         specifier: ^24.10.1
@@ -125,6 +128,9 @@ importers:
       '@patchpilot/domain':
         specifier: workspace:*
         version: link:../domain
+      '@patchpilot/security':
+        specifier: workspace:*
+        version: link:../security
       '@patchpilot/testing':
         specifier: workspace:*
         version: link:../testing
@@ -211,6 +217,18 @@ importers:
         specifier: ^4.0.15
         version: 4.1.8(@opentelemetry/api@1.9.1)(@types/node@24.13.1)(vite@8.0.16(@types/node@24.13.1)(esbuild@0.28.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))
 
+  packages/security:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.13.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.0.15
+        version: 4.1.8(@opentelemetry/api@1.9.1)(@types/node@24.13.1)(vite@8.0.16(@types/node@24.13.1)(esbuild@0.28.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))
+
   packages/telemetry:
     dependencies:
       '@opentelemetry/api':
@@ -259,6 +277,9 @@ importers:
       '@patchpilot/domain':
         specifier: workspace:*
         version: link:../domain
+      '@patchpilot/security':
+        specifier: workspace:*
+        version: link:../security
     devDependencies:
       '@types/node':
         specifier: ^24.10.1
@@ -303,6 +324,9 @@ importers:
       '@patchpilot/domain':
         specifier: workspace:*
         version: link:../domain
+      '@patchpilot/security':
+        specifier: workspace:*
+        version: link:../security
     devDependencies:
       '@types/node':
         specifier: ^24.10.1
@@ -334,6 +358,9 @@ importers:
       '@patchpilot/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@patchpilot/security':
+        specifier: workspace:*
+        version: link:../../packages/security
       '@patchpilot/telemetry':
         specifier: workspace:*
         version: link:../../packages/telemetry

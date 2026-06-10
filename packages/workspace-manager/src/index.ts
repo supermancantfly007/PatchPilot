@@ -3,6 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import type { Prd, Requirement, WorkItem } from "@patchpilot/domain";
+import { redactSecrets } from "@patchpilot/security";
 
 export interface WorkspaceContext {
   runId: string;
@@ -86,7 +87,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
         throw new Error(`无法创建隔离 git worktree：${tail(worktreeResult.output, 1200)}`);
       }
       worktreeCreated = true;
-      await writeFile(taskFilePath, buildTaskMarkdown(context));
+      await writeFile(taskFilePath, redactSecrets(buildTaskMarkdown(context)).redacted);
     } catch (error) {
       if (worktreeCreated) await this.cleanupWorkspace({ path: workspacePath });
       throw error;
@@ -188,7 +189,7 @@ export function buildWorkspaceName(context: Pick<WorkspaceContext, "runId">) {
 
 export function buildWorkspaceBranchName(context: Pick<WorkspaceContext, "runId" | "workItem">) {
   const workItemId = slugSegment(context.workItem.id).slice(0, 80);
-  const titleSlug = slugSegment(context.workItem.title).slice(0, 48);
+  const titleSlug = slugSegment(redactSecrets(context.workItem.title).redacted).slice(0, 48);
   return `patchpilot/${workItemId}-${titleSlug}`;
 }
 
@@ -207,6 +208,7 @@ function parseChangedFiles(output: string) {
       const file = line.slice(3).trim();
       return file.includes(" -> ") ? file.split(" -> ").pop() || file : file;
     })
+    .map((file) => redactSecrets(file).redacted)
     .filter((file) => file !== "PATCHPILOT_TASK.md" && !file.startsWith(".patchpilot-codex-"));
 }
 
@@ -254,7 +256,7 @@ async function readSummary(summaryPath: string | undefined, changedFiles: string
   if (summaryPath) {
     try {
       const summary = (await readFile(summaryPath, "utf8")).trim();
-      if (summary) return summary.slice(0, 2000);
+      if (summary) return redactSecrets(summary).redacted.slice(0, 2000);
     } catch {
       // The JSONL stream is still authoritative if Codex did not write the optional summary file.
     }

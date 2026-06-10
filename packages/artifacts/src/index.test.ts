@@ -67,6 +67,34 @@ describe("ArtifactStore", () => {
     }
   });
 
+  it("redacts secrets from text artifacts and metadata before persistence", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "patchpilot-artifacts-"));
+    const store = new LocalFileSystemArtifactStore({ rootDir });
+
+    try {
+      const record = await store.putArtifact({
+        id: "artifact_secret_log",
+        kind: "log",
+        content: "fixture leaked patchpilot_fixture_secret_artifact_123",
+        contentType: "text/plain",
+        metadata: {
+          command: "curl https://example.com?token=artifact-secret-value"
+        }
+      });
+      const stored = await store.getArtifact(record.id);
+      const content = new TextDecoder().decode(stored.bytes);
+
+      expect(content).not.toContain("patchpilot_fixture_secret_artifact_123");
+      expect(record.metadata).toMatchObject({
+        redactionStatus: "redacted",
+        redactionPolicyVersion: "td-214-secret-redaction-v1"
+      });
+      expect(JSON.stringify(record.metadata)).not.toContain("artifact-secret-value");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   const runS3Integration = process.env.PATCHPILOT_ARTIFACT_S3_INTEGRATION === "1";
   const s3It = runS3Integration ? it : it.skip;
 

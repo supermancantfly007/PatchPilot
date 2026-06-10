@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.950.0",
-    "@patchpilot/domain": "workspace:*"
+    "@patchpilot/domain": "workspace:*",
+    "@patchpilot/security": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

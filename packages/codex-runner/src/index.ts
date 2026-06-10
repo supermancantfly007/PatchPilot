@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { runTestCommand } from "@patchpilot/testing";
 import { GitWorkspaceManager, type WorkspaceManager } from "@patchpilot/workspace-manager";
+import { redactJsonValue, redactSecrets, type SecretRedactionOptions } from "@patchpilot/security";
 import {
   RootlessContainerSandbox,
   toContainerWorkspacePath,
@@ -178,7 +179,8 @@ export class LocalCodexRunner implements CodexRunner {
     const taskFilePath = containerSandbox
       ? toContainerWorkspacePath(workspace.path, workspace.taskFilePath)
       : workspace.taskFilePath;
-    const prompt = buildCodexPrompt(context, taskFilePath);
+    const redactionOptions = redactionOptionsForConfig(config);
+    const prompt = redactSecrets(buildCodexPrompt(context, taskFilePath), redactionOptions).redacted;
     await emit({
       step: "developing",
       type: "codex.started",
@@ -205,7 +207,7 @@ export class LocalCodexRunner implements CodexRunner {
       });
       const repairCodexRun = await runCodexExec(
         workspace.path,
-        buildRepairPrompt(context, testRun.summary),
+        redactSecrets(buildRepairPrompt(context, testRun.summary), redactionOptions).redacted,
         emit,
         config,
         containerSandbox
@@ -337,6 +339,7 @@ async function runCodexExec(
   const sandbox = config.security.codexSandbox;
   const args = ["exec", "--json", "--sandbox", sandbox, "-C", codexWorkspacePath, "-o", codexLastMessagePath, "-"];
   const useBypass = config.security.codexBypass;
+  const redactionOptions = redactionOptionsForConfig(config);
   if (useBypass) {
     args.splice(2, 2, "--dangerously-bypass-approvals-and-sandbox");
   }
@@ -358,7 +361,7 @@ async function runCodexExec(
     stdio: ["pipe", "pipe", "pipe"]
   });
 
-  child.stdin.end(prompt);
+  child.stdin.end(redactSecrets(prompt, redactionOptions).redacted);
 
   const timeout = sandboxedProcess ? undefined : setTimeout(() => child.kill("SIGTERM"), config.budget.codexTimeoutMs);
   let stdoutBuffer = "";
@@ -373,7 +376,7 @@ async function runCodexExec(
     const lines = stdoutBuffer.split("\n");
     stdoutBuffer = lines.pop() || "";
     for (const line of lines) {
-      const event = parseCodexEvent(line);
+      const event = parseCodexEvent(line, redactionOptions);
       if (event.sessionId) sessionId = event.sessionId;
       recordCodexCapture(capture, event);
       const message = event.message;
@@ -391,7 +394,7 @@ async function runCodexExec(
   });
 
   child.stderr.on("data", (chunk: Buffer) => {
-    stderr += chunk.toString("utf8");
+    stderr += redactSecrets(chunk.toString("utf8"), redactionOptions).redacted;
   });
 
   const exitCode = await new Promise<number | null>((resolve) => {
@@ -409,7 +412,7 @@ async function runCodexExec(
         : stderr,
       stdoutRemainder: stdoutBuffer,
       exitCode
-    });
+    }, redactionOptions);
     throw new CodexRunError(message, classifyFailureMessage(message), undefined, egressPolicyEvidence);
   }
 
@@ -449,11 +452,11 @@ function buildRepairPrompt(context: CodexRunContext, testSummary: string) {
 }
 
 function buildCommitMessage(context: CodexRunContext) {
-  const title = context.workItem.title.replace(/\s+/g, " ").trim();
+  const title = redactSecrets(context.workItem.title).redacted.replace(/\s+/g, " ").trim();
   return `PatchPilot ${context.workItem.id}: ${title}`.slice(0, 160);
 }
 
-export function parseCodexEvent(line: string): ParsedCodexEvent {
+export function parseCodexEvent(line: string, options: SecretRedactionOptions = {}): ParsedCodexEvent {
   try {
     const event = JSON.parse(line) as Record<string, unknown>;
     const type = typeof event.type === "string" ? event.type : "codex.event";
@@ -477,16 +480,19 @@ export function parseCodexEvent(line: string): ParsedCodexEvent {
       stringValue(event.text) ||
       stringValue(event.summary);
     const message = rawMessage ? `Codex：${rawMessage.slice(0, 180)}` : `Codex event：${type}`;
-    return {
+    return redactJsonValue({
       message,
       sessionId,
       ...(agentMessage ? { agentMessage } : {}),
       ...(reasoningSummary ? { reasoningSummary } : {}),
       ...(toolCall ? { toolCall } : {})
-    };
+    }, options);
   } catch {
     const trimmed = line.trim();
-    return { message: trimmed ? `Codex：${trimmed.slice(0, 180)}` : undefined, sessionId: undefined };
+    return {
+      message: trimmed ? `Codex：${redactSecrets(trimmed.slice(0, 180), options).redacted}` : undefined,
+      sessionId: undefined
+    };
   }
 }
 
@@ -494,8 +500,9 @@ export function summarizeCodexExecFailure(input: {
   stderr?: string;
   stdoutRemainder?: string;
   exitCode: number | null;
-}) {
-  return `Codex 执行失败：${tail(input.stderr || input.stdoutRemainder || `exit ${input.exitCode}`, 1600)}`;
+}, options: SecretRedactionOptions = {}) {
+  const summary = tail(input.stderr || input.stdoutRemainder || `exit ${input.exitCode}`, 1600);
+  return `Codex 执行失败：${redactSecrets(summary, options).redacted}`;
 }
 
 export function classifyFailureMessage(message: string): FailureType {
@@ -644,7 +651,7 @@ function extractToolCall(
     stringValue(item?.callId) ||
     stableToolCallId(name, command, rawLine);
 
-  return {
+  return redactJsonValue({
     id,
     name,
     status,
@@ -654,7 +661,7 @@ function extractToolCall(
     ...(startedAt ? { startedAt } : {}),
     ...(endedAt ? { endedAt } : {}),
     ...(durationMs !== undefined ? { durationMs } : {})
-  };
+  });
 }
 
 function firstText(values: unknown[]) {
@@ -782,13 +789,17 @@ function buildDiffSummary(
 ): AgentRunDiffSummary {
   return {
     changedFileCount: changedFiles.length,
-    changedFiles,
+    changedFiles: changedFiles.map((file) => redactSecrets(file).redacted),
     hasChanges: changedFiles.length > 0,
     ...(git.branchName ? { branchName: git.branchName } : {}),
     ...(git.baseBranch ? { baseBranch: git.baseBranch } : {}),
     ...(git.baseCommit ? { baseCommit: git.baseCommit } : {}),
     ...(git.headCommit ? { headCommit: git.headCommit } : {})
   };
+}
+
+function redactionOptionsForConfig(config: CodexRunnerConfig): SecretRedactionOptions {
+  return { knownSecrets: Object.values(config.security.secretEnv ?? {}) };
 }
 
 function summarizeTestOutput(tests: TestRun[]) {

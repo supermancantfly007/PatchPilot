@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { TestRun, TestRunStatus } from "@patchpilot/domain";
+import { knownSecretsFromEnv, redactSecrets } from "@patchpilot/security";
 
 export type TestOutputFormat = "auto" | "json" | "junit" | "text";
 
@@ -77,6 +78,8 @@ export class TestRunner {
 export async function runTestCommand(options: TestRunnerOptions): Promise<TestRun> {
   const command = options.command.trim();
   if (!command) throw new Error("Test command must not be empty");
+  const knownSecrets = knownSecretsFromEnv(options.env);
+  const displayCommand = redactSecrets(command, { knownSecrets }).redacted;
 
   const startedAt = new Date();
   const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? 1));
@@ -92,7 +95,11 @@ export async function runTestCommand(options: TestRunnerOptions): Promise<TestRu
       inheritEnv: options.inheritEnv,
       maxOutputBytes: options.maxOutputBytes
     });
-    const commandAttempt = { attempt, ...result };
+    const commandAttempt = {
+      attempt,
+      ...result,
+      output: redactSecrets(result.output, { knownSecrets }).redacted
+    };
     attempts.push(commandAttempt);
 
     const parsed = parseTestOutput(commandAttempt.output, options.parseFormat ?? "auto");
@@ -122,7 +129,7 @@ export async function runTestCommand(options: TestRunnerOptions): Promise<TestRu
     ...(options.prdId ? { prdId: options.prdId } : {}),
     ...(options.workItemId ? { workItemId: options.workItemId } : {}),
     status,
-    command,
+    command: displayCommand,
     summary: summarizeRun(status, parsed, lastAttempt, retryCount, maxAttempts, options.timeoutMs),
     durationMs: endedAt.getTime() - startedAt.getTime(),
     startedAt: startedAt.toISOString(),
@@ -157,17 +164,18 @@ function executeTestCommand(
 }
 
 export function parseTestOutput(output: string, format: TestOutputFormat = "auto"): ParsedTestOutput {
+  const safeOutput = redactSecrets(output).redacted;
   if (format === "json" || format === "auto") {
-    const parsedJson = parseJsonOutput(output);
-    if (parsedJson || format === "json") return parsedJson ?? parseTextOutput(output, "json");
+    const parsedJson = parseJsonOutput(safeOutput);
+    if (parsedJson || format === "json") return parsedJson ?? parseTextOutput(safeOutput, "json");
   }
 
   if (format === "junit" || format === "auto") {
-    const parsedJunit = parseJunitOutput(output);
-    if (parsedJunit || format === "junit") return parsedJunit ?? parseTextOutput(output, "junit");
+    const parsedJunit = parseJunitOutput(safeOutput);
+    if (parsedJunit || format === "junit") return parsedJunit ?? parseTextOutput(safeOutput, "junit");
   }
 
-  return parseTextOutput(output, "text");
+  return parseTextOutput(safeOutput, "text");
 }
 
 function statusForAttempt(attempt: CommandAttempt, parsed: ParsedTestOutput): TestRunStatus {

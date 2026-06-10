@@ -1,5 +1,5 @@
 {
-  "name": "@patchpilot/codex-runner",
+  "name": "@patchpilot/security",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,12 +11,6 @@
     "typecheck": "tsc --noEmit",
     "lint:workspace": "eslint . --max-warnings=0",
     "test": "vitest run"
-  },
-  "dependencies": {
-    "@patchpilot/domain": "workspace:*",
-    "@patchpilot/security": "workspace:*",
-    "@patchpilot/testing": "workspace:*",
-    "@patchpilot/workspace-manager": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
