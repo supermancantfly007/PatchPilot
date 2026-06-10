@@ -2,6 +2,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { generateCapabilityManifest } from "@patchpilot/policy";
 import { parseTestOutput, runTestCommand } from "./index";
 
 describe("TestRunner", () => {
@@ -63,6 +64,63 @@ describe("TestRunner", () => {
     expect(run.summary).toContain("sandboxed ok");
     expect(run.runner).toBe("custom-executor");
     expect(run.environmentImage).toBe("sandbox:test");
+  });
+
+  it("enforces the capability manifest command allowlist before execution", async () => {
+    const manifest = generateCapabilityManifest({
+      commands: {
+        allow: ["pnpm test"]
+      }
+    });
+    let executed = false;
+
+    await expect(runTestCommand({
+      command: "npm test",
+      cwd: process.cwd(),
+      timeoutMs: 5000,
+      collectGitMetadata: false,
+      capabilityManifest: manifest,
+      executor: async () => {
+        executed = true;
+        return {
+          exitCode: 0,
+          output: "should not run",
+          timedOut: false,
+          durationMs: 1
+        };
+      }
+    })).rejects.toThrow(/command_not_allowlisted/u);
+    expect(executed).toBe(false);
+  });
+
+  it("caps command timeout using the capability manifest runtime limit", async () => {
+    const manifest = generateCapabilityManifest({
+      commands: {
+        allow: ["pnpm test"]
+      },
+      testTimeoutMs: 25
+    });
+    const timeouts: number[] = [];
+
+    const run = await runTestCommand({
+      command: "pnpm test",
+      cwd: process.cwd(),
+      timeoutMs: 5000,
+      collectGitMetadata: false,
+      capabilityManifest: manifest,
+      executor: async (options) => {
+        timeouts.push(options.timeoutMs);
+        return {
+          exitCode: 0,
+          output: "policy timeout applied",
+          timedOut: false,
+          durationMs: 1
+        };
+      }
+    });
+
+    expect(timeouts).toEqual([25]);
+    expect(run.status).toBe("passed");
   });
 
   it("can run commands without inheriting the host process environment", async () => {

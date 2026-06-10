@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { generateCapabilityManifest } from "@patchpilot/policy";
 import { requestedSecretIdsForWorkItem, resolveSecretBrokerGrants } from "./secretBroker";
 import type { SecretBrokerRuntimeConfig, WorkItem } from "@patchpilot/domain";
 
@@ -99,6 +100,42 @@ describe("secret broker", () => {
     expect(resolution.env).toEqual({});
     expect(resolution.evidence.denied).toEqual([{ id: "github-ci-token", reason: "not_configured" }]);
     expect(resolution.evidence.injected).toEqual([]);
+  });
+
+  it("requires requested secrets to be allowed by the capability manifest", () => {
+    const resolution = resolveSecretBrokerGrants({
+      config: {
+        ...baseConfig,
+        allowedSecrets: [
+          {
+            id: "npm-read-token",
+            envVar: "NPM_TOKEN",
+            sourceEnv: "PATCHPILOT_DEV_NPM_TOKEN",
+            environment: "ci"
+          }
+        ]
+      },
+      workItem: workItem({ requiredCapabilities: ["secret:npm-read-token"] }),
+      env: { PATCHPILOT_DEV_NPM_TOKEN: "secret-value" },
+      capabilityManifest: {
+        ...generateCapabilityManifest({
+          workItem: {
+            id: "wi_1",
+            prdId: "prd_1",
+            requiredCapabilities: ["secret:npm-read-token"]
+          }
+        }),
+        secrets: {
+          requested: ["npm-read-token"],
+          allow: [],
+          allowProductionSecrets: false
+        }
+      }
+    });
+
+    expect(resolution.authorized).toBe(false);
+    expect(resolution.env).toEqual({});
+    expect(resolution.evidence.denied).toEqual([{ id: "npm-read-token", reason: "not_configured" }]);
   });
 });
 

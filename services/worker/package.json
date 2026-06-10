@@ -21,6 +21,7 @@
   "dependencies": {
     "@patchpilot/contracts": "workspace:*",
     "@patchpilot/domain": "workspace:*",
+    "@patchpilot/policy": "workspace:*",
     "@patchpilot/telemetry": "workspace:*",
     "@patchpilot/workflows": "workspace:*"
   },

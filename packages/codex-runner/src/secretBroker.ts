@@ -4,6 +4,7 @@ import type {
   SecretBrokerSecretConfig,
   WorkItem
 } from "@patchpilot/domain";
+import type { CapabilityManifest } from "@patchpilot/policy";
 
 export interface SecretBrokerResolution {
   env: Record<string, string>;
@@ -27,6 +28,7 @@ export function resolveSecretBrokerGrants(input: {
   config: SecretBrokerRuntimeConfig;
   workItem: Pick<WorkItem, "requiredCapabilities">;
   env?: Record<string, string | undefined>;
+  capabilityManifest?: CapabilityManifest;
 }): SecretBrokerResolution {
   const requestedSecretIds = requestedSecretIdsForWorkItem(input.workItem);
   const evidence: SecretBrokerEvidence = {
@@ -49,7 +51,14 @@ export function resolveSecretBrokerGrants(input: {
   }
 
   const allowedSecrets = new Map(input.config.allowedSecrets.map((secret) => [secret.id, secret]));
+  const manifestAllowedSecrets = input.capabilityManifest
+    ? new Set(input.capabilityManifest.secrets.allow)
+    : undefined;
   for (const secretId of requestedSecretIds) {
+    if (manifestAllowedSecrets && !manifestAllowedSecrets.has(secretId)) {
+      evidence.denied.push({ id: secretId, reason: "not_configured" });
+      continue;
+    }
     const secret = allowedSecrets.get(secretId);
     if (!secret) {
       evidence.denied.push({ id: secretId, reason: "not_configured" });
