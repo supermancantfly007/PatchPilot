@@ -10,6 +10,7 @@ import {
   type ApprovalRecord,
   type AgentProfile,
   type AgentRun,
+  type AgentRunDiffSummary,
   type AgentRunEvent,
   type ArtifactRecord,
   type AuditEvent,
@@ -913,6 +914,7 @@ export class PatchPilotStore {
         );
       }
       const tests: TestRun[] = [this.makeSimulatedTestRun(workItem)];
+      const changedFiles = ["apps/web", "services/api", "packages/domain"];
       run.timeline = completeTimeline(run.timeline);
       run.currentStep = "confirming";
       run.events.push(this.makeEvent("acceptance.waiting", "执行完成，请查看证据摘要并确认"));
@@ -920,10 +922,22 @@ export class PatchPilotStore {
         summary: this.makeSimulatedSummary(workItem),
         previewUrl: "http://localhost:3000",
         riskLevel: "low",
-        changedFiles: ["apps/web", "services/api", "packages/domain"],
+        changedFiles,
         tests,
         reviewerSummary: this.makeSimulatedReviewerSummary(workItem),
-        runner: "simulated"
+        runner: "simulated",
+        agentMessages: ["模拟 agent 已完成实现摘要、测试证据和交付记录整理。"],
+        reasoningSummaries: ["模拟 runner 按 PRD 验收标准生成垂直交付证据。"],
+        toolCalls: [
+          {
+            id: `tool_simulated_${run.id}`,
+            name: "simulated_delivery",
+            status: "completed",
+            summary: "模拟生成代码变更、测试运行和 review 证据"
+          }
+        ],
+        diffSummary: buildRunDiffSummary(changedFiles),
+        testOutputSummary: summarizeRunTestOutput(tests)
       };
       run.costActualUsd = 0.38;
       run.endedAt = new Date().toISOString();
@@ -1771,7 +1785,14 @@ export class PatchPilotStore {
         status: finalRunStatus,
         currentStep: run.currentStep,
         timeline: run.timeline,
-        events: run.events
+        events: run.events,
+        capture: {
+          codexSessionId: run.result?.codexSessionId,
+          agentMessages: run.result?.agentMessages ?? [],
+          reasoningSummaries: run.result?.reasoningSummaries ?? [],
+          toolCalls: run.result?.toolCalls ?? [],
+          testOutputSummary: run.result?.testOutputSummary
+        }
       }, null, 2),
       contentType: "application/json",
       extension: ".json",
@@ -1785,6 +1806,7 @@ export class PatchPilotStore {
       id: `artifact_diff_${run.id}`,
       kind: "diff",
       content: JSON.stringify({
+        diffSummary: run.result?.diffSummary ?? buildRunDiffSummary(run.result?.changedFiles ?? [], run.result),
         changedFiles: run.result?.changedFiles ?? [],
         branchName: run.result?.branchName,
         baseBranch: run.result?.baseBranch,
@@ -1794,7 +1816,7 @@ export class PatchPilotStore {
       contentType: "application/json",
       extension: ".json",
       metadata: {
-        changedFileCount: String(run.result?.changedFiles.length ?? 0)
+        changedFileCount: String(run.result?.diffSummary?.changedFileCount ?? run.result?.changedFiles.length ?? 0)
       },
       ...common
     });
@@ -2054,6 +2076,18 @@ export class PatchPilotStore {
       "## 改动摘要",
       result?.summary || "Agent run completed without a summary.",
       "",
+      "## Diff 摘要",
+      result?.diffSummary
+        ? `${result.diffSummary.changedFileCount} changed files: ${result.diffSummary.changedFiles.join(", ") || "none"}`
+        : "No diff summary recorded.",
+      "",
+      "## 工具调用",
+      result?.toolCalls?.length
+        ? result.toolCalls.map((toolCall) =>
+            `- ${toolCall.status}: ${toolCall.name}${toolCall.command ? ` (${toolCall.command})` : ""} - ${toolCall.summary}`
+          ).join("\n")
+        : "No structured tool call evidence recorded.",
+      "",
       "## 测试结果",
       testSummary,
       "",
@@ -2285,6 +2319,34 @@ function slugSegment(value: string) {
 
 function uniqueStrings(values: Array<string | undefined>) {
   return [...new Set(values.filter((value): value is string => Boolean(value)))];
+}
+
+function buildRunDiffSummary(
+  changedFiles: string[],
+  git: {
+    branchName?: string;
+    baseBranch?: string;
+    baseCommit?: string;
+    headCommit?: string;
+  } = {}
+): AgentRunDiffSummary {
+  return {
+    changedFileCount: changedFiles.length,
+    changedFiles,
+    hasChanges: changedFiles.length > 0,
+    ...(git.branchName ? { branchName: git.branchName } : {}),
+    ...(git.baseBranch ? { baseBranch: git.baseBranch } : {}),
+    ...(git.baseCommit ? { baseCommit: git.baseCommit } : {}),
+    ...(git.headCommit ? { headCommit: git.headCommit } : {})
+  };
+}
+
+function summarizeRunTestOutput(tests: TestRun[]) {
+  if (!tests.length) return "No test output captured.";
+  return tests.map((test) => {
+    const failure = test.failureSummary ? ` Failure: ${test.failureSummary}` : "";
+    return `${test.status}: ${test.command} (${test.durationMs}ms). ${test.summary}${failure}`;
+  }).join("\n");
 }
 
 function renderTestLog(test: TestRun) {

@@ -124,6 +124,13 @@ function reviewTone(status: ReviewRecord["status"]) {
   return "red";
 }
 
+function toolCallTone(status: "started" | "completed" | "failed" | "unknown") {
+  if (status === "completed") return "green";
+  if (status === "failed") return "red";
+  if (status === "started") return "blue";
+  return "amber";
+}
+
 function testCaseStatusLabel(status: TestCase["status"]) {
   const labels: Record<TestCase["status"], string> = {
     draft: "草稿",
@@ -271,6 +278,13 @@ export default function RunPage() {
   const runPullRequest = snapshot?.pullRequests.find((pullRequest) => pullRequest.runId === run.id);
   const runReview = snapshot?.reviewRecords.find((review) => review.runId === run.id);
   const runAuditEvents = (snapshot?.auditEvents.filter((event) => event.runId === run.id) ?? []).slice(0, 5);
+  const diffSummary = run.result?.diffSummary;
+  const resultChangedFiles = run.result?.changedFiles ?? [];
+  const diffChangedFiles = diffSummary?.changedFiles ?? resultChangedFiles;
+  const hasDiffChanges = diffSummary?.hasChanges ?? resultChangedFiles.length > 0;
+  const toolCalls = run.result?.toolCalls ?? [];
+  const agentMessages = run.result?.agentMessages ?? [];
+  const reasoningSummaries = run.result?.reasoningSummaries ?? [];
 
   return (
     <AppShell>
@@ -503,6 +517,88 @@ export default function RunPage() {
               ) : (
                 <p className="muted" style={{ margin: 0 }}>
                   完成测试和审查后，这里会展示改动摘要、测试结果和风险等级。
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <h3>运行捕获</h3>
+              <span className="status-pill">{toolCalls.length} 个工具调用</span>
+            </div>
+            <div className="card-body grid">
+              {run.result ? (
+                <>
+                  <div className="metric">
+                    <span className="muted">Diff</span>
+                    <strong>
+                      {diffSummary?.changedFileCount ?? resultChangedFiles.length} 个文件
+                    </strong>
+                    <small className="muted">
+                      {hasDiffChanges ? "包含代码变更" : "未产生变更"}
+                    </small>
+                  </div>
+                  {diffChangedFiles.length > 0 ? (
+                    <div className="event-list">
+                      {diffChangedFiles.slice(0, 8).map((file) => (
+                        <div className="event" key={file}>
+                          <strong style={{ wordBreak: "break-word" }}>{file}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {toolCalls.length > 0 ? (
+                    <div className="event-list">
+                      {toolCalls.slice(0, 8).map((toolCall) => (
+                        <div className="event" key={toolCall.id}>
+                          <strong>{toolCall.name}</strong>
+                          <p className="muted" style={{ marginBottom: 0, wordBreak: "break-word" }}>
+                            {toolCall.command ?? toolCall.summary}
+                          </p>
+                          {toolCall.command ? (
+                            <small className="muted" style={{ wordBreak: "break-word" }}>{toolCall.summary}</small>
+                          ) : null}
+                          <span className={`status-pill ${toolCallTone(toolCall.status)}`} style={{ marginTop: 10 }}>
+                            {toolCall.status}
+                            {typeof toolCall.exitCode === "number" ? ` · exit ${toolCall.exitCode}` : ""}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <StatusNotice title="暂无结构化工具调用" tone="warning">
+                      当前 runner 没有返回可展示的工具调用明细。
+                    </StatusNotice>
+                  )}
+                  {agentMessages[0] ? (
+                    <div className="event">
+                      <strong>Agent message</strong>
+                      <p className="muted" style={{ marginBottom: 0 }}>
+                        {agentMessages[0]}
+                      </p>
+                    </div>
+                  ) : null}
+                  {reasoningSummaries[0] ? (
+                    <div className="event">
+                      <strong>Reasoning summary</strong>
+                      <p className="muted" style={{ marginBottom: 0 }}>
+                        {reasoningSummaries[0]}
+                      </p>
+                    </div>
+                  ) : null}
+                  {run.result.testOutputSummary ? (
+                    <div className="event">
+                      <strong>Test output</strong>
+                      <p className="muted" style={{ marginBottom: 0 }}>
+                        {run.result.testOutputSummary}
+                      </p>
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <p className="muted" style={{ margin: 0 }}>
+                  runner 完成后会展示结构化工具调用、diff 和测试输出摘要。
                 </p>
               )}
             </div>

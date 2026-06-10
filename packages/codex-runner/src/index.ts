@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { runTestCommand } from "@patchpilot/testing";
 import { GitWorkspaceManager, type WorkspaceManager } from "@patchpilot/workspace-manager";
 import type {
+  AgentRunDiffSummary,
   AgentRunEvent,
   AgentRunResult,
+  AgentRunToolCall,
   FailureType,
   Prd,
   Requirement,
@@ -66,6 +68,27 @@ export class CodexRunError extends Error {
   }
 }
 
+interface ParsedCodexEvent {
+  message?: string;
+  sessionId?: string;
+  agentMessage?: string;
+  reasoningSummary?: string;
+  toolCall?: AgentRunToolCall;
+}
+
+interface CodexExecCapture {
+  eventCount: number;
+  agentMessages: string[];
+  reasoningSummaries: string[];
+  toolCalls: AgentRunToolCall[];
+}
+
+interface CodexExecResult {
+  lastMessagePath: string;
+  sessionId?: string;
+  capture: CodexExecCapture;
+}
+
 export class LocalCodexRunner implements CodexRunner {
   constructor(private readonly workspaceManager: WorkspaceManager = new GitWorkspaceManager()) {}
 
@@ -103,7 +126,9 @@ export class LocalCodexRunner implements CodexRunner {
       message: "本地 Codex agent 已启动，正在隔离 worktree 中开发"
     });
 
+    const codexExecResults: CodexExecResult[] = [];
     const firstCodexRun = await runCodexExec(workspace.path, prompt, emit, config);
+    codexExecResults.push(firstCodexRun);
     await emit({
       step: "testing",
       type: "test.started",
@@ -119,7 +144,8 @@ export class LocalCodexRunner implements CodexRunner {
         type: "test.failed",
         message: `测试未通过，启动第 ${attempt} 次 Codex 修复回合`
       });
-      await runCodexExec(workspace.path, buildRepairPrompt(context, testRun.summary), emit, config);
+      const repairCodexRun = await runCodexExec(workspace.path, buildRepairPrompt(context, testRun.summary), emit, config);
+      codexExecResults.push(repairCodexRun);
       await emit({
         step: "testing",
         type: "test.started",
@@ -150,11 +176,13 @@ export class LocalCodexRunner implements CodexRunner {
     const commit = await this.workspaceManager.commitWorkspace(workspace, {
       message: buildCommitMessage(context)
     });
+    const diffSummary = buildDiffSummary(changedFiles, commit);
     const finalizedTests = [testRun].map((test) => ({
       ...test,
       branch: test.branch || commit.branchName,
       commit: commit.headCommit
     }));
+    const codexCapture = mergeCodexCaptures(codexExecResults.map((result) => result.capture));
 
     return {
       summary: artifacts.summary,
@@ -165,6 +193,11 @@ export class LocalCodexRunner implements CodexRunner {
       reviewerSummary:
         "本次交付在隔离 worktree 中完成，平台已收集变更文件、测试命令和执行摘要。验收通过后仍需人工按仓库规则合并。",
       runner: "codex",
+      agentMessages: codexCapture.agentMessages,
+      reasoningSummaries: codexCapture.reasoningSummaries,
+      toolCalls: codexCapture.toolCalls,
+      diffSummary,
+      testOutputSummary: summarizeTestOutput(finalizedTests),
       workspacePath: workspace.path,
       branchName: commit.branchName,
       baseBranch: commit.baseBranch,
@@ -196,7 +229,7 @@ async function runCodexExec(
   prompt: string,
   emit: EmitCodexRunnerEvent,
   config: CodexRunnerConfig
-) {
+): Promise<CodexExecResult> {
   const lastMessagePath = join(workspacePath, `.patchpilot-codex-${randomUUID()}.md`);
   const sandbox = config.security.codexSandbox;
   const args = ["exec", "--json", "--sandbox", sandbox, "-C", workspacePath, "-o", lastMessagePath, "-"];
@@ -222,6 +255,7 @@ async function runCodexExec(
   let sessionId: string | undefined;
   let emitted = 0;
   let pendingEmit = Promise.resolve();
+  const capture = emptyCodexCapture();
 
   child.stdout.on("data", (chunk: Buffer) => {
     stdoutBuffer += chunk.toString("utf8");
@@ -230,6 +264,7 @@ async function runCodexExec(
     for (const line of lines) {
       const event = parseCodexEvent(line);
       if (event.sessionId) sessionId = event.sessionId;
+      recordCodexCapture(capture, event);
       const message = event.message;
       if (message && emitted < 30) {
         emitted += 1;
@@ -263,7 +298,7 @@ async function runCodexExec(
     throw new CodexRunError(message, classifyFailureMessage(message));
   }
 
-  return { lastMessagePath, sessionId };
+  return { lastMessagePath, sessionId, capture };
 }
 
 
@@ -298,24 +333,37 @@ function buildCommitMessage(context: CodexRunContext) {
   return `PatchPilot ${context.workItem.id}: ${title}`.slice(0, 160);
 }
 
-export function parseCodexEvent(line: string) {
+export function parseCodexEvent(line: string): ParsedCodexEvent {
   try {
     const event = JSON.parse(line) as Record<string, unknown>;
     const type = typeof event.type === "string" ? event.type : "codex.event";
+    const item = asRecord(event.item);
     const sessionId =
       typeof event.session_id === "string"
         ? event.session_id
         : typeof event.sessionId === "string"
           ? event.sessionId
           : undefined;
+    const agentMessage = extractAgentMessage(event, item, type);
+    const reasoningSummary = extractReasoningSummary(event, item, type);
+    const toolCall = extractToolCall(event, item, type, line);
     const rawMessage =
+      agentMessage ||
+      reasoningSummary ||
+      toolCall?.summary ||
       stringValue(event.message) ||
       stringValue(event.msg) ||
       stringValue(event.delta) ||
       stringValue(event.text) ||
       stringValue(event.summary);
     const message = rawMessage ? `Codex：${rawMessage.slice(0, 180)}` : `Codex event：${type}`;
-    return { message, sessionId };
+    return {
+      message,
+      sessionId,
+      ...(agentMessage ? { agentMessage } : {}),
+      ...(reasoningSummary ? { reasoningSummary } : {}),
+      ...(toolCall ? { toolCall } : {})
+    };
   } catch {
     const trimmed = line.trim();
     return { message: trimmed ? `Codex：${trimmed.slice(0, 180)}` : undefined, sessionId: undefined };
@@ -348,6 +396,289 @@ export function classifyFailureMessage(message: string): FailureType {
 
 function stringValue(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function extractAgentMessage(
+  event: Record<string, unknown>,
+  item: Record<string, unknown> | undefined,
+  type: string
+) {
+  const itemType = stringValue(item?.type);
+  const role = stringValue(event.role) || stringValue(item?.role);
+  const looksLikeAgentMessage =
+    /agent_message|assistant_message/u.test(type) ||
+    /assistant_message/u.test(itemType || "") ||
+    (itemType === "message" && role === "assistant");
+  if (!looksLikeAgentMessage) return undefined;
+  return firstText([
+    event.message,
+    event.text,
+    event.delta,
+    event.content,
+    item?.message,
+    item?.text,
+    item?.content
+  ]);
+}
+
+function extractReasoningSummary(
+  event: Record<string, unknown>,
+  item: Record<string, unknown> | undefined,
+  type: string
+) {
+  const itemType = stringValue(item?.type);
+  const looksLikeReasoning =
+    /reasoning|reasoning_summary/u.test(type) ||
+    /reasoning|reasoning_summary/u.test(itemType || "");
+  if (!looksLikeReasoning) return undefined;
+  return firstText([
+    event.summary,
+    event.reasoning,
+    event.message,
+    event.text,
+    item?.summary,
+    item?.reasoning,
+    item?.text,
+    item?.content
+  ]);
+}
+
+function extractToolCall(
+  event: Record<string, unknown>,
+  item: Record<string, unknown> | undefined,
+  type: string,
+  rawLine: string
+): AgentRunToolCall | undefined {
+  const itemType = stringValue(item?.type);
+  const command = firstText([
+    event.command,
+    event.cmd,
+    event.command_line,
+    event.shell_command,
+    item?.command,
+    item?.cmd,
+    item?.command_line,
+    item?.shell_command
+  ]);
+  const name =
+    stringValue(event.tool) ||
+    stringValue(event.name) ||
+    stringValue(event.tool_name) ||
+    stringValue(item?.tool) ||
+    stringValue(item?.name) ||
+    stringValue(item?.tool_name) ||
+    (command ? "exec_command" : undefined);
+  const looksLikeTool =
+    /tool|exec|command|function_call/u.test(type) ||
+    /tool|exec|command|function_call/u.test(itemType || "") ||
+    Boolean(command);
+  if (!looksLikeTool || !name) return undefined;
+
+  const status = normalizeToolCallStatus(
+    stringValue(event.status) ||
+    stringValue(item?.status) ||
+    type
+  );
+  const exitCode =
+    numberValue(event.exit_code) ??
+    numberValue(event.exitCode) ??
+    numberValue(item?.exit_code) ??
+    numberValue(item?.exitCode);
+  const startedAt =
+    stringValue(event.started_at) ||
+    stringValue(event.startedAt) ||
+    stringValue(item?.started_at) ||
+    stringValue(item?.startedAt);
+  const endedAt =
+    stringValue(event.ended_at) ||
+    stringValue(event.endedAt) ||
+    stringValue(item?.ended_at) ||
+    stringValue(item?.endedAt);
+  const durationMs =
+    numberValue(event.duration_ms) ??
+    numberValue(event.durationMs) ??
+    numberValue(item?.duration_ms) ??
+    numberValue(item?.durationMs);
+  const summary = firstText([
+    event.summary,
+    event.message,
+    event.text,
+    item?.summary,
+    item?.message,
+    item?.text
+  ]) || (command ? `执行命令：${command}` : `调用工具：${name}`);
+  const id =
+    stringValue(event.id) ||
+    stringValue(event.call_id) ||
+    stringValue(event.callId) ||
+    stringValue(item?.id) ||
+    stringValue(item?.call_id) ||
+    stringValue(item?.callId) ||
+    stableToolCallId(name, command, rawLine);
+
+  return {
+    id,
+    name,
+    status,
+    summary: tail(summary, 500),
+    ...(command ? { command } : {}),
+    ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(startedAt ? { startedAt } : {}),
+    ...(endedAt ? { endedAt } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {})
+  };
+}
+
+function firstText(values: unknown[]) {
+  for (const value of values) {
+    const text = textValue(value);
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function textValue(value: unknown): string | undefined {
+  const direct = stringValue(value);
+  if (direct) return direct;
+  if (Array.isArray(value)) {
+    const parts = value.map((item) => textValue(item)).filter((item): item is string => Boolean(item));
+    return parts.length ? parts.join("\n").trim() : undefined;
+  }
+  const record = asRecord(value);
+  if (!record) return undefined;
+  return firstText([
+    record.text,
+    record.summary,
+    record.message,
+    record.content,
+    record.delta,
+    record.output
+  ]);
+}
+
+function normalizeToolCallStatus(value: string): AgentRunToolCall["status"] {
+  const normalized = value.toLowerCase();
+  if (/fail|error|cancel|denied|timeout/u.test(normalized)) return "failed";
+  if (/complete|completed|success|succeeded|finished|done/u.test(normalized)) return "completed";
+  if (/start|started|running|in_progress|progress/u.test(normalized)) return "started";
+  return "unknown";
+}
+
+function stableToolCallId(name: string, command: string | undefined, rawLine: string) {
+  const source = `${name}\n${command || ""}\n${rawLine}`;
+  let hash = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    hash = ((hash << 5) - hash + source.charCodeAt(index)) | 0;
+  }
+  return `tool_${Math.abs(hash).toString(36)}`;
+}
+
+function emptyCodexCapture(): CodexExecCapture {
+  return {
+    eventCount: 0,
+    agentMessages: [],
+    reasoningSummaries: [],
+    toolCalls: []
+  };
+}
+
+function recordCodexCapture(capture: CodexExecCapture, event: ParsedCodexEvent) {
+  capture.eventCount += 1;
+  appendUnique(capture.agentMessages, event.agentMessage, 20);
+  appendUnique(capture.reasoningSummaries, event.reasoningSummary, 20);
+  if (event.toolCall) {
+    capture.toolCalls = mergeToolCalls([...capture.toolCalls, event.toolCall]);
+  }
+}
+
+function mergeCodexCaptures(captures: CodexExecCapture[]) {
+  return captures.reduce((merged, capture) => ({
+    eventCount: merged.eventCount + capture.eventCount,
+    agentMessages: mergeUnique(merged.agentMessages, capture.agentMessages, 40),
+    reasoningSummaries: mergeUnique(merged.reasoningSummaries, capture.reasoningSummaries, 40),
+    toolCalls: mergeToolCalls([...merged.toolCalls, ...capture.toolCalls])
+  }), emptyCodexCapture());
+}
+
+function appendUnique(values: string[], value: string | undefined, limit: number) {
+  if (!value || values.includes(value)) return;
+  values.push(tail(value, 2000));
+  if (values.length > limit) values.splice(0, values.length - limit);
+}
+
+function mergeUnique(left: string[], right: string[], limit: number) {
+  const merged: string[] = [];
+  for (const value of [...left, ...right]) appendUnique(merged, value, limit);
+  return merged;
+}
+
+function mergeToolCalls(toolCalls: AgentRunToolCall[]) {
+  const byId = new Map<string, AgentRunToolCall>();
+  for (const toolCall of toolCalls) {
+    const existing = byId.get(toolCall.id);
+    if (!existing) {
+      byId.set(toolCall.id, toolCall);
+      continue;
+    }
+    byId.set(toolCall.id, {
+      ...existing,
+      ...toolCall,
+      status: chooseToolCallStatus(existing.status, toolCall.status),
+      summary: toolCall.summary || existing.summary,
+      command: toolCall.command || existing.command,
+      startedAt: existing.startedAt || toolCall.startedAt,
+      endedAt: toolCall.endedAt || existing.endedAt,
+      exitCode: toolCall.exitCode ?? existing.exitCode,
+      durationMs: toolCall.durationMs ?? existing.durationMs
+    });
+  }
+  return [...byId.values()].slice(-50);
+}
+
+function chooseToolCallStatus(
+  existing: AgentRunToolCall["status"],
+  next: AgentRunToolCall["status"]
+) {
+  if (next !== "unknown") return next;
+  return existing;
+}
+
+function buildDiffSummary(
+  changedFiles: string[],
+  git: {
+    branchName?: string;
+    baseBranch?: string;
+    baseCommit?: string;
+    headCommit?: string;
+  }
+): AgentRunDiffSummary {
+  return {
+    changedFileCount: changedFiles.length,
+    changedFiles,
+    hasChanges: changedFiles.length > 0,
+    ...(git.branchName ? { branchName: git.branchName } : {}),
+    ...(git.baseBranch ? { baseBranch: git.baseBranch } : {}),
+    ...(git.baseCommit ? { baseCommit: git.baseCommit } : {}),
+    ...(git.headCommit ? { headCommit: git.headCommit } : {})
+  };
+}
+
+function summarizeTestOutput(tests: TestRun[]) {
+  return tail(
+    tests.map((test) => {
+      const failure = test.failureSummary ? `；失败摘要：${test.failureSummary}` : "";
+      return `${test.status}: ${test.command} (${test.durationMs}ms)：${test.summary}${failure}`;
+    }).join("\n"),
+    4000
+  );
 }
 
 function runShell(command: string, cwd: string, timeoutMs: number) {

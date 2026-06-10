@@ -21,3 +21,5 @@ This is a single-context repo: read `CONTEXT.md` and relevant ADRs under `docs/a
 When completing a `.scratch/agent-platform/TODO.md` task, finish code review, unit tests, and relevant E2E checks, then mark the task done, commit the changes, and push the commit to the remote before moving on to the next task.
 
 After the current task is completed and pushed, prefer using an agent team for suitable future TODO work: assign one complete TODO item to one agent on its own branch, pick low-coupling TODOs to reduce merge conflicts, then review, run verification, merge into `main`, and push before continuing. Do not split a single TODO item across multiple agents unless the user explicitly asks for that.
+
+When spawning development agents for TODO work, explicitly set `reasoning_effort: "xhigh"`; do not rely on the tool default, which may start agents at medium effort.

@@ -838,6 +838,26 @@ export const openApiSchemas = {
     type: { type: "string" },
     message: { type: "string" }
   }),
+  AgentRunToolCall: looseObjectSchema({
+    id,
+    name: { type: "string" },
+    status: enumSchema(["started", "completed", "failed", "unknown"]),
+    summary: { type: "string" },
+    command: { type: "string" },
+    exitCode: { type: ["number", "null"] },
+    startedAt: isoDate,
+    endedAt: isoDate,
+    durationMs: { type: "number", minimum: 0 }
+  }, ["id", "name", "status", "summary"]),
+  AgentRunDiffSummary: looseObjectSchema({
+    changedFileCount: { type: "number", minimum: 0 },
+    changedFiles: arrayOf({ type: "string" }),
+    hasChanges: { type: "boolean" },
+    branchName: { type: "string" },
+    baseBranch: { type: "string" },
+    baseCommit: { type: "string" },
+    headCommit: { type: "string" }
+  }, ["changedFileCount", "changedFiles", "hasChanges"]),
   AgentRunResult: looseObjectSchema({
     summary: { type: "string" },
     previewUrl: { type: "string" },
@@ -846,6 +866,11 @@ export const openApiSchemas = {
     tests: arrayOf(schemaRef("TestRun")),
     reviewerSummary: { type: "string" },
     runner: runnerKind,
+    agentMessages: arrayOf({ type: "string" }),
+    reasoningSummaries: arrayOf({ type: "string" }),
+    toolCalls: arrayOf(schemaRef("AgentRunToolCall")),
+    diffSummary: schemaRef("AgentRunDiffSummary"),
+    testOutputSummary: { type: "string" },
     workspacePath: { type: "string" },
     branchName: { type: "string" },
     baseBranch: { type: "string" },

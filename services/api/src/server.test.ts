@@ -1,7 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CodexRunError, type CodexRunner } from "@patchpilot/codex-runner";
 import { contractVersion } from "@patchpilot/contracts";
@@ -649,6 +650,29 @@ artifacts:
           ],
           reviewerSummary: "Fake reviewer approved the injected runner result.",
           runner: "codex",
+          agentMessages: ["Fake Codex agent reported completion."],
+          reasoningSummaries: ["Fake Codex inspected the capture path."],
+          toolCalls: [
+            {
+              id: "tool_fake_test",
+              name: "exec_command",
+              status: "completed",
+              summary: "Ran the fake test command",
+              command: "fake test",
+              exitCode: 0,
+              durationMs: 12
+            }
+          ],
+          diffSummary: {
+            changedFileCount: 1,
+            changedFiles: ["packages/codex-runner/src/index.ts"],
+            hasChanges: true,
+            branchName: "patchpilot/wi_fake-codex-runner",
+            baseBranch: "main",
+            baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          testOutputSummary: "passed: fake test (12ms). fake test passed",
           workspacePath: "fake://workspace",
           branchName: "patchpilot/wi_fake-codex-runner",
           baseBranch: "main",
@@ -689,7 +713,20 @@ artifacts:
       baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       codexSessionId: "fake-session",
-      changedFiles: ["packages/codex-runner/src/index.ts"]
+      changedFiles: ["packages/codex-runner/src/index.ts"],
+      toolCalls: [
+        {
+          id: "tool_fake_test",
+          name: "exec_command",
+          status: "completed",
+          command: "fake test"
+        }
+      ],
+      diffSummary: {
+        changedFileCount: 1,
+        hasChanges: true
+      },
+      testOutputSummary: "passed: fake test (12ms). fake test passed"
     });
     expect(completedRun.events.some((event: { message: string }) => event.message.includes("Fake Codex runner"))).toBe(true);
 
@@ -710,8 +747,34 @@ artifacts:
       headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     });
     expect(pullRequest.bodyMarkdown).toContain("## Git");
+    expect(pullRequest.bodyMarkdown).toContain("## Diff 摘要");
+    expect(pullRequest.bodyMarkdown).toContain("## 工具调用");
+    expect(pullRequest.bodyMarkdown).toContain("exec_command (fake test)");
     expect(pullRequest.bodyMarkdown).toContain("Branch: patchpilot/wi_fake-codex-runner");
     expect(pullRequest.bodyMarkdown).toContain("Commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+    const traceArtifact = snapshot.json().artifacts.find((artifact: ArtifactRecord) => artifact.id === `artifact_trace_${start.json().id}`);
+    const diffArtifact = snapshot.json().artifacts.find((artifact: ArtifactRecord) => artifact.id === `artifact_diff_${start.json().id}`);
+    const traceContent = JSON.parse(await readFile(fileURLToPath(traceArtifact.uri), "utf8"));
+    const diffContent = JSON.parse(await readFile(fileURLToPath(diffArtifact.uri), "utf8"));
+    expect(traceContent.capture).toMatchObject({
+      codexSessionId: "fake-session",
+      agentMessages: ["Fake Codex agent reported completion."],
+      reasoningSummaries: ["Fake Codex inspected the capture path."],
+      toolCalls: [
+        {
+          id: "tool_fake_test",
+          command: "fake test",
+          status: "completed"
+        }
+      ],
+      testOutputSummary: "passed: fake test (12ms). fake test passed"
+    });
+    expect(diffContent.diffSummary).toMatchObject({
+      changedFileCount: 1,
+      changedFiles: ["packages/codex-runner/src/index.ts"],
+      hasChanges: true
+    });
     await app.close();
   });
 
