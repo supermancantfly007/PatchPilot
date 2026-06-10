@@ -39,8 +39,9 @@ import { createInterfaceContracts } from "@patchpilot/contracts";
 import { LocalCodexRunner, type CodexRunner, type CodexRunnerEvent } from "@patchpilot/codex-runner";
 import { readPatchPilotConfig } from "./config";
 
-const dataFile = join(process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"), "patchpilot-store.json");
+const defaultDataFile = join(process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"), "patchpilot-store.json");
 
+const defaultClaimLeaseMs = 5 * 60 * 1000;
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const simulationDelay = (ms: number) =>
   Math.max(0, Math.round(ms * readPatchPilotConfig().dev.simulationDelayFactor));
@@ -49,15 +50,26 @@ export class PatchPilotStore {
   private snapshot: PatchPilotSnapshot = emptySnapshot();
   private loaded = false;
   private readonly codexRunner: CodexRunner;
+  private readonly dataFilePath: string | undefined;
+  private mutationQueue: Promise<void> = Promise.resolve();
 
-  constructor(options: { codexRunner?: CodexRunner } = {}) {
+  constructor(options: { codexRunner?: CodexRunner; dataFilePath?: string | false } = {}) {
     this.codexRunner = options.codexRunner ?? new LocalCodexRunner();
+    this.dataFilePath =
+      options.dataFilePath === false
+        ? undefined
+        : options.dataFilePath ?? (process.env.NODE_ENV === "test" ? undefined : defaultDataFile);
   }
 
   async load() {
     if (this.loaded) return;
+    if (!this.dataFilePath) {
+      this.normalizeSnapshot();
+      this.loaded = true;
+      return;
+    }
     try {
-      const raw = await readFile(dataFile, "utf8");
+      const raw = await readFile(this.dataFilePath, "utf8");
       this.snapshot = JSON.parse(raw) as PatchPilotSnapshot;
       this.normalizeSnapshot();
     } catch (error) {
@@ -247,7 +259,7 @@ export class PatchPilotStore {
 
     for (const workItem of workItems) {
       if (this.canStartOrReuseRun(workItem.id, workItem.status)) {
-        runs.push(await this.startRun(workItem.id, runnerOverride));
+        runs.push(await this.startRun(workItem.id, runnerOverride, { claimToken: workItem.claimToken }));
       } else {
         skippedWorkItems.push(workItem);
       }
@@ -330,60 +342,100 @@ export class PatchPilotStore {
     return { bug, requirement, prd, workItem };
   }
 
-  async claimWorkItem(workItemId: string, agentId: string) {
-    await this.load();
-    const workItem = this.findWorkItem(workItemId);
-    const agent = this.findAgent(agentId);
-    if (!["ready", "blocked"].includes(workItem.status)) {
-      throw new DomainError("INVALID_STATE", "Work item is not available to claim");
-    }
-    if (!this.agentCanClaim(agent, workItem.role)) {
-      throw new DomainError("INVALID_STATE", `Agent ${agent.name} cannot claim ${workItem.role} work`);
-    }
+  async claimWorkItem(workItemId: string, agentId: string, options: { leaseDurationMs?: number } = {}) {
+    return this.withMutation(async () => {
+      await this.load();
+      const workItem = this.findWorkItem(workItemId);
+      const agent = this.findAgent(agentId);
+      const now = new Date().toISOString();
+      const expiredClaim = workItem.status === "claimed" && this.isClaimExpired(workItem, now);
+      if (!["ready", "blocked"].includes(workItem.status) && !expiredClaim) {
+        throw new DomainError("INVALID_STATE", "Work item is not available to claim");
+      }
+      if (!this.agentCanClaim(agent, workItem.role)) {
+        throw new DomainError("INVALID_STATE", `Agent ${agent.name} cannot claim ${workItem.role} work`);
+      }
+      if (agent.status === "busy" && agent.currentWorkItemId && agent.currentWorkItemId !== workItem.id) {
+        throw new DomainError("INVALID_STATE", `Agent ${agent.name} is already assigned to another work item`);
+      }
 
-    const now = new Date().toISOString();
-    workItem.status = "claimed";
-    workItem.assignedAgentId = agent.id;
-    workItem.claimedAt = now;
-    workItem.updatedAt = now;
-    agent.status = "busy";
-    agent.currentWorkItemId = workItem.id;
-    agent.lastSeenAt = now;
+      if (expiredClaim && workItem.assignedAgentId && workItem.assignedAgentId !== agent.id) {
+        this.releaseAgentAssignment(workItem.assignedAgentId, now);
+      }
 
-    const bug = workItem.sourceBugId
-      ? this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId)
-      : undefined;
-    if (bug && bug.status === "reported") {
-      bug.status = "confirmed";
-      bug.updatedAt = now;
-    }
+      const claimToken = randomUUID();
+      const leaseDurationMs = options.leaseDurationMs ?? defaultClaimLeaseMs;
+      workItem.status = "claimed";
+      workItem.assignedAgentId = agent.id;
+      workItem.claimedAt = now;
+      workItem.claimToken = claimToken;
+      workItem.leaseExpiresAt = new Date(Date.parse(now) + leaseDurationMs).toISOString();
+      workItem.heartbeatAt = now;
+      workItem.version = (workItem.version ?? 0) + 1;
+      workItem.updatedAt = now;
+      agent.status = "busy";
+      agent.currentWorkItemId = workItem.id;
+      agent.lastSeenAt = now;
 
-    await this.save();
-    return { workItem, agent, bug };
+      const bug = workItem.sourceBugId
+        ? this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId)
+        : undefined;
+      if (bug && bug.status === "reported") {
+        bug.status = "confirmed";
+        bug.updatedAt = now;
+      }
+
+      this.addAuditEvent({
+        actor: agent.id,
+        action: "work_item.claimed",
+        targetType: "work_item",
+        targetId: workItem.id,
+        message: `${agent.name} 已领取 ${workItem.title}，lease 到期时间 ${workItem.leaseExpiresAt}。`,
+        prdId: workItem.prdId,
+        workItemId: workItem.id,
+        createdAt: now
+      });
+
+      await this.save();
+      return { workItem, agent, bug, claimToken, leaseExpiresAt: workItem.leaseExpiresAt };
+    });
   }
 
-  async releaseWorkItem(workItemId: string) {
-    await this.load();
-    const workItem = this.findWorkItem(workItemId);
-    if (workItem.status !== "claimed") {
-      throw new DomainError("INVALID_STATE", "Only claimed work items can be released");
-    }
+  async releaseWorkItem(workItemId: string, options: { claimToken?: string } = {}) {
+    return this.withMutation(async () => {
+      await this.load();
+      const workItem = this.findWorkItem(workItemId);
+      if (workItem.status !== "claimed") {
+        throw new DomainError("INVALID_STATE", "Only claimed work items can be released");
+      }
+      this.assertClaimToken(workItem, options.claimToken);
 
-    const agent = workItem.assignedAgentId
-      ? this.snapshot.agents.find((item) => item.id === workItem.assignedAgentId)
-      : undefined;
-    const now = new Date().toISOString();
-    workItem.status = "ready";
-    workItem.assignedAgentId = undefined;
-    workItem.claimedAt = undefined;
-    workItem.updatedAt = now;
-    if (agent) {
-      agent.status = "idle";
-      agent.currentWorkItemId = undefined;
-      agent.lastSeenAt = now;
-    }
-    await this.save();
-    return { workItem, agent };
+      const agent = workItem.assignedAgentId
+        ? this.snapshot.agents.find((item) => item.id === workItem.assignedAgentId)
+        : undefined;
+      const now = new Date().toISOString();
+      workItem.status = "ready";
+      this.clearClaim(workItem);
+      workItem.version = (workItem.version ?? 0) + 1;
+      workItem.updatedAt = now;
+      if (agent) {
+        agent.status = "idle";
+        agent.currentWorkItemId = undefined;
+        agent.lastSeenAt = now;
+      }
+      this.addAuditEvent({
+        actor: agent?.id || "scheduler",
+        action: "work_item.released",
+        targetType: "work_item",
+        targetId: workItem.id,
+        message: `${workItem.title} 已释放回 ready 队列。`,
+        prdId: workItem.prdId,
+        workItemId: workItem.id,
+        createdAt: now
+      });
+      await this.save();
+      return { workItem, agent };
+    });
   }
 
   async getRuntimeConfig(): Promise<RuntimeConfig> {
@@ -410,84 +462,106 @@ export class PatchPilotStore {
     };
   }
 
-  async startRun(workItemId: string, runnerOverride?: AgentRun["runner"]) {
-    await this.load();
-    const workItem = this.findWorkItem(workItemId);
-    const existingRun = this.snapshot.agentRuns.find(
-      (item) => item.workItemId === workItemId && !["failed", "cancelled"].includes(item.status)
-    );
-    if (existingRun && !this.shouldStartReworkRun(workItem, existingRun)) {
-      return existingRun;
-    }
-    if (!["ready", "claimed"].includes(workItem.status)) {
-      throw new DomainError("INVALID_STATE", "Work item is not ready to start");
-    }
-    const prd = this.findPrd(workItem.prdId);
-    const runner = await this.resolveRunner(runnerOverride);
-    const now = new Date().toISOString();
-    if (!workItem.assignedAgentId) {
-      const agent = this.findAvailableAgentForRole(workItem.role);
-      if (agent) {
-        workItem.assignedAgentId = agent.id;
-        workItem.claimedAt = now;
-        agent.status = "busy";
-        agent.currentWorkItemId = workItem.id;
-        agent.lastSeenAt = now;
+  async startRun(
+    workItemId: string,
+    runnerOverride?: AgentRun["runner"],
+    options: { claimToken?: string } = {}
+  ) {
+    return this.withMutation(async () => {
+      await this.load();
+      const workItem = this.findWorkItem(workItemId);
+      const existingRun = this.snapshot.agentRuns.find(
+        (item) => item.workItemId === workItemId && !["failed", "cancelled"].includes(item.status)
+      );
+      if (existingRun && !this.shouldStartReworkRun(workItem, existingRun)) {
+        return existingRun;
       }
-    }
-    workItem.status = "running";
-    workItem.updatedAt = now;
-    if (workItem.sourceBugId) {
-      const bug = this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId);
-      if (bug) {
-        bug.status = workItem.role === "test" ? "confirmed" : "fixing";
-        bug.updatedAt = now;
+      if (!["ready", "claimed"].includes(workItem.status)) {
+        throw new DomainError("INVALID_STATE", "Work item is not ready to start");
       }
-    }
+      const prd = this.findPrd(workItem.prdId);
+      const runner = await this.resolveRunner(runnerOverride);
+      const now = new Date().toISOString();
 
-    const run: AgentRun = {
-      id: `run_${randomUUID()}`,
-      requirementId: prd.requirementId,
-      prdId: prd.id,
-      workItemId,
-      runner,
-      status: "running",
-      currentStep: "understanding",
-      timeline: createTimeline(),
-      events: [],
-      costEstimateUsd: 0.42,
-      startedAt: now
-    };
-    run.events.push(this.makeEvent("requirement.understood", "已读取需求说明，正在生成执行计划"));
-    this.snapshot.agentRuns.unshift(run);
-    const workspaceRun = this.createWorkspaceRun(run, workItem, now);
-    this.snapshot.workspaceRuns.unshift(workspaceRun);
-    this.addAuditEvent({
-      actor: workItem.assignedAgentId || "scheduler",
-      action: "work_item.started",
-      targetType: "work_item",
-      targetId: workItem.id,
-      message: `${workItem.title} 已启动 agent run。`,
-      requirementId: run.requirementId,
-      prdId: run.prdId,
-      workItemId: workItem.id,
-      runId: run.id
-    });
-    this.addAuditEvent({
-      actor: "workspace_manager",
-      action: "workspace_run.created",
-      targetType: "workspace_run",
-      targetId: workspaceRun.id,
-      message: `已创建 ${workspaceRun.isolation === "git_worktree" ? "git worktree" : "模拟"}工作区。`,
-      requirementId: run.requirementId,
-      prdId: run.prdId,
-      workItemId: workItem.id,
-      runId: run.id
-    });
-    await this.save();
+      if (workItem.status === "claimed") {
+        if (this.isClaimExpired(workItem, now)) {
+          if (workItem.assignedAgentId) this.releaseAgentAssignment(workItem.assignedAgentId, now);
+          this.clearClaim(workItem);
+        } else {
+          this.assertClaimToken(workItem, options.claimToken);
+        }
+      }
 
-    void this.executeRun(run.id);
-    return run;
+      if (!workItem.assignedAgentId) {
+        const agent = this.findAvailableAgentForRole(workItem.role);
+        if (agent) {
+          workItem.assignedAgentId = agent.id;
+          workItem.claimedAt = now;
+          workItem.claimToken = randomUUID();
+          agent.status = "busy";
+          agent.currentWorkItemId = workItem.id;
+          agent.lastSeenAt = now;
+        }
+      }
+      if (workItem.assignedAgentId) {
+        workItem.heartbeatAt = now;
+        workItem.leaseExpiresAt = new Date(Date.parse(now) + defaultClaimLeaseMs).toISOString();
+      }
+      workItem.status = "running";
+      workItem.version = (workItem.version ?? 0) + 1;
+      workItem.updatedAt = now;
+      if (workItem.sourceBugId) {
+        const bug = this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId);
+        if (bug) {
+          bug.status = workItem.role === "test" ? "confirmed" : "fixing";
+          bug.updatedAt = now;
+        }
+      }
+
+      const run: AgentRun = {
+        id: `run_${randomUUID()}`,
+        requirementId: prd.requirementId,
+        prdId: prd.id,
+        workItemId,
+        runner,
+        status: "running",
+        currentStep: "understanding",
+        timeline: createTimeline(),
+        events: [],
+        costEstimateUsd: 0.42,
+        startedAt: now
+      };
+      run.events.push(this.makeEvent("requirement.understood", "已读取需求说明，正在生成执行计划"));
+      this.snapshot.agentRuns.unshift(run);
+      const workspaceRun = this.createWorkspaceRun(run, workItem, now);
+      this.snapshot.workspaceRuns.unshift(workspaceRun);
+      this.addAuditEvent({
+        actor: workItem.assignedAgentId || "scheduler",
+        action: "work_item.started",
+        targetType: "work_item",
+        targetId: workItem.id,
+        message: `${workItem.title} 已启动 agent run。`,
+        requirementId: run.requirementId,
+        prdId: run.prdId,
+        workItemId: workItem.id,
+        runId: run.id
+      });
+      this.addAuditEvent({
+        actor: "workspace_manager",
+        action: "workspace_run.created",
+        targetType: "workspace_run",
+        targetId: workspaceRun.id,
+        message: `已创建 ${workspaceRun.isolation === "git_worktree" ? "git worktree" : "模拟"}工作区。`,
+        requirementId: run.requirementId,
+        prdId: run.prdId,
+        workItemId: workItem.id,
+        runId: run.id
+      });
+      await this.save();
+
+      void this.executeRun(run.id);
+      return run;
+    });
   }
 
   async acceptRun(runId: string, status: AcceptanceDecision["status"], reason?: string) {
@@ -819,10 +893,11 @@ export class PatchPilotStore {
   }
 
   private async save() {
-    await mkdir(dirname(dataFile), { recursive: true });
-    const tempFile = `${dataFile}.${process.pid}.${randomUUID()}.tmp`;
+    if (!this.dataFilePath) return;
+    await mkdir(dirname(this.dataFilePath), { recursive: true });
+    const tempFile = `${this.dataFilePath}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(tempFile, JSON.stringify(this.snapshot, null, 2));
-    await rename(tempFile, dataFile);
+    await rename(tempFile, this.dataFilePath);
   }
 
   private normalizeSnapshot() {
@@ -851,6 +926,7 @@ export class PatchPilotStore {
     this.snapshot.workItems = this.snapshot.workItems.map((item) => ({
       ...item,
       role: item.role || (item.sourceBugId ? "test" : "backend"),
+      version: item.version ?? 1,
       createdAt: item.createdAt || now,
       updatedAt: item.updatedAt || now
     }));
@@ -869,7 +945,9 @@ export class PatchPilotStore {
     for (const agent of this.snapshot.agents) {
       if (agent.currentWorkItemId) {
         const active = this.snapshot.workItems.find(
-          (item) => item.id === agent.currentWorkItemId && ["claimed", "running"].includes(item.status)
+          (item) =>
+            item.id === agent.currentWorkItemId &&
+            (item.status === "running" || (item.status === "claimed" && !this.isClaimExpired(item, now)))
         );
         if (!active) {
           agent.status = "idle";
@@ -908,11 +986,55 @@ export class PatchPilotStore {
     return this.snapshot.acceptances.some((acceptance) => acceptance.runId === runId && acceptance.status === "rejected");
   }
 
+  private withMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.mutationQueue;
+    let release!: () => void;
+    this.mutationQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return previous.then(async () => {
+      try {
+        return await operation();
+      } finally {
+        release();
+      }
+    });
+  }
+
+  private assertClaimToken(workItem: WorkItem, claimToken: string | undefined) {
+    if (!workItem.claimToken) return;
+    if (workItem.claimToken !== claimToken) {
+      throw new DomainError("INVALID_STATE", "Claim token does not match the current work item lease");
+    }
+  }
+
+  private isClaimExpired(workItem: WorkItem, now: string) {
+    if (!workItem.leaseExpiresAt) return true;
+    const expiresAt = Date.parse(workItem.leaseExpiresAt);
+    return !Number.isFinite(expiresAt) || expiresAt <= Date.parse(now);
+  }
+
+  private clearClaim(workItem: WorkItem) {
+    workItem.assignedAgentId = undefined;
+    workItem.claimedAt = undefined;
+    workItem.claimToken = undefined;
+    workItem.leaseExpiresAt = undefined;
+    workItem.heartbeatAt = undefined;
+  }
+
+  private releaseAgentAssignment(agentId: string, now: string) {
+    const agent = this.snapshot.agents.find((item) => item.id === agentId);
+    if (!agent) return;
+    agent.status = "idle";
+    agent.currentWorkItemId = undefined;
+    agent.lastSeenAt = now;
+  }
+
   private requestWorkItemRework(workItem: WorkItem, run: AgentRun, reason: string | undefined, now: string) {
     const normalizedReason = reason?.trim() || "用户要求修改，但没有填写原因。";
     workItem.status = "ready";
-    workItem.assignedAgentId = undefined;
-    workItem.claimedAt = undefined;
+    this.clearClaim(workItem);
+    workItem.version = (workItem.version ?? 0) + 1;
     workItem.reworkCount = (workItem.reworkCount ?? 0) + 1;
     workItem.lastRejectionReason = normalizedReason;
     workItem.updatedAt = now;
@@ -931,6 +1053,11 @@ export class PatchPilotStore {
   }
 
   private completeAgentAssignment(workItemId: string, now: string) {
+    const workItem = this.snapshot.workItems.find((item) => item.id === workItemId);
+    if (workItem) {
+      this.clearClaim(workItem);
+      workItem.version = (workItem.version ?? 0) + 1;
+    }
     const agent = this.snapshot.agents.find((item) => item.currentWorkItemId === workItemId);
     if (!agent) return;
     agent.status = "idle";

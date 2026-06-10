@@ -72,6 +72,25 @@ describe("planDispatch", () => {
     expect(plan).toHaveLength(1);
     expect(plan[0]?.agentId).toBe("agent_reviewer");
   });
+
+  it("dispatches work items whose claim lease has expired", () => {
+    const plan = planDispatch(
+      snapshot({
+        agents: [agent({ id: "agent_backend", role: "backend" })],
+        workItems: [
+          workItem({
+            id: "wi_expired",
+            role: "backend",
+            status: "claimed",
+            assignedAgentId: "agent_previous",
+            leaseExpiresAt: "2026-06-09T00:00:00.000Z"
+          })
+        ]
+      })
+    );
+
+    expect(plan.map((assignment) => assignment.workItemId)).toEqual(["wi_expired"]);
+  });
 });
 
 function snapshot(input: {
@@ -116,6 +135,8 @@ function workItem(input: {
   id: string;
   role: AgentRole;
   status?: WorkItemStatus;
+  assignedAgentId?: string;
+  leaseExpiresAt?: string;
 }): WorkItem {
   return {
     id: input.id,
@@ -123,6 +144,8 @@ function workItem(input: {
     title: `${input.role} work`,
     status: input.status ?? "ready",
     role: input.role,
+    assignedAgentId: input.assignedAgentId,
+    leaseExpiresAt: input.leaseExpiresAt,
     scope: "scope",
     nonGoals: [],
     acceptanceCriteria: [],

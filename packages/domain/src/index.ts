@@ -113,6 +113,10 @@ export interface WorkItem {
   testSuggestions: string[];
   assignedAgentId?: string;
   claimedAt?: string;
+  claimToken?: string;
+  leaseExpiresAt?: string;
+  heartbeatAt?: string;
+  version?: number;
   sourceBugId?: string;
   reworkCount?: number;
   lastRejectionReason?: string;
@@ -726,6 +730,7 @@ export function createWorkItems(prd: Prd): WorkItem[] {
       nonGoals: ["不自动合并", "不执行生产发布", "不访问生产密钥"],
       acceptanceCriteria: prd.acceptanceCriteria,
       testSuggestions: ["运行 API 生命周期测试", "验证重复启动和非法状态会被拒绝", "确认事件流能到达终态"],
+      version: 1,
       createdAt: now,
       updatedAt: now
     },
@@ -739,6 +744,7 @@ export function createWorkItems(prd: Prd): WorkItem[] {
       nonGoals: ["不做营销落地页", "不暴露不必要工程术语", "不阻塞移动端关键动作"],
       acceptanceCriteria: prd.acceptanceCriteria,
       testSuggestions: ["运行 Web 组件测试", "跑浏览器 smoke", "检查桌面和移动端无明显溢出"],
+      version: 1,
       createdAt: now,
       updatedAt: now
     },
@@ -752,6 +758,7 @@ export function createWorkItems(prd: Prd): WorkItem[] {
       nonGoals: ["不追求无关全量覆盖", "不把不稳定测试当作通过证据", "不跳过关键路径测试"],
       acceptanceCriteria: prd.acceptanceCriteria,
       testSuggestions: ["新增或更新关键路径测试", "确认失败能转为可处理缺陷", "记录测试命令和结果"],
+      version: 1,
       createdAt: now,
       updatedAt: now
     },
@@ -765,6 +772,7 @@ export function createWorkItems(prd: Prd): WorkItem[] {
       nonGoals: ["不做生产 Kubernetes 部署", "不引入强制云服务", "不自动发布"],
       acceptanceCriteria: prd.acceptanceCriteria,
       testSuggestions: ["验证 dev 脚本", "检查端口和 env 文档", "确认可选 Docker 中间件不影响本地模拟闭环"],
+      version: 1,
       createdAt: now,
       updatedAt: now
     }
@@ -918,6 +926,7 @@ export function createBugWorkItem(input: {
       "生成后续开发修复任务"
     ],
     testSuggestions: ["用 bug 复现步骤写回归检查", "记录最小复现路径", "给开发 agent 留下回归测试建议"],
+    version: 1,
     createdAt: input.now,
     updatedAt: input.now
   };
@@ -945,6 +954,7 @@ export function createBugFixWorkItem(input: {
       "验收页展示修复摘要、测试证据和风险"
     ],
     testSuggestions: ["先运行复现/回归测试", "修复后运行目标测试命令", "确认 bug 不再复现"],
+    version: 1,
     createdAt: input.now,
     updatedAt: input.now
   };

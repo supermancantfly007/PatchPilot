@@ -30,6 +30,9 @@ describe("worker runtime", () => {
       vi.fn(async (url: string, init?: RequestInit) => {
         calls.push({ url, init });
         if (url.endsWith("/api/snapshot")) return jsonResponse(snapshot());
+        if (url.endsWith("/api/work-items/wi_backend/claim")) {
+          return jsonResponse({ claimToken: "claim-token-123" });
+        }
         return jsonResponse({ ok: true });
       })
     );
@@ -41,7 +44,10 @@ describe("worker runtime", () => {
 
     expect(result).toEqual({ planned: 1, dispatched: 1, failed: 0, errors: [] });
     const startCall = calls.find((call) => call.url.endsWith("/api/work-items/wi_backend/start"));
-    expect(JSON.parse(String(startCall?.init?.body))).toEqual({ runner: "simulated" });
+    expect(JSON.parse(String(startCall?.init?.body))).toEqual({
+      runner: "simulated",
+      claimToken: "claim-token-123"
+    });
   });
 
   it("can fail loudly when a dispatch assignment cannot be started", async () => {

@@ -47,11 +47,17 @@ export const bugInputSchema = z.object({
 });
 
 export const claimSchema = z.object({
-  agentId: z.string().trim().min(1)
+  agentId: z.string().trim().min(1),
+  leaseDurationMs: z.number().int().positive().max(60 * 60 * 1000).optional()
 });
 
 export const startRunSchema = z.object({
-  runner: z.enum(["simulated", "codex"]).optional()
+  runner: z.enum(["simulated", "codex"]).optional(),
+  claimToken: z.string().trim().min(1).optional()
+}).default({});
+
+export const releaseWorkItemSchema = z.object({
+  claimToken: z.string().trim().min(1).optional()
 }).default({});
 
 export const httpApiContract = {
@@ -143,6 +149,7 @@ export const httpApiContract = {
     releaseWorkItem: {
       method: "POST",
       path: "/api/work-items/:id/release",
+      request: "ReleaseWorkItemRequest",
       response: "ReleaseWorkItemResponse"
     },
     createBug: {
@@ -267,7 +274,7 @@ export function buildOpenApiDocument() {
       summary: `${operation.method} ${operation.path}`,
       ...(hasRequestSchema(operation) ? {
         requestBody: {
-          required: true,
+          required: isRequestBodyRequired(operationId as ApiOperationId),
           content: {
             "application/json": {
               schema: schemaRef(operation.request)
@@ -407,6 +414,10 @@ function responseStatusFor(operationId: ApiOperationId) {
     : "200";
 }
 
+function isRequestBodyRequired(operationId: ApiOperationId) {
+  return operationId !== "releaseWorkItem";
+}
+
 function responseFor(schemaName: string) {
   if (schemaName.startsWith("text/event-stream")) {
     return {
@@ -502,15 +513,20 @@ export const openApiSchemas = {
     message: { type: "string", minLength: 1 }
   }),
   StartRunRequest: objectSchema({
-    runner: runnerKind
+    runner: runnerKind,
+    claimToken: { type: "string", minLength: 1 }
   }, []),
   AcceptanceRequest: objectSchema({
     status: acceptanceStatus,
     reason: { type: "string" }
   }, ["status"]),
   ClaimWorkItemRequest: objectSchema({
-    agentId: { type: "string", minLength: 1 }
-  }),
+    agentId: { type: "string", minLength: 1 },
+    leaseDurationMs: { type: "integer", minimum: 1, maximum: 60 * 60 * 1000 }
+  }, ["agentId"]),
+  ReleaseWorkItemRequest: objectSchema({
+    claimToken: { type: "string", minLength: 1 }
+  }, []),
   CreateBugRequest: objectSchema({
     title: { type: "string", minLength: 3 },
     description: { type: "string", minLength: 3 },
@@ -616,10 +632,15 @@ export const openApiSchemas = {
     acceptanceCriteria: arrayOf({ type: "string" }),
     testSuggestions: arrayOf({ type: "string" }),
     assignedAgentId: id,
+    claimedAt: isoDate,
+    claimToken: { type: "string" },
+    leaseExpiresAt: isoDate,
+    heartbeatAt: isoDate,
+    version: { type: "integer", minimum: 1 },
     sourceBugId: id,
     reworkCount: { type: "integer", minimum: 0 },
     lastRejectionReason: { type: "string" }
-  }),
+  }, ["id", "prdId", "title", "status", "role", "scope", "nonGoals", "acceptanceCriteria", "testSuggestions"]),
   InterfaceContract: objectSchema({
     id,
     prdId: id,
@@ -835,8 +856,10 @@ export const openApiSchemas = {
   ClaimWorkItemResponse: objectSchema({
     workItem: schemaRef("WorkItem"),
     agent: schemaRef("AgentProfile"),
-    bug: schemaRef("BugReport")
-  }, ["workItem", "agent"]),
+    bug: schemaRef("BugReport"),
+    claimToken: { type: "string" },
+    leaseExpiresAt: isoDate
+  }, ["workItem", "agent", "claimToken", "leaseExpiresAt"]),
   ReleaseWorkItemResponse: objectSchema({
     workItem: schemaRef("WorkItem"),
     agent: schemaRef("AgentProfile")

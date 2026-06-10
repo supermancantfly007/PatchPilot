@@ -145,6 +145,10 @@
               "simulated",
               "codex"
             ]
+          },
+          "claimToken": {
+            "type": "string",
+            "minLength": 1
           }
         }
       },
@@ -175,6 +179,22 @@
         ],
         "properties": {
           "agentId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "leaseDurationMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600000
+          }
+        }
+      },
+      "ReleaseWorkItemRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {
+          "claimToken": {
             "type": "string",
             "minLength": 1
           }
@@ -634,11 +654,7 @@
           "scope",
           "nonGoals",
           "acceptanceCriteria",
-          "testSuggestions",
-          "assignedAgentId",
-          "sourceBugId",
-          "reworkCount",
-          "lastRejectionReason"
+          "testSuggestions"
         ],
         "properties": {
           "id": {
@@ -700,6 +716,25 @@
           "assignedAgentId": {
             "type": "string",
             "minLength": 1
+          },
+          "claimedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "claimToken": {
+            "type": "string"
+          },
+          "leaseExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "heartbeatAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
           },
           "sourceBugId": {
             "type": "string",
@@ -1814,7 +1849,9 @@
         "additionalProperties": false,
         "required": [
           "workItem",
-          "agent"
+          "agent",
+          "claimToken",
+          "leaseExpiresAt"
         ],
         "properties": {
           "workItem": {
@@ -1825,6 +1862,13 @@
           },
           "bug": {
             "$ref": "#/components/schemas/BugReport"
+          },
+          "claimToken": {
+            "type": "string"
+          },
+          "leaseExpiresAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },

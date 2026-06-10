@@ -6,6 +6,7 @@ import {
   claimSchema,
   clarificationSchema,
   clarificationTurnSchema,
+  releaseWorkItemSchema,
   requirementInputSchema,
   startRunSchema
 } from "@patchpilot/contracts";
@@ -13,11 +14,9 @@ import Fastify from "fastify";
 import { z } from "zod";
 import { DomainError, PatchPilotStore } from "./store";
 
-const defaultStore = new PatchPilotStore();
-
 export async function buildServer(options: { store?: PatchPilotStore } = {}) {
   const app = Fastify({ logger: true });
-  const store = options.store ?? defaultStore;
+  const store = options.store ?? new PatchPilotStore();
   await app.register(cors, { origin: true });
 
   app.get(apiRoute("health"), async () => ({ ok: true, service: "patchpilot-api" }));
@@ -77,19 +76,20 @@ export async function buildServer(options: { store?: PatchPilotStore } = {}) {
   app.post(apiRoute("startWorkItem"), async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = startRunSchema.parse(request.body);
-    const run = await store.startRun(id, input.runner);
+    const run = await store.startRun(id, input.runner, { claimToken: input.claimToken });
     return reply.code(201).send(run);
   });
 
   app.post(apiRoute("claimWorkItem"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = claimSchema.parse(request.body);
-    return store.claimWorkItem(id, input.agentId);
+    return store.claimWorkItem(id, input.agentId, { leaseDurationMs: input.leaseDurationMs });
   });
 
   app.post(apiRoute("releaseWorkItem"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
-    return store.releaseWorkItem(id);
+    const input = releaseWorkItemSchema.parse(request.body);
+    return store.releaseWorkItem(id, { claimToken: input.claimToken });
   });
 
   app.post(apiRoute("createBug"), async (request, reply) => {

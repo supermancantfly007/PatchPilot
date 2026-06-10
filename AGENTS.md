@@ -15,3 +15,7 @@ This repo uses the default mattpocock/skills triage label vocabulary. See `docs/
 ### Domain docs
 
 This is a single-context repo: read `CONTEXT.md` and relevant ADRs under `docs/adr/`. See `docs/agents/domain.md`.
+
+### Task completion
+
+When completing a `.scratch/agent-platform/TODO.md` task, finish code review, unit tests, and relevant E2E checks, then mark the task done, commit the changes, and push the commit to the remote before moving on to the next task.

@@ -263,6 +263,10 @@ dev:
     const runningWorkItem = snapshotWhileRunning.json().workItems.find((item: { id: string }) => item.id === workItem.id);
     expect(runningWorkItem.status).toBe("running");
     expect(runningWorkItem.assignedAgentId).toBeTruthy();
+    expect(runningWorkItem.claimToken).toEqual(expect.any(String));
+    expect(runningWorkItem.leaseExpiresAt).toEqual(expect.any(String));
+    expect(runningWorkItem.heartbeatAt).toEqual(expect.any(String));
+    expect(runningWorkItem.version).toBeGreaterThan(1);
 
     const completedRun = await pollRun(app, run.id);
     expect(completedRun.status).toBe("succeeded");
@@ -287,6 +291,84 @@ dev:
     const snapshotAfterAcceptance = await app.inject({ method: "GET", url: "/api/snapshot" });
     const doneWorkItem = snapshotAfterAcceptance.json().workItems.find((item: { id: string }) => item.id === workItem.id);
     expect(doneWorkItem.status).toBe("done");
+
+    await app.close();
+  });
+
+  it("fences concurrent work item claims and requires the current claim token to start", async () => {
+    const app = await buildServer({ store: new PatchPilotStore() });
+    const workItem = await createApprovedWorkItem(app, "验证并发领取同一工作项不会双重成功");
+
+    const [backendClaim, reviewerClaim] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/claim`,
+        payload: { agentId: "agent_backend" }
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/claim`,
+        payload: { agentId: "agent_reviewer" }
+      })
+    ]);
+
+    expect([backendClaim.statusCode, reviewerClaim.statusCode].sort()).toEqual([200, 409]);
+    const winningClaim = backendClaim.statusCode === 200 ? backendClaim : reviewerClaim;
+    const claimToken = winningClaim.json().claimToken as string;
+    expect(claimToken).toEqual(expect.any(String));
+    expect(winningClaim.json().workItem).toMatchObject({
+      status: "claimed",
+      claimToken,
+      leaseExpiresAt: expect.any(String),
+      heartbeatAt: expect.any(String)
+    });
+
+    const rejectedStart = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/start`,
+      payload: { runner: "simulated", claimToken: "stale-token" }
+    });
+    expect(rejectedStart.statusCode).toBe(409);
+
+    const start = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/start`,
+      payload: { runner: "simulated", claimToken }
+    });
+    expect(start.statusCode).toBe(201);
+
+    await app.close();
+  });
+
+  it("allows an expired claim lease to be recovered by another agent", async () => {
+    const app = await buildServer({ store: new PatchPilotStore() });
+    const workItem = await createApprovedWorkItem(app, "验证过期 lease 可以回收");
+
+    const firstClaim = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/claim`,
+      payload: { agentId: "agent_backend", leaseDurationMs: 1 }
+    });
+    expect(firstClaim.statusCode).toBe(200);
+    await delay(10);
+
+    const secondClaim = await app.inject({
+      method: "POST",
+      url: `/api/work-items/${workItem.id}/claim`,
+      payload: { agentId: "agent_reviewer" }
+    });
+    expect(secondClaim.statusCode).toBe(200);
+    expect(secondClaim.json().claimToken).not.toBe(firstClaim.json().claimToken);
+    expect(secondClaim.json().workItem).toMatchObject({
+      status: "claimed",
+      assignedAgentId: "agent_reviewer"
+    });
+    expect(secondClaim.json().workItem.version).toBeGreaterThan(firstClaim.json().workItem.version);
+
+    const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const backendAgent = snapshot.json().agents.find((agent: { id: string }) => agent.id === "agent_backend");
+    expect(backendAgent.status).toBe("idle");
+    expect(backendAgent.currentWorkItemId).toBeUndefined();
 
     await app.close();
   });
@@ -565,7 +647,7 @@ dev:
     const claimedStart = await app.inject({
       method: "POST",
       url: `/api/work-items/${backendReworkItem.id}/start`,
-      payload: { runner: "simulated" }
+      payload: { runner: "simulated", claimToken: claim.json().claimToken }
     });
     expect(claimedStart.statusCode).toBe(201);
     expect(firstRunIds).not.toContain(claimedStart.json().id);
@@ -604,15 +686,16 @@ dev:
     const prd = prdResponse.json().prd;
     const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
     const workItem = approval.json().workItems[0];
-    await app.inject({
+    const claim = await app.inject({
       method: "POST",
       url: `/api/work-items/${workItem.id}/claim`,
       payload: { agentId: "agent_backend" }
     });
+    expect(claim.statusCode).toBe(200);
     const firstStart = await app.inject({
       method: "POST",
       url: `/api/work-items/${workItem.id}/start`,
-      payload: { runner: "simulated" }
+      payload: { runner: "simulated", claimToken: claim.json().claimToken }
     });
 
     const teamStart = await app.inject({
@@ -763,6 +846,28 @@ async function pollRun(app: Awaited<ReturnType<typeof buildServer>>, runId: stri
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Run did not finish: ${runId}`);
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function createApprovedWorkItem(app: Awaited<ReturnType<typeof buildServer>>, rawInput: string) {
+  const create = await app.inject({
+    method: "POST",
+    url: "/api/requirements",
+    payload: { rawInput, template: "feature" }
+  });
+  expect(create.statusCode).toBe(201);
+  const requirement = create.json();
+  const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
+  expect(prdResponse.statusCode).toBe(200);
+  const prd = prdResponse.json().prd;
+  const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
+  expect(approval.statusCode).toBe(200);
+  const workItem = approval.json().workItems[0] as { id: string };
+  if (!workItem) throw new Error("Expected approved PRD to create at least one work item");
+  return workItem;
 }
 
 async function pollPrdRuns(app: Awaited<ReturnType<typeof buildServer>>, prdId: string, expectedCount: number) {

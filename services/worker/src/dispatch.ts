@@ -56,5 +56,12 @@ function groupIdleAgentsByRole(agents: AgentProfile[]) {
 }
 
 function isReadyToDispatch(workItem: WorkItem) {
-  return workItem.status === "ready" && !workItem.assignedAgentId;
+  return (workItem.status === "ready" && !workItem.assignedAgentId) || isExpiredClaim(workItem);
+}
+
+function isExpiredClaim(workItem: WorkItem) {
+  if (workItem.status !== "claimed") return false;
+  if (!workItem.leaseExpiresAt) return true;
+  const expiresAt = Date.parse(workItem.leaseExpiresAt);
+  return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
 }

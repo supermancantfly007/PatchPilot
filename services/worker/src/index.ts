@@ -115,13 +115,19 @@ async function dispatchAssignment(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     log(config, `dispatch ${assignment.workItemId} -> ${assignment.agentId}`);
-    await requestJson(`${config.apiBaseUrl}${apiPath("claimWorkItem", { id: assignment.workItemId })}`, {
-      method: "POST",
-      body: JSON.stringify({ agentId: assignment.agentId })
-    });
+    const claim = await requestJson<{ claimToken?: string }>(
+      `${config.apiBaseUrl}${apiPath("claimWorkItem", { id: assignment.workItemId })}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ agentId: assignment.agentId })
+      }
+    );
     await requestJson(`${config.apiBaseUrl}${apiPath("startWorkItem", { id: assignment.workItemId })}`, {
       method: "POST",
-      body: JSON.stringify(config.runner ? { runner: config.runner } : {})
+      body: JSON.stringify({
+        ...(config.runner ? { runner: config.runner } : {}),
+        ...(claim.claimToken ? { claimToken: claim.claimToken } : {})
+      })
     });
     log(config, `started ${assignment.workItemId}`);
     return { ok: true };
