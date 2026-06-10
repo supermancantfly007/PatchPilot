@@ -1,4 +1,9 @@
 import type { AgentProfile, AgentRole, AgentRun, PatchPilotSnapshot, WorkItem } from "@patchpilot/domain";
+import {
+  agentSatisfiesCapabilityManifest,
+  generateCapabilityManifest,
+  isCostWithinCapabilityManifest
+} from "@patchpilot/policy";
 
 export interface DispatchAssignment {
   workItemId: string;
@@ -92,12 +97,12 @@ function dependenciesSatisfied(workItem: WorkItem, snapshot: PatchPilotSnapshot)
 }
 
 function hasBudget(workItem: WorkItem, snapshot: PatchPilotSnapshot) {
-  if (workItem.budgetUsd === undefined) return true;
-  if (workItem.budgetUsd <= 0) return false;
+  const manifest = generateCapabilityManifest({ workItem, createdBy: "scheduler" });
+  if (manifest.cost.maxCostUsd === undefined) return true;
   const spent = snapshot.agentRuns
     .filter((run) => run.workItemId === workItem.id && run.status !== "cancelled")
     .reduce((total, run) => total + (run.costActualUsd ?? run.costEstimateUsd ?? 0), 0);
-  return spent < workItem.budgetUsd;
+  return isCostWithinCapabilityManifest(manifest, spent);
 }
 
 function withinConcurrencyLimit(workItem: WorkItem, snapshot: PatchPilotSnapshot, context: DispatchContext) {
@@ -124,10 +129,10 @@ function hasActiveRun(workItem: WorkItem, snapshot: PatchPilotSnapshot) {
 }
 
 function agentHasCapabilities(agent: AgentProfile, workItem: WorkItem) {
-  const requiredCapabilities = workItem.requiredCapabilities ?? [];
-  if (requiredCapabilities.length === 0) return true;
-  const capabilities = new Set([agent.role, ...(agent.capabilities ?? [])]);
-  return requiredCapabilities.every((capability) => capabilities.has(capability));
+  return agentSatisfiesCapabilityManifest(
+    agent,
+    generateCapabilityManifest({ workItem, createdBy: "scheduler" })
+  );
 }
 
 function concurrencyKeyFor(workItem: WorkItem) {

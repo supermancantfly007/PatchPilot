@@ -67,6 +67,11 @@ import {
   type CodexRunner,
   type CodexRunnerEvent
 } from "@patchpilot/codex-runner";
+import {
+  generateCapabilityManifest,
+  summarizeCapabilityManifest,
+  type CapabilityManifest
+} from "@patchpilot/policy";
 import { getTelemetry, type PatchPilotTelemetry } from "@patchpilot/telemetry";
 import { readPatchPilotConfig } from "./config";
 
@@ -1052,12 +1057,45 @@ export class PatchPilotStore {
     });
 
     const config = readPatchPilotConfig();
-    const secretBrokerResolution = this.resolveAndAuditSecretBroker(run, workItem, config.security.secretBroker);
+    const capabilityManifest = generateCapabilityManifest({
+      runId,
+      prdId: prd.id,
+      workItem,
+      testCommand: config.test.command,
+      testTimeoutMs: config.test.timeoutMs,
+      security: config.security,
+      budget: config.budget,
+      createdBy: "scheduler"
+    });
+    const manifestSummary = summarizeCapabilityManifest(capabilityManifest);
+    this.addAuditEvent({
+      actor: "policy",
+      action: "capability_manifest.activated",
+      targetType: "agent_run",
+      targetId: run.id,
+      message: "Capability Manifest 已为 agent run 激活。",
+      requirementId: run.requirementId,
+      prdId: run.prdId,
+      workItemId: run.workItemId,
+      runId: run.id,
+      beforeJson: null,
+      afterJson: {
+        manifest: manifestSummary
+      },
+      metadataJson: manifestSummary
+    });
+    const secretBrokerResolution = this.resolveAndAuditSecretBroker(
+      run,
+      workItem,
+      config.security.secretBroker,
+      capabilityManifest
+    );
     const result = await this.codexRunner.run(
       { runId, requirement, prd, workItem },
       (event) => this.appendRunEvent(runId, event),
       {
         ...config,
+        policyManifest: capabilityManifest,
         security: {
           ...config.security,
           secretEnv: secretBrokerResolution.env
@@ -2504,12 +2542,14 @@ export class PatchPilotStore {
   private resolveAndAuditSecretBroker(
     run: AgentRun,
     workItem: WorkItem,
-    secretBrokerConfig: ReturnType<typeof readPatchPilotConfig>["security"]["secretBroker"]
+    secretBrokerConfig: ReturnType<typeof readPatchPilotConfig>["security"]["secretBroker"],
+    capabilityManifest: CapabilityManifest
   ) {
     const resolution = resolveSecretBrokerGrants({
       config: secretBrokerConfig,
       workItem,
-      env: process.env
+      env: process.env,
+      capabilityManifest
     });
     const evidence = resolution.evidence;
     if (evidence.requestedSecretIds.length === 0) return resolution;

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { TestRun, TestRunStatus } from "@patchpilot/domain";
+import { enforceCommandPolicy, type CapabilityManifest } from "@patchpilot/policy";
 
 export type TestOutputFormat = "auto" | "json" | "junit" | "text";
 
@@ -21,6 +22,7 @@ export interface CommandExecutorOptions {
   env?: NodeJS.ProcessEnv;
   inheritEnv?: boolean;
   maxOutputBytes?: number;
+  capabilityManifest?: CapabilityManifest;
 }
 
 export interface CommandExecutorResult {
@@ -51,6 +53,7 @@ export interface TestRunnerOptions {
   collectGitMetadata?: boolean;
   maxOutputBytes?: number;
   executor?: CommandExecutor;
+  capabilityManifest?: CapabilityManifest;
 }
 
 interface CommandAttempt {
@@ -77,6 +80,8 @@ export class TestRunner {
 export async function runTestCommand(options: TestRunnerOptions): Promise<TestRun> {
   const command = options.command.trim();
   if (!command) throw new Error("Test command must not be empty");
+  if (options.capabilityManifest) enforceCommandPolicy(options.capabilityManifest, command);
+  const timeoutMs = Math.min(options.timeoutMs, options.capabilityManifest?.runtime.maxRuntimeMs ?? options.timeoutMs);
 
   const startedAt = new Date();
   const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? 1));
@@ -87,10 +92,11 @@ export async function runTestCommand(options: TestRunnerOptions): Promise<TestRu
     const result = await executeTestCommand(options.executor, {
       command,
       cwd: options.cwd,
-      timeoutMs: options.timeoutMs,
+      timeoutMs,
       env: options.env,
       inheritEnv: options.inheritEnv,
-      maxOutputBytes: options.maxOutputBytes
+      maxOutputBytes: options.maxOutputBytes,
+      capabilityManifest: options.capabilityManifest
     });
     const commandAttempt = { attempt, ...result };
     attempts.push(commandAttempt);
@@ -111,7 +117,7 @@ export async function runTestCommand(options: TestRunnerOptions): Promise<TestRu
   const retryCount = attempts.length - 1;
   const flakySignal = Boolean(passedAttempt && attempts.some((attempt) => attempt.exitCode !== 0 || attempt.timedOut));
   const status = statusForAttempt(lastAttempt, parsed);
-  const failureSummary = status === "failed" ? summarizeFailure(lastAttempt, parsed, options.timeoutMs) : undefined;
+  const failureSummary = status === "failed" ? summarizeFailure(lastAttempt, parsed, timeoutMs) : undefined;
   const logArtifactId = `artifact_test_log_${randomUUID()}`;
   const git = options.collectGitMetadata === false ? {} : await readGitMetadata(options.cwd);
 
@@ -123,7 +129,7 @@ export async function runTestCommand(options: TestRunnerOptions): Promise<TestRu
     ...(options.workItemId ? { workItemId: options.workItemId } : {}),
     status,
     command,
-    summary: summarizeRun(status, parsed, lastAttempt, retryCount, maxAttempts, options.timeoutMs),
+    summary: summarizeRun(status, parsed, lastAttempt, retryCount, maxAttempts, timeoutMs),
     durationMs: endedAt.getTime() - startedAt.getTime(),
     startedAt: startedAt.toISOString(),
     endedAt: endedAt.toISOString(),

@@ -3,6 +3,11 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import type { Prd, Requirement, WorkItem } from "@patchpilot/domain";
+import {
+  assertValidCapabilityManifest,
+  enforceWorkspaceWritePolicy,
+  type CapabilityManifest
+} from "@patchpilot/policy";
 
 export interface WorkspaceContext {
   runId: string;
@@ -15,6 +20,7 @@ export interface WorkspaceManagerConfig {
   workspaceRoot: string;
   baseRef?: string;
   taskFileName?: string;
+  capabilityManifest?: CapabilityManifest;
 }
 
 export interface PreparedWorkspace {
@@ -26,6 +32,7 @@ export interface PreparedWorkspace {
   baseBranch: string;
   baseCommit: string;
   status: "active";
+  capabilityManifest?: CapabilityManifest;
 }
 
 export type WorkspaceStatus = "clean" | "dirty" | "missing" | "unavailable";
@@ -50,8 +57,14 @@ export interface WorkspaceManager {
   isGitWorkspaceAvailable(cwd?: string): Promise<boolean>;
   prepareWorkspace(context: WorkspaceContext, config: WorkspaceManagerConfig): Promise<PreparedWorkspace>;
   getWorkspaceStatus(workspacePath: string): Promise<WorkspaceStatus>;
-  collectArtifacts(workspace: PreparedWorkspace, options?: { summaryPath?: string }): Promise<WorkspaceArtifacts>;
-  commitWorkspace(workspace: PreparedWorkspace, options: { message: string }): Promise<WorkspaceCommit>;
+  collectArtifacts(
+    workspace: PreparedWorkspace,
+    options?: { summaryPath?: string; capabilityManifest?: CapabilityManifest }
+  ): Promise<WorkspaceArtifacts>;
+  commitWorkspace(
+    workspace: PreparedWorkspace,
+    options: { message: string; capabilityManifest?: CapabilityManifest }
+  ): Promise<WorkspaceCommit>;
   cleanupWorkspace(workspace: Pick<PreparedWorkspace, "path">): Promise<void>;
 }
 
@@ -74,6 +87,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
     const branchName = buildWorkspaceBranchName(context);
     const taskFilePath = join(workspacePath, config.taskFileName || "PATCHPILOT_TASK.md");
     let worktreeCreated = false;
+    if (config.capabilityManifest) assertValidCapabilityManifest(config.capabilityManifest);
 
     try {
       await ensureBranchAtRef(branchName, base.baseCommit);
@@ -100,22 +114,25 @@ export class GitWorkspaceManager implements WorkspaceManager {
       baseRef,
       baseBranch: base.baseBranch,
       baseCommit: base.baseCommit,
-      status: "active"
+      status: "active",
+      ...(config.capabilityManifest ? { capabilityManifest: config.capabilityManifest } : {})
     };
   }
 
   async getWorkspaceStatus(workspacePath: string): Promise<WorkspaceStatus> {
     if (!existsSync(workspacePath)) return "missing";
-    const result = await runShell("git status --short", workspacePath, 30000);
+    const result = await runShell("git status --short --untracked-files=all", workspacePath, 30000);
     if (result.exitCode !== 0) return "unavailable";
     return parseChangedFiles(result.output).length > 0 ? "dirty" : "clean";
   }
 
   async collectArtifacts(
     workspace: PreparedWorkspace,
-    options: { summaryPath?: string } = {}
+    options: { summaryPath?: string; capabilityManifest?: CapabilityManifest } = {}
   ): Promise<WorkspaceArtifacts> {
     const changedFiles = await listChangedFiles(workspace.path);
+    const manifest = options.capabilityManifest ?? workspace.capabilityManifest;
+    if (manifest) enforceWorkspaceWritePolicy(manifest, changedFiles);
     const summary = await readSummary(options.summaryPath, changedFiles);
     return {
       changedFiles,
@@ -125,8 +142,13 @@ export class GitWorkspaceManager implements WorkspaceManager {
     };
   }
 
-  async commitWorkspace(workspace: PreparedWorkspace, options: { message: string }): Promise<WorkspaceCommit> {
+  async commitWorkspace(
+    workspace: PreparedWorkspace,
+    options: { message: string; capabilityManifest?: CapabilityManifest }
+  ): Promise<WorkspaceCommit> {
     const changedFiles = await listChangedFiles(workspace.path);
+    const manifest = options.capabilityManifest ?? workspace.capabilityManifest;
+    if (manifest) enforceWorkspaceWritePolicy(manifest, changedFiles);
     if (changedFiles.length === 0) {
       return {
         status: "unchanged",
@@ -193,7 +215,7 @@ export function buildWorkspaceBranchName(context: Pick<WorkspaceContext, "runId"
 }
 
 async function listChangedFiles(workspacePath: string) {
-  const result = await runShell("git status --short", workspacePath, 30000);
+  const result = await runShell("git status --short --untracked-files=all", workspacePath, 30000);
   if (result.exitCode !== 0) return ["PATCHPILOT_TASK.md"];
   return parseChangedFiles(result.output);
 }

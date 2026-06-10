@@ -5,6 +5,12 @@ import { join } from "node:path";
 import { runTestCommand } from "@patchpilot/testing";
 import { GitWorkspaceManager, type WorkspaceManager } from "@patchpilot/workspace-manager";
 import {
+  applyManifestToEgressPolicyConfig,
+  enforceCommandPolicy,
+  generateCapabilityManifest,
+  type CapabilityManifest
+} from "@patchpilot/policy";
+import {
   RootlessContainerSandbox,
   toContainerWorkspacePath,
   type ContainerSandboxConfig
@@ -61,7 +67,13 @@ export interface CodexRunnerConfig {
   };
   budget: {
     codexTimeoutMs: number;
+    maxCostUsd?: number;
+    prdUsd?: number;
+    workItemUsd?: number;
+    runUsd?: number;
+    softThresholdRatio?: number;
   };
+  policyManifest?: CapabilityManifest;
 }
 
 export interface CodexRunner {
@@ -145,8 +157,27 @@ export class LocalCodexRunner implements CodexRunner {
     emit: EmitCodexRunnerEvent,
     config: CodexRunnerConfig
   ): Promise<AgentRunResult> {
+    const capabilityManifest = config.policyManifest ?? generateCapabilityManifest({
+      runId: context.runId,
+      prdId: context.prd.id,
+      workItem: context.workItem,
+      testCommand: config.test.command,
+      testTimeoutMs: config.test.timeoutMs,
+      security: config.security,
+      budget: config.budget,
+      createdBy: "codex-runner"
+    });
+    const effectiveConfig: CodexRunnerConfig = {
+      ...config,
+      policyManifest: capabilityManifest,
+      security: {
+        ...config.security,
+        egressPolicy: applyManifestToEgressPolicyConfig(config.security.egressPolicy, capabilityManifest)
+      }
+    };
     const workspace = await this.workspaceManager.prepareWorkspace(context, {
-      workspaceRoot: config.dev.workspaceRoot
+      workspaceRoot: effectiveConfig.dev.workspaceRoot,
+      capabilityManifest
     });
     await emit({
       step: "developing",
@@ -156,21 +187,21 @@ export class LocalCodexRunner implements CodexRunner {
 
     const containerSandbox = config.security.containerSandbox.enabled
       ? new RootlessContainerSandbox({
-          ...config.security.containerSandbox,
-          egressPolicy: config.security.egressPolicy
+          ...effectiveConfig.security.containerSandbox,
+          egressPolicy: effectiveConfig.security.egressPolicy
         })
       : undefined;
     if (containerSandbox) {
       await emit({
         step: "developing",
         type: "workspace.created",
-        message: `已启用 rootless container sandbox：${config.security.containerSandbox.runtime}/${config.security.containerSandbox.image}`
+        message: `已启用 rootless container sandbox：${effectiveConfig.security.containerSandbox.runtime}/${effectiveConfig.security.containerSandbox.image}`
       });
-      if (config.security.egressPolicy.enabled) {
+      if (effectiveConfig.security.egressPolicy.enabled) {
         await emit({
           step: "developing",
           type: "workspace.created",
-          message: `已启用网络 egress allowlist：${config.security.egressPolicy.allowedHosts.length} 个静态目的地，Git remote 动态放行=${config.security.egressPolicy.allowGitRemotes}`
+          message: `已启用网络 egress allowlist：${effectiveConfig.security.egressPolicy.allowedHosts.length} 个静态目的地，Git remote 动态放行=${effectiveConfig.security.egressPolicy.allowGitRemotes}`
         });
       }
     }
@@ -186,7 +217,14 @@ export class LocalCodexRunner implements CodexRunner {
     });
 
     const codexExecResults: CodexExecResult[] = [];
-    const firstCodexRun = await runCodexExec(workspace.path, prompt, emit, config, containerSandbox);
+    const firstCodexRun = await runCodexExec(
+      workspace.path,
+      prompt,
+      emit,
+      effectiveConfig,
+      containerSandbox,
+      capabilityManifest
+    );
     codexExecResults.push(firstCodexRun);
     await emit({
       step: "testing",
@@ -194,8 +232,8 @@ export class LocalCodexRunner implements CodexRunner {
       message: "Codex 执行结束，开始运行项目测试"
     });
 
-    let testRun = await runConfiguredTests(context, workspace.path, config, containerSandbox);
-    const repairAttempts = config.test.maxRepairAttempts;
+    let testRun = await runConfiguredTests(context, workspace.path, effectiveConfig, containerSandbox, capabilityManifest);
+    const repairAttempts = effectiveConfig.test.maxRepairAttempts;
 
     for (let attempt = 1; testRun.status === "failed" && attempt <= repairAttempts; attempt += 1) {
       await emit({
@@ -207,8 +245,9 @@ export class LocalCodexRunner implements CodexRunner {
         workspace.path,
         buildRepairPrompt(context, testRun.summary),
         emit,
-        config,
-        containerSandbox
+        effectiveConfig,
+        containerSandbox,
+        capabilityManifest
       );
       codexExecResults.push(repairCodexRun);
       await emit({
@@ -216,7 +255,7 @@ export class LocalCodexRunner implements CodexRunner {
         type: "test.started",
         message: `第 ${attempt} 次修复完成，重新运行测试`
       });
-      testRun = await runConfiguredTests(context, workspace.path, config, containerSandbox);
+      testRun = await runConfiguredTests(context, workspace.path, effectiveConfig, containerSandbox, capabilityManifest);
     }
 
     if (testRun.status !== "passed") {
@@ -230,7 +269,8 @@ export class LocalCodexRunner implements CodexRunner {
     });
 
     const artifacts = await this.workspaceManager.collectArtifacts(workspace, {
-      summaryPath: firstCodexRun.lastMessagePath
+      summaryPath: firstCodexRun.lastMessagePath,
+      capabilityManifest
     });
     const changedFiles = artifacts.changedFiles;
     await emit({
@@ -239,7 +279,8 @@ export class LocalCodexRunner implements CodexRunner {
       message: changedFiles.length > 0 ? `已发现 ${changedFiles.length} 个变更文件` : "Codex 没有产生文件变更"
     });
     const commit = await this.workspaceManager.commitWorkspace(workspace, {
-      message: buildCommitMessage(context)
+      message: buildCommitMessage(context),
+      capabilityManifest
     });
     const diffSummary = buildDiffSummary(changedFiles, commit);
     const finalizedTests = [testRun].map((test) => ({
@@ -254,7 +295,7 @@ export class LocalCodexRunner implements CodexRunner {
 
     return {
       summary: artifacts.summary,
-      previewUrl: config.dev.previewUrl,
+      previewUrl: effectiveConfig.dev.previewUrl,
       riskLevel: changedFiles.length > 12 ? "medium" : "low",
       changedFiles,
       tests: finalizedTests,
@@ -281,7 +322,8 @@ async function runConfiguredTests(
   context: CodexRunContext,
   workspacePath: string,
   config: CodexRunnerConfig,
-  containerSandbox: RootlessContainerSandbox | undefined
+  containerSandbox: RootlessContainerSandbox | undefined,
+  capabilityManifest: CapabilityManifest
 ): Promise<TestRun> {
   let egressPolicyEvidence: EgressPolicyEvidence | undefined;
   const testRun = await runTestCommand({
@@ -294,6 +336,7 @@ async function runConfiguredTests(
     workspacePath,
     env: buildCommandEnv(config.security.secretEnv),
     inheritEnv: false,
+    capabilityManifest,
     ...(containerSandbox
       ? {
           runner: "patchpilot-container-test-runner",
@@ -328,7 +371,8 @@ async function runCodexExec(
   prompt: string,
   emit: EmitCodexRunnerEvent,
   config: CodexRunnerConfig,
-  containerSandbox: RootlessContainerSandbox | undefined
+  containerSandbox: RootlessContainerSandbox | undefined,
+  capabilityManifest: CapabilityManifest
 ): Promise<CodexExecResult> {
   const lastMessageFileName = `.patchpilot-codex-${randomUUID()}.md`;
   const lastMessagePath = join(workspacePath, lastMessageFileName);
@@ -343,6 +387,7 @@ async function runCodexExec(
   if (containerSandbox || !existsSync(join(workspacePath, ".git"))) {
     args.splice(args.length - 1, 0, "--skip-git-repo-check");
   }
+  enforceCommandPolicy(capabilityManifest, ["codex", ...args].join(" "));
 
   const sandboxedProcess = containerSandbox
     ? await containerSandbox.spawn({

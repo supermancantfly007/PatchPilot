@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import type { Prd, Requirement, WorkItem } from "@patchpilot/domain";
+import { generateCapabilityManifest } from "@patchpilot/policy";
 import { buildWorkspaceBranchName, GitWorkspaceManager } from "./index";
 
 describe("GitWorkspaceManager", () => {
@@ -119,6 +120,50 @@ describe("GitWorkspaceManager", () => {
         headCommit: workspace.baseCommit,
         changedFiles: []
       });
+
+      await manager.cleanupWorkspace(workspace);
+      expect(existsSync(workspace.path)).toBe(false);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects workspace artifacts and commits that violate repo write policy", async () => {
+    const fixture = await createGitFixture();
+    const previousCwd = process.cwd();
+    process.chdir(fixture.repo);
+    const manager = new GitWorkspaceManager();
+    const manifest = generateCapabilityManifest({
+      repo: {
+        writeAllow: ["src/**"],
+        writeDeny: ["src/private/**"]
+      }
+    });
+
+    try {
+      const workspace = await manager.prepareWorkspace(makeContext({ runId: "run_policy" }), {
+        workspaceRoot: fixture.workspaceRoot,
+        capabilityManifest: manifest
+      });
+      await mkdir(join(workspace.path, "docs"), { recursive: true });
+      await writeFile(join(workspace.path, "docs", "plan.md"), "not allowed");
+
+      await expect(manager.collectArtifacts(workspace)).rejects.toThrow(/repo_write_not_allowlisted/u);
+      await expect(manager.commitWorkspace(workspace, {
+        message: "PatchPilot wi_test: Backend slice"
+      })).rejects.toThrow(/repo_write_not_allowlisted/u);
+
+      await rm(join(workspace.path, "docs"), { recursive: true, force: true });
+      await mkdir(join(workspace.path, "src"), { recursive: true });
+      await writeFile(join(workspace.path, "src", "feature.ts"), "export const ok = true;\n");
+      await expect(manager.collectArtifacts(workspace)).resolves.toMatchObject({
+        changedFiles: ["src/feature.ts"]
+      });
+
+      await mkdir(join(workspace.path, "src", "private"), { recursive: true });
+      await writeFile(join(workspace.path, "src", "private", "token.txt"), "nope");
+      await expect(manager.collectArtifacts(workspace)).rejects.toThrow(/repo_write_denylisted/u);
 
       await manager.cleanupWorkspace(workspace);
       expect(existsSync(workspace.path)).toBe(false);

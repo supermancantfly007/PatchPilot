@@ -1,5 +1,5 @@
 {
-  "name": "@patchpilot/workspace-manager",
+  "name": "@patchpilot/policy",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,8 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@patchpilot/domain": "workspace:*",
-    "@patchpilot/policy": "workspace:*"
+    "@patchpilot/domain": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
