@@ -119,7 +119,7 @@ Status: ready-for-agent
 
 ## E. ADR 待办
 
-- [ ] `ADR-0001` 生产工作流引擎选择 Temporal，以及 polling MVP 的退出标准。Status: todo. Role: architecture. Owner: unclaimed.
+- [x] `ADR-0001` 生产工作流引擎选择 Temporal，以及 polling MVP 的退出标准。Status: done. Role: architecture. Owner: codex-adr-0001-temporal-exit-criteria. Evidence: `docs/adr/0001-temporal-for-durable-workflows.md` records Temporal TypeScript SDK as the production Workflow Engine, polling MVP boundaries, alternatives, consequences, and concrete exit criteria. Verification: code review; `pnpm lint`; `pnpm test`; targeted Node path/link sanity check for ADR and required docs.
 - [ ] `ADR-0002` 项目事实源选择 `.scratch` Markdown、JSON、Postgres 或混合事件存储。Status: todo. Role: architecture. Owner: unclaimed.
 - [ ] `ADR-0003` Codex 集成主路径：SDK、`codex exec --json`、MCP 的分工和适配器接口。Status: todo. Role: architecture. Owner: unclaimed.
 - [ ] `ADR-0004` worktree + container/sandbox 隔离模型。Status: todo. Role: architecture. Owner: unclaimed.
