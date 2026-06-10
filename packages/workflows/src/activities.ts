@@ -27,6 +27,7 @@ import {
   type WorkItem
 } from "@patchpilot/domain";
 import type {
+  ApprovalWorkflowDecision,
   ArchiveWorkItemWorkspaceActivityInput,
   ArchiveWorkItemWorkspaceActivityResult,
   ClaimWorkItemExecutionActivityInput,
@@ -41,10 +42,14 @@ import type {
   PlanWorkItemsActivityResult,
   PrepareWorkItemWorkspaceActivityInput,
   PrepareWorkItemWorkspaceActivityResult,
+  RecordApprovalDecisionActivityInput,
+  RecordApprovalDecisionActivityResult,
   RecordRequirementClarificationAnswerActivityInput,
   RecordRequirementClarificationAnswerActivityResult,
   RecordRequirementPrdConfirmationActivityInput,
   RecordRequirementPrdConfirmationActivityResult,
+  RequestApprovalActivityInput,
+  RequestApprovalActivityResult,
   RequirementIntakeArtifactReferenceInput,
   ReviewWorkItemExecutionActivityInput,
   ReviewWorkItemExecutionActivityResult,
@@ -364,6 +369,290 @@ interface AuditEventInput {
   metadataJson?: AuditEvent["metadataJson"];
   createdAt?: string;
 }
+
+export interface ApprovalActivityStore {
+  requestApproval(input: RequestApprovalActivityInput): Promise<RequestApprovalActivityResult>;
+  recordDecision(input: RecordApprovalDecisionActivityInput): Promise<RecordApprovalDecisionActivityResult>;
+}
+
+export class InMemoryApprovalActivityStore implements ApprovalActivityStore {
+  readonly requested = new Map<string, RequestApprovalActivityResult>();
+  readonly decisions = new Map<string, RecordApprovalDecisionActivityResult>();
+  readonly approvalsById = new Map<string, RequestApprovalActivityResult["approval"]>();
+  readonly runsById = new Map<string, AgentRun>();
+  readonly auditEventsByWorkflowId = new Map<string, AuditEvent[]>();
+
+  async requestApproval(input: RequestApprovalActivityInput): Promise<RequestApprovalActivityResult> {
+    const existing = this.requested.get(input.idempotencyKey);
+    if (existing) return clone(existing);
+
+    if (input.pausedRun && input.pausedRun.status !== "needs_approval") {
+      throw new Error(`AgentRun ${input.pausedRun.id} is not paused for approval`);
+    }
+
+    const now = new Date().toISOString();
+    const isExpired = this.isExpired(input.expiresAt, now);
+    const runId = input.runId ?? input.pausedRun?.id;
+    const approval: RequestApprovalActivityResult["approval"] = {
+      id: stableId("approval", `${input.workflowId}:${input.kind}:${input.targetType}:${input.targetId}`),
+      kind: input.kind,
+      status: isExpired ? "expired" : "pending",
+      targetType: input.targetType,
+      targetId: input.targetId,
+      requestedBy: input.requestedBy,
+      requestedReason: input.requestedReason,
+      riskLevel: input.riskLevel,
+      expiresAt: input.expiresAt,
+      ...(isExpired
+        ? {
+            decisionReason: "Approval expired before a decision was recorded.",
+            decidedAt: now
+          }
+        : {}),
+      ...(input.requirementId ? { requirementId: input.requirementId } : {}),
+      ...(input.prdId ? { prdId: input.prdId } : {}),
+      ...(input.workItemId ? { workItemId: input.workItemId } : {}),
+      ...(runId ? { runId } : {}),
+      createdAt: now,
+      updatedAt: now
+    };
+    const run = input.pausedRun
+      ? this.attachApprovalToPausedRun(input.pausedRun, approval.id)
+      : undefined;
+
+    const auditEvents = [
+      this.addAuditEvent({
+        workflowId: input.workflowId,
+        actor: input.requestedBy,
+        action: "approval.requested",
+        targetType: "approval",
+        targetId: approval.id,
+        message: `Approval requested for ${approval.kind}: ${approval.requestedReason}`,
+        requirementId: approval.requirementId,
+        prdId: approval.prdId,
+        workItemId: approval.workItemId,
+        runId: approval.runId,
+        beforeJson: null,
+        afterJson: {
+          approval: auditApprovalStateForWorkflow(approval),
+          run: run ? { id: run.id, status: run.status, budgetApprovalId: run.budgetApprovalId ?? null } : null
+        }
+      })
+    ];
+
+    if (isExpired) {
+      auditEvents.push(
+        this.addAuditEvent({
+          workflowId: input.workflowId,
+          actor: "workflow",
+          action: "approval.expired",
+          targetType: "approval",
+          targetId: approval.id,
+          message: "Approval expired before the workflow received an approve or deny signal.",
+          requirementId: approval.requirementId,
+          prdId: approval.prdId,
+          workItemId: approval.workItemId,
+          runId: approval.runId,
+          beforeJson: { approval: { id: approval.id, status: "pending" } },
+          afterJson: { approval: auditApprovalStateForWorkflow(approval) }
+        })
+      );
+    }
+
+    const result: RequestApprovalActivityResult = {
+      approval,
+      ...(run ? { run } : {}),
+      auditEvents
+    };
+    this.approvalsById.set(approval.id, clone(approval));
+    if (run) this.runsById.set(run.id, clone(run));
+    this.requested.set(input.idempotencyKey, clone(result));
+    return clone(result);
+  }
+
+  async recordDecision(input: RecordApprovalDecisionActivityInput): Promise<RecordApprovalDecisionActivityResult> {
+    const existing = this.decisions.get(input.idempotencyKey);
+    if (existing) return clone(existing);
+
+    const currentApproval = this.approvalsById.get(input.approval.id) ?? input.approval;
+    if (currentApproval.status !== "pending") {
+      throw new Error(`Approval ${currentApproval.id} is already ${currentApproval.status}`);
+    }
+
+    const now = new Date().toISOString();
+    const approval: RequestApprovalActivityResult["approval"] = {
+      ...clone(currentApproval),
+      status: input.decision.status,
+      decisionReason: input.decision.decisionReason,
+      decidedAt: now,
+      updatedAt: now,
+      ...(input.decision.status === "approved" ? { approvedBy: input.decision.decidedBy } : {}),
+      ...(input.decision.status === "denied" ? { deniedBy: input.decision.decidedBy } : {})
+    };
+    const previousRun =
+      input.pausedRun ??
+      (approval.runId ? this.runsById.get(approval.runId) : undefined) ??
+      (approval.targetType === "agent_run" ? this.runsById.get(approval.targetId) : undefined);
+    const run = previousRun ? this.applyDecisionToRun(previousRun, approval, input.decision, now) : undefined;
+    const auditEvents = [
+      this.addAuditEvent({
+        workflowId: input.workflowId,
+        actor: input.decision.decidedBy,
+        action: approvalAction(input.decision.status),
+        targetType: "approval",
+        targetId: approval.id,
+        message: approvalDecisionMessage(input.decision.status),
+        requirementId: approval.requirementId,
+        prdId: approval.prdId,
+        workItemId: approval.workItemId,
+        runId: approval.runId,
+        beforeJson: { approval: { id: approval.id, status: "pending" } },
+        afterJson: {
+          approval: auditApprovalStateForWorkflow(approval),
+          run: run ? { id: run.id, status: run.status } : null
+        }
+      })
+    ];
+
+    if (input.decision.status === "approved" && previousRun?.status === "needs_approval" && run) {
+      auditEvents.push(
+        this.addAuditEvent({
+          workflowId: input.workflowId,
+          actor: input.decision.decidedBy,
+          action: "agent_run.resumed",
+          targetType: "agent_run",
+          targetId: run.id,
+          message: "Approval signal resumed the paused AgentRun.",
+          requirementId: run.requirementId,
+          prdId: run.prdId,
+          workItemId: run.workItemId,
+          runId: run.id,
+          beforeJson: {
+            run: { id: previousRun.id, status: previousRun.status },
+            approval: auditApprovalStateForWorkflow(currentApproval)
+          },
+          afterJson: {
+            run: { id: run.id, status: run.status },
+            approval: auditApprovalStateForWorkflow(approval)
+          }
+        })
+      );
+    }
+
+    const result: RecordApprovalDecisionActivityResult = {
+      approval,
+      ...(run ? { run } : {}),
+      auditEvents,
+      completedAt: now
+    };
+    this.approvalsById.set(approval.id, clone(approval));
+    if (run) this.runsById.set(run.id, clone(run));
+    this.decisions.set(input.idempotencyKey, clone(result));
+    return clone(result);
+  }
+
+  private attachApprovalToPausedRun(run: AgentRun, approvalId: string): AgentRun {
+    const eventIndex = run.events.length;
+    return {
+      ...clone(run),
+      status: "needs_approval",
+      budgetApprovalId: run.budgetApprovalId ?? approvalId,
+      events: [
+        ...run.events,
+        makeRunEvent(run.id, eventIndex, "agent.progress", `Approval ${approvalId} requested; run is paused.`)
+      ]
+    };
+  }
+
+  private applyDecisionToRun(
+    run: AgentRun,
+    approval: RequestApprovalActivityResult["approval"],
+    decision: ApprovalWorkflowDecision,
+    now: string
+  ): AgentRun {
+    const eventIndex = run.events.length;
+    if (decision.status === "approved" && run.status === "needs_approval") {
+      return {
+        ...clone(run),
+        status: "running",
+        events: [
+          ...run.events,
+          makeRunEvent(run.id, eventIndex, "agent.progress", `Approval ${approval.id} approved; run resumed.`)
+        ]
+      };
+    }
+
+    if ((decision.status === "denied" || decision.status === "expired") && run.status === "needs_approval") {
+      const pausedRun: AgentRun = {
+        ...clone(run),
+        events: [
+          ...run.events,
+          makeRunEvent(
+            run.id,
+            eventIndex,
+            "agent.progress",
+            decision.status === "denied"
+              ? `Approval ${approval.id} denied; run remains paused.`
+              : `Approval ${approval.id} expired; run remains paused.`
+          )
+        ]
+      };
+      return decision.status === "expired" && !pausedRun.endedAt ? { ...pausedRun, endedAt: now } : pausedRun;
+    }
+
+    return clone(run);
+  }
+
+  private isExpired(expiresAt: string, now: string) {
+    return Date.parse(expiresAt) <= Date.parse(now);
+  }
+
+  private addAuditEvent(input: AuditEventInput): AuditEvent {
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    const chain = this.auditEventsByWorkflowId.get(input.workflowId) ?? [];
+    const previousHash = chain.at(-1)?.hash ?? null;
+    const eventWithoutHash: Omit<AuditEvent, "hash"> = {
+      id: stableId("audit", `${input.workflowId}:${chain.length}:${input.action}:${input.targetId}`),
+      traceId: input.workflowId,
+      actorType: auditActorType(input.actor),
+      actorId: input.actor,
+      actor: input.actor,
+      action: input.action,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      message: input.message,
+      beforeJson: input.beforeJson ?? null,
+      afterJson: input.afterJson ?? null,
+      metadataJson: input.metadataJson ?? {},
+      previousHash,
+      ...(input.requirementId ? { requirementId: input.requirementId } : {}),
+      ...(input.prdId ? { prdId: input.prdId } : {}),
+      ...(input.workItemId ? { workItemId: input.workItemId } : {}),
+      ...(input.runId ? { runId: input.runId } : {}),
+      createdAt
+    };
+    const auditEvent: AuditEvent = {
+      ...eventWithoutHash,
+      hash: stableId("hash", JSON.stringify(eventWithoutHash))
+    };
+    chain.push(auditEvent);
+    this.auditEventsByWorkflowId.set(input.workflowId, chain);
+    return clone(auditEvent);
+  }
+}
+
+export function createApprovalActivities(store: ApprovalActivityStore = new InMemoryApprovalActivityStore()) {
+  return {
+    requestApprovalActivity(input: RequestApprovalActivityInput) {
+      return store.requestApproval(input);
+    },
+    recordApprovalDecisionActivity(input: RecordApprovalDecisionActivityInput) {
+      return store.recordDecision(input);
+    }
+  };
+}
+
+export type ApprovalActivities = ReturnType<typeof createApprovalActivities>;
 
 const defaultExecutionLeaseMs = 5 * 60 * 1000;
 
@@ -1152,6 +1441,35 @@ function auditActorType(actor: string): string {
   if (actor.endsWith("_agent") || actor.startsWith("agent_")) return "agent";
   if (actor === "workflow") return "workflow";
   return "system";
+}
+
+function approvalAction(status: ApprovalWorkflowDecision["status"]) {
+  if (status === "approved") return "approval.approved";
+  if (status === "denied") return "approval.denied";
+  return "approval.expired";
+}
+
+function approvalDecisionMessage(status: ApprovalWorkflowDecision["status"]) {
+  if (status === "approved") return "Approval signal approved the pending gate.";
+  if (status === "denied") return "Approval signal denied the pending gate.";
+  return "Approval signal expired the pending gate.";
+}
+
+function auditApprovalStateForWorkflow(approval: RequestApprovalActivityResult["approval"]) {
+  return {
+    id: approval.id,
+    kind: approval.kind,
+    status: approval.status,
+    targetType: approval.targetType,
+    targetId: approval.targetId,
+    riskLevel: approval.riskLevel,
+    expiresAt: approval.expiresAt,
+    approvedBy: approval.approvedBy ?? null,
+    deniedBy: approval.deniedBy ?? null,
+    decisionReason: approval.decisionReason ?? null,
+    decidedAt: approval.decidedAt ?? null,
+    runId: approval.runId ?? null
+  };
 }
 
 function makeRunEvent(

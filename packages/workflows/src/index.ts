@@ -1,12 +1,16 @@
 export {
+  createApprovalActivities,
   createRequirementIntakeActivities,
   createTemporalCanaryActivities,
   createWorkItemExecutionActivities,
   createWorkItemPlanningActivities,
+  InMemoryApprovalActivityStore,
   InMemoryRequirementIntakeActivityStore,
   InMemoryTemporalCanaryActivityStore,
   InMemoryWorkItemExecutionActivityStore,
   InMemoryWorkItemPlanningActivityStore,
+  type ApprovalActivities,
+  type ApprovalActivityStore,
   type RequirementIntakeActivities,
   type RequirementIntakeActivityStore,
   type TemporalCanaryActivities,
@@ -17,7 +21,10 @@ export {
   type WorkItemPlanningActivityStore
 } from "./activities";
 export {
+  approvalWorkflowId,
+  approvalWorkflowStartOptions,
   createTemporalClient,
+  queryApprovalProgress,
   queryWorkItemExecutionProgress,
   queryRequirementIntakeProgress,
   queryTemporalCanaryProgress,
@@ -25,19 +32,25 @@ export {
   readTemporalConfig,
   requirementIntakeWorkflowId,
   requirementIntakeWorkflowStartOptions,
+  runApprovalWorkflow,
   runWorkItemExecutionWorkflow,
   runRequirementIntakeWorkflow,
   runTemporalCanaryWorkflow,
   runWorkItemPlanningWorkflow,
+  signalApprovalApprove,
+  signalApprovalDeny,
+  signalApprovalExpire,
   signalRequirementClarificationAnswer,
   signalRequirementPrdConfirmation,
   signalTemporalCanary,
+  startApprovalWorkflow,
   startWorkItemExecutionWorkflow,
   startRequirementIntakeWorkflow,
   startTemporalCanaryWorkflow,
   startWorkItemPlanningWorkflow,
   temporalCanaryWorkflowStartOptions,
   temporalCanaryWorkflowId,
+  type ApprovalWorkflowHandle,
   type RequirementIntakeWorkflowHandle,
   type TemporalCanaryWorkflowHandle,
   type WorkItemExecutionWorkflowHandle,
@@ -55,6 +68,8 @@ export {
   type TemporalWorkerConfig
 } from "./worker";
 export {
+  approvalActivityOptions,
+  approvalActivityRetryPolicy,
   requirementIntakeActivityOptions,
   requirementIntakeActivityRetryPolicy,
   temporalCanaryActivityOptions,
@@ -66,7 +81,12 @@ export {
 } from "./policies";
 export * from "./types";
 export {
+  approvalProgressQuery,
+  approvalWorkflow,
+  approveApprovalSignal,
   answerRequirementClarificationSignal,
+  denyApprovalSignal,
+  expireApprovalSignal,
   approveTemporalCanarySignal,
   confirmRequirementPrdSignal,
   requirementIntakeProgressQuery,

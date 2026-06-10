@@ -1,6 +1,8 @@
 import { WorkflowIdConflictPolicy, WorkflowIdReusePolicy } from "@temporalio/client";
 import { describe, expect, it } from "vitest";
 import {
+  approvalWorkflowId,
+  approvalWorkflowStartOptions,
   readTemporalConfig,
   requirementIntakeWorkflowId,
   requirementIntakeWorkflowStartOptions,
@@ -75,6 +77,37 @@ describe("Temporal client helpers", () => {
     ).toEqual({
       taskQueue: "patchpilot-test",
       workflowId: requirementIntakeWorkflowId(input.idempotencyKey),
+      workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
+      workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
+      args: [input]
+    });
+  });
+
+  it("derives idempotent start options for approval workflows", () => {
+    const input = {
+      idempotencyKey: "TD-208 / Approval Workflow!",
+      kind: "budget_exceeded" as const,
+      targetType: "agent_run" as const,
+      targetId: "run_td_208",
+      requestedBy: "budget-governor",
+      requestedReason: "Run requires budget approval.",
+      riskLevel: "high" as const,
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      runId: "run_td_208"
+    };
+
+    expect(approvalWorkflowId(input.idempotencyKey)).toMatch(
+      /^patchpilot-approval-td-208-approval-workflow-[a-f0-9]{12}$/
+    );
+    expect(
+      approvalWorkflowStartOptions(input, {
+        address: "temporal.test:7233",
+        namespace: "default",
+        taskQueue: "patchpilot-test"
+      })
+    ).toEqual({
+      taskQueue: "patchpilot-test",
+      workflowId: approvalWorkflowId(input.idempotencyKey),
       workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
       workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
       args: [input]

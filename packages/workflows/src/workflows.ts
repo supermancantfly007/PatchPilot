@@ -1,11 +1,17 @@
 import { condition, defineQuery, defineSignal, proxyActivities, setHandler, workflowInfo } from "@temporalio/workflow";
 import type {
+  ApprovalActivities,
   RequirementIntakeActivities,
   TemporalCanaryActivities,
   WorkItemExecutionActivities,
   WorkItemPlanningActivities
 } from "./activities";
 import type {
+  ApprovalSignalInput,
+  ApprovalWorkflowDecision,
+  ApprovalWorkflowInput,
+  ApprovalWorkflowProgress,
+  ApprovalWorkflowResult,
   DraftRequirementPrdActivityResult,
   PlanWorkItemsActivityResult,
   RequirementClarificationAnswerSignalInput,
@@ -26,6 +32,7 @@ import type {
   WorkItemPlanningWorkflowResult
 } from "./types";
 import {
+  approvalActivityOptions,
   requirementIntakeActivityOptions,
   temporalCanaryActivityOptions,
   workItemExecutionActivityOptions,
@@ -34,6 +41,10 @@ import {
 
 export const approveTemporalCanarySignal = defineSignal<[TemporalCanarySignalInput]>("approveTemporalCanary");
 export const temporalCanaryProgressQuery = defineQuery<TemporalCanaryProgress>("temporalCanaryProgress");
+export const approveApprovalSignal = defineSignal<[ApprovalSignalInput]>("approveApproval");
+export const denyApprovalSignal = defineSignal<[ApprovalSignalInput]>("denyApproval");
+export const expireApprovalSignal = defineSignal<[ApprovalSignalInput]>("expireApproval");
+export const approvalProgressQuery = defineQuery<ApprovalWorkflowProgress>("approvalProgress");
 export const answerRequirementClarificationSignal = defineSignal<[RequirementClarificationAnswerSignalInput]>(
   "answerRequirementClarification"
 );
@@ -45,6 +56,7 @@ export const workItemPlanningProgressQuery = defineQuery<WorkItemPlanningProgres
 export const workItemExecutionProgressQuery = defineQuery<WorkItemExecutionProgress>("workItemExecutionProgress");
 
 const activities = proxyActivities<TemporalCanaryActivities>(temporalCanaryActivityOptions);
+const approvalActivities = proxyActivities<ApprovalActivities>(approvalActivityOptions);
 const requirementActivities = proxyActivities<RequirementIntakeActivities>(requirementIntakeActivityOptions);
 const workItemPlanningActivities = proxyActivities<WorkItemPlanningActivities>(workItemPlanningActivityOptions);
 const workItemExecutionActivities = proxyActivities<WorkItemExecutionActivities>(workItemExecutionActivityOptions);
@@ -84,6 +96,108 @@ export async function temporalCanaryWorkflow(
   return {
     ...result,
     status
+  };
+}
+
+export async function approvalWorkflow(input: ApprovalWorkflowInput): Promise<ApprovalWorkflowResult> {
+  const workflowId = workflowInfo().workflowId;
+  let status: ApprovalWorkflowProgress["status"] = "requesting";
+  let approval: ApprovalWorkflowProgress["approval"];
+  let run: ApprovalWorkflowProgress["run"] = input.pausedRun;
+  let decision: ApprovalWorkflowDecision | undefined;
+  let auditEvents: ApprovalWorkflowResult["auditEvents"] = [];
+
+  const recordDecision = (nextDecision: ApprovalWorkflowDecision) => {
+    if (decision) return;
+    decision = nextDecision;
+    status = "recording_decision";
+  };
+
+  setHandler(approveApprovalSignal, (payload) => {
+    recordDecision({ ...payload, status: "approved" });
+  });
+
+  setHandler(denyApprovalSignal, (payload) => {
+    recordDecision({ ...payload, status: "denied" });
+  });
+
+  setHandler(expireApprovalSignal, (payload) => {
+    recordDecision({ ...payload, status: "expired" });
+  });
+
+  setHandler(approvalProgressQuery, () => ({
+    workflowId,
+    idempotencyKey: input.idempotencyKey,
+    status,
+    auditEventCount: auditEvents.length,
+    ...(approval ? { approval } : {}),
+    ...(run ? { run } : {}),
+    ...(decision ? { decision } : {})
+  }));
+
+  const requested = await approvalActivities.requestApprovalActivity({
+    workflowId,
+    idempotencyKey: `${input.idempotencyKey}:request:${input.targetType}:${input.targetId}`,
+    kind: input.kind,
+    targetType: input.targetType,
+    targetId: input.targetId,
+    requestedBy: input.requestedBy,
+    requestedReason: input.requestedReason,
+    riskLevel: input.riskLevel,
+    expiresAt: input.expiresAt,
+    ...(input.requirementId ? { requirementId: input.requirementId } : {}),
+    ...(input.prdId ? { prdId: input.prdId } : {}),
+    ...(input.workItemId ? { workItemId: input.workItemId } : {}),
+    ...(input.runId ? { runId: input.runId } : {}),
+    ...(input.pausedRun ? { pausedRun: input.pausedRun } : {})
+  });
+  approval = requested.approval;
+  run = requested.run;
+  auditEvents = requested.auditEvents;
+
+  if (approval.status !== "pending") {
+    status = approval.status;
+    return {
+      workflowId,
+      idempotencyKey: input.idempotencyKey,
+      status,
+      approval,
+      ...(run ? { run } : {}),
+      auditEvents,
+      auditEventCount: auditEvents.length,
+      completedAt: approval.decidedAt ?? approval.updatedAt
+    };
+  }
+
+  if (!decision) status = "waiting_for_decision";
+  await condition(() => decision !== undefined);
+  if (!decision) throw new Error("Approval workflow decision signal was not received");
+
+  status = "recording_decision";
+  const recorded = await approvalActivities.recordApprovalDecisionActivity({
+    workflowId,
+    idempotencyKey: `${input.idempotencyKey}:decision:${approval.id}:${decision.status}`,
+    approval,
+    decision,
+    ...(run ? { pausedRun: run } : {})
+  });
+  approval = recorded.approval;
+  run = recorded.run;
+  auditEvents = [...auditEvents, ...recorded.auditEvents];
+  const terminalStatus = recorded.approval.status;
+  if (terminalStatus === "pending") throw new Error("Approval workflow decision activity returned pending status");
+  status = terminalStatus;
+
+  return {
+    workflowId,
+    idempotencyKey: input.idempotencyKey,
+    status: terminalStatus,
+    approval,
+    ...(run ? { run } : {}),
+    decision,
+    auditEvents,
+    auditEventCount: auditEvents.length,
+    completedAt: recorded.completedAt
   };
 }
 

@@ -1,10 +1,12 @@
 import { fileURLToPath } from "node:url";
 import { NativeConnection, Worker, type WorkerOptions } from "@temporalio/worker";
 import {
+  createApprovalActivities,
   createRequirementIntakeActivities,
   createTemporalCanaryActivities,
   createWorkItemExecutionActivities,
   createWorkItemPlanningActivities,
+  type ApprovalActivityStore,
   type RequirementIntakeActivityStore,
   type TemporalCanaryActivityStore,
   type WorkItemExecutionActivityStore,
@@ -25,6 +27,7 @@ export interface TemporalWorkerConfig extends TemporalConnectionConfig {
 export interface CreatePatchPilotTemporalWorkerOptions {
   config?: TemporalWorkerConfig;
   activityStore?: TemporalCanaryActivityStore;
+  approvalActivityStore?: ApprovalActivityStore;
   requirementIntakeActivityStore?: RequirementIntakeActivityStore;
   workItemPlanningActivityStore?: WorkItemPlanningActivityStore;
   workItemExecutionActivityStore?: WorkItemExecutionActivityStore;
@@ -52,6 +55,7 @@ export async function createPatchPilotTemporalWorker(
     workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
     activities: {
       ...createTemporalCanaryActivities(options.activityStore),
+      ...createApprovalActivities(options.approvalActivityStore),
       ...createRequirementIntakeActivities(options.requirementIntakeActivityStore),
       ...createWorkItemPlanningActivities(options.workItemPlanningActivityStore),
       ...createWorkItemExecutionActivities(options.workItemExecutionActivityStore)

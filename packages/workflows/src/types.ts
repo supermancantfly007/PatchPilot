@@ -1,6 +1,11 @@
 import type {
   AgentRun,
   AgentRunnerKind,
+  ApprovalKind,
+  ApprovalRecord,
+  ApprovalRiskLevel,
+  ApprovalStatus,
+  ApprovalTargetType,
   ArtifactRecord,
   AuditEvent,
   ClarificationQuestion,
@@ -66,6 +71,80 @@ export interface TemporalCanaryActivityResult {
 
 export interface TemporalCanaryWorkflowResult extends TemporalCanaryActivityResult {
   status: "completed";
+}
+
+export type ApprovalDecisionStatus = Extract<ApprovalStatus, "approved" | "denied" | "expired">;
+export type ApprovalWorkflowStatus =
+  | "requesting"
+  | "waiting_for_decision"
+  | "recording_decision"
+  | ApprovalDecisionStatus;
+
+export interface ApprovalWorkflowInput {
+  idempotencyKey: string;
+  kind: ApprovalKind;
+  targetType: ApprovalTargetType;
+  targetId: string;
+  requestedBy: string;
+  requestedReason: string;
+  riskLevel: ApprovalRiskLevel;
+  expiresAt: string;
+  requirementId?: string;
+  prdId?: string;
+  workItemId?: string;
+  runId?: string;
+  pausedRun?: AgentRun;
+}
+
+export interface ApprovalSignalInput {
+  decidedBy: string;
+  decisionReason: string;
+}
+
+export interface ApprovalWorkflowDecision extends ApprovalSignalInput {
+  status: ApprovalDecisionStatus;
+}
+
+export interface ApprovalWorkflowProgress {
+  workflowId: string;
+  idempotencyKey: string;
+  status: ApprovalWorkflowStatus;
+  approval?: ApprovalRecord;
+  run?: AgentRun;
+  decision?: ApprovalWorkflowDecision;
+  auditEventCount: number;
+}
+
+export interface ApprovalWorkflowResult extends ApprovalWorkflowProgress {
+  status: ApprovalDecisionStatus;
+  approval: ApprovalRecord;
+  auditEvents: AuditEvent[];
+  completedAt: string;
+}
+
+export interface RequestApprovalActivityInput extends ApprovalWorkflowInput {
+  workflowId: string;
+}
+
+export interface RequestApprovalActivityResult {
+  approval: ApprovalRecord;
+  run?: AgentRun;
+  auditEvents: AuditEvent[];
+}
+
+export interface RecordApprovalDecisionActivityInput {
+  workflowId: string;
+  idempotencyKey: string;
+  approval: ApprovalRecord;
+  decision: ApprovalWorkflowDecision;
+  pausedRun?: AgentRun;
+}
+
+export interface RecordApprovalDecisionActivityResult {
+  approval: ApprovalRecord;
+  run?: AgentRun;
+  auditEvents: AuditEvent[];
+  completedAt: string;
 }
 
 export interface TemporalEnv {

@@ -9,9 +9,14 @@ import {
   type WorkflowStartOptions
 } from "@temporalio/client";
 import {
+  approvalProgressQuery,
+  approvalWorkflow,
+  approveApprovalSignal,
   approveTemporalCanarySignal,
   answerRequirementClarificationSignal,
   confirmRequirementPrdSignal,
+  denyApprovalSignal,
+  expireApprovalSignal,
   requirementIntakeProgressQuery,
   requirementIntakeWorkflow,
   temporalCanaryProgressQuery,
@@ -22,6 +27,10 @@ import {
   workItemPlanningWorkflow
 } from "./workflows";
 import {
+  type ApprovalSignalInput,
+  type ApprovalWorkflowInput,
+  type ApprovalWorkflowProgress,
+  type ApprovalWorkflowResult,
   type RequirementClarificationAnswerSignalInput,
   type RequirementIntakeProgress,
   type RequirementIntakeWorkflowInput,
@@ -45,6 +54,7 @@ import {
 } from "./types";
 
 export type TemporalCanaryWorkflowHandle = WorkflowHandle<typeof temporalCanaryWorkflow>;
+export type ApprovalWorkflowHandle = WorkflowHandle<typeof approvalWorkflow>;
 export type RequirementIntakeWorkflowHandle = WorkflowHandle<typeof requirementIntakeWorkflow>;
 export type WorkItemPlanningWorkflowHandle = WorkflowHandle<typeof workItemPlanningWorkflow>;
 export type WorkItemExecutionWorkflowHandle = WorkflowHandle<typeof workItemExecutionWorkflow>;
@@ -66,6 +76,10 @@ export function temporalCanaryWorkflowId(idempotencyKey: string): string {
   return temporalWorkflowId("patchpilot-canary", idempotencyKey);
 }
 
+export function approvalWorkflowId(idempotencyKey: string): string {
+  return temporalWorkflowId("patchpilot-approval", idempotencyKey);
+}
+
 export function requirementIntakeWorkflowId(idempotencyKey: string): string {
   return temporalWorkflowId("patchpilot-requirement-intake", idempotencyKey);
 }
@@ -85,6 +99,19 @@ export function temporalCanaryWorkflowStartOptions(
   return {
     taskQueue: config.taskQueue,
     workflowId: temporalCanaryWorkflowId(input.idempotencyKey),
+    workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
+    workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
+    args: [input]
+  };
+}
+
+export function approvalWorkflowStartOptions(
+  input: ApprovalWorkflowInput,
+  config = readTemporalConfig()
+): WorkflowStartOptions<typeof approvalWorkflow> {
+  return {
+    taskQueue: config.taskQueue,
+    workflowId: approvalWorkflowId(input.idempotencyKey),
     workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
     workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
     args: [input]
@@ -147,6 +174,23 @@ export async function startTemporalCanaryWorkflow(
   }
 }
 
+export async function startApprovalWorkflow(
+  client: Client,
+  input: ApprovalWorkflowInput,
+  config = readTemporalConfig()
+): Promise<ApprovalWorkflowHandle> {
+  const startOptions = approvalWorkflowStartOptions(input, config);
+
+  try {
+    return await client.workflow.start(approvalWorkflow, startOptions);
+  } catch (error) {
+    if (error instanceof WorkflowExecutionAlreadyStartedError) {
+      return client.workflow.getHandle(startOptions.workflowId) as ApprovalWorkflowHandle;
+    }
+    throw error;
+  }
+}
+
 export async function startRequirementIntakeWorkflow(
   client: Client,
   input: RequirementIntakeWorkflowInput,
@@ -202,11 +246,27 @@ export function queryTemporalCanaryProgress(handle: TemporalCanaryWorkflowHandle
   return handle.query(temporalCanaryProgressQuery);
 }
 
+export function queryApprovalProgress(handle: ApprovalWorkflowHandle): Promise<ApprovalWorkflowProgress> {
+  return handle.query(approvalProgressQuery);
+}
+
 export function signalTemporalCanary(
   handle: TemporalCanaryWorkflowHandle,
   signal: TemporalCanarySignalInput
 ): Promise<void> {
   return handle.signal(approveTemporalCanarySignal, signal);
+}
+
+export function signalApprovalApprove(handle: ApprovalWorkflowHandle, signal: ApprovalSignalInput): Promise<void> {
+  return handle.signal(approveApprovalSignal, signal);
+}
+
+export function signalApprovalDeny(handle: ApprovalWorkflowHandle, signal: ApprovalSignalInput): Promise<void> {
+  return handle.signal(denyApprovalSignal, signal);
+}
+
+export function signalApprovalExpire(handle: ApprovalWorkflowHandle, signal: ApprovalSignalInput): Promise<void> {
+  return handle.signal(expireApprovalSignal, signal);
 }
 
 export function queryRequirementIntakeProgress(
@@ -249,6 +309,17 @@ export async function runTemporalCanaryWorkflow(
 ): Promise<TemporalCanaryWorkflowResult> {
   const handle = await startTemporalCanaryWorkflow(client, input, config);
   await signalTemporalCanary(handle, signal);
+  return handle.result();
+}
+
+export async function runApprovalWorkflow(
+  client: Client,
+  input: ApprovalWorkflowInput,
+  signal: ApprovalSignalInput,
+  config = readTemporalConfig()
+): Promise<ApprovalWorkflowResult> {
+  const handle = await startApprovalWorkflow(client, input, config);
+  await signalApprovalApprove(handle, signal);
   return handle.result();
 }
 

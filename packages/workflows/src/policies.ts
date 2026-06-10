@@ -10,6 +10,18 @@ export const temporalCanaryActivityOptions = {
   retry: temporalCanaryActivityRetryPolicy
 } as const;
 
+export const approvalActivityRetryPolicy = {
+  initialInterval: "500 milliseconds",
+  backoffCoefficient: 2,
+  maximumInterval: "5 seconds",
+  maximumAttempts: 5
+} as const;
+
+export const approvalActivityOptions = {
+  startToCloseTimeout: "15 seconds",
+  retry: approvalActivityRetryPolicy
+} as const;
+
 export const requirementIntakeActivityRetryPolicy = {
   initialInterval: "500 milliseconds",
   backoffCoefficient: 2,
