@@ -3,6 +3,7 @@
 import type {
   AgentProfile,
   AgentRun,
+  AuditChainVerification,
   PatchPilotSnapshot,
   PullRequestRecord,
   ReviewRecord,
@@ -15,6 +16,7 @@ import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { ArtifactReferenceList } from "@/components/ArtifactReferenceList";
 import { StatusNotice } from "@/components/StatusNotice";
+import { acceptanceGateRunIds, evaluateAcceptancePageQualityGate } from "@/lib/acceptanceQualityGate";
 import { api } from "@/lib/api";
 
 type AgentRunResult = NonNullable<AgentRun["result"]>;
@@ -156,6 +158,7 @@ export default function AcceptancePage() {
   const router = useRouter();
   const [run, setRun] = useState<AgentRun | null>(null);
   const [snapshot, setSnapshot] = useState<PatchPilotSnapshot | null>(null);
+  const [auditVerification, setAuditVerification] = useState<AuditChainVerification | null>(null);
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -173,9 +176,10 @@ export default function AcceptancePage() {
     let cancelled = false;
     const refresh = async () => {
       try {
-        const nextSnapshot = await api.getSnapshot();
+        const [nextSnapshot, nextAuditVerification] = await Promise.all([api.getSnapshot(), api.verifyAudit()]);
         if (cancelled) return;
         setSnapshot(nextSnapshot);
+        setAuditVerification(nextAuditVerification);
         const nextRun = nextSnapshot.agentRuns.find((item) => item.id === id);
         if (nextRun) setRun(nextRun);
       } catch (nextError) {
@@ -224,27 +228,6 @@ export default function AcceptancePage() {
     : run?.status === "succeeded" && !rejectedRunIds.has(run.id)
       ? 1
       : 0;
-
-  async function decide(status: "accepted" | "rejected") {
-    if (status === "rejected" && !reason.trim()) {
-      setError("要求修改前，请写清楚哪里不对以及期望结果。");
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      if (run && isTeamAcceptance) {
-        await api.acceptTeam(run.prdId, status, reason);
-      } else {
-        await api.acceptRun(id, status, reason);
-      }
-      router.push(status === "rejected" && run ? `/requirements/${run.requirementId}/confirm` : "/");
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "验收提交失败。");
-    } finally {
-      setSaving(false);
-    }
-  }
 
   if (!run) {
     return (
@@ -315,6 +298,49 @@ export default function AcceptancePage() {
   const testCasePassRate = visibleTestCases.length > 0
     ? Math.round((passedTestCaseCount / visibleTestCases.length) * 100)
     : 0;
+  const targetWorkItemIds = isTeamAcceptance ? teamWorkItems.map((item) => item.id) : [run.workItemId];
+  const qualityGateRunIds = acceptanceGateRunIds({
+    isTeamAcceptance,
+    run,
+    teamWorkItems,
+    runsByWorkItem
+  });
+  const qualityGate = snapshot
+    ? evaluateAcceptancePageQualityGate({
+        snapshot,
+        prdId: run.prdId,
+        runIds: qualityGateRunIds,
+        workItemIds: targetWorkItemIds,
+        scope: isTeamAcceptance ? "prd" : "run",
+        auditVerification: auditVerification ?? undefined
+      })
+    : undefined;
+  const canAccept = allTeamSucceeded && Boolean(qualityGate?.passed);
+
+  async function decide(status: "accepted" | "rejected") {
+    if (status === "accepted" && !canAccept) {
+      setError("验收质量门未通过，不能接受结果。请查看未通过项，或要求修改。");
+      return;
+    }
+    if (status === "rejected" && !reason.trim()) {
+      setError("要求修改前，请写清楚哪里不对以及期望结果。");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      if (run && isTeamAcceptance) {
+        await api.acceptTeam(run.prdId, status, reason);
+      } else {
+        await api.acceptRun(id, status, reason);
+      }
+      router.push(status === "rejected" && run ? `/requirements/${run.requirementId}/confirm` : "/");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "验收提交失败。");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <AppShell>
@@ -351,6 +377,39 @@ export default function AcceptancePage() {
                   {error}
                 </StatusNotice>
               ) : null}
+              {qualityGate ? (
+                <div className="question-card" style={{ background: "white" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                    <strong>验收质量门</strong>
+                    <span className={`status-pill ${qualityGate.passed ? "green" : "red"}`}>
+                      {qualityGate.passed ? "已通过" : "未通过"}
+                    </span>
+                  </div>
+                  <p className="muted" style={{ marginBottom: 0 }}>
+                    {qualityGate.passed
+                      ? "验收标准、测试、缺陷、契约、PR 和审计证据均满足接受条件。"
+                      : "接受结果已被禁用；请处理未通过项，或选择要求修改进入返工。"}
+                  </p>
+                  <div className="event-list" style={{ marginTop: 12 }}>
+                    {qualityGate.checks.map((check) => (
+                      <div className="team-run-row" key={check.key}>
+                        <div>
+                          <strong>{check.label}</strong>
+                          <small>{check.summary}</small>
+                          {check.details[0] ? <small className="rework-reason">{check.details[0]}</small> : null}
+                        </div>
+                        <span className={`status-pill ${check.passed ? "green" : "red"}`}>
+                          {check.passed ? "通过" : "阻塞"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <StatusNotice title="正在校验验收质量门" tone="info">
+                  正在读取 TestCase、Defect、InterfaceContract、PullRequest 和 AuditEvent 证据。
+                </StatusNotice>
+              )}
               <div className="question-card" style={{ background: "white" }}>
                 <strong>改了什么</strong>
                 {isTeamAcceptance ? (
@@ -428,6 +487,20 @@ export default function AcceptancePage() {
                   <strong>{changedFileEntries.length} 组文件</strong>
                 </div>
                 <div className="metric">
+                  <ShieldCheck size={18} />
+                  <span className="muted">验收标准覆盖</span>
+                  <strong>
+                    {qualityGate
+                      ? `${qualityGate.metrics.acceptanceCriteriaCoverageRate}%`
+                      : "加载中"}
+                  </strong>
+                  {qualityGate ? (
+                    <small>
+                      {qualityGate.metrics.acceptanceCriteriaCovered}/{qualityGate.metrics.acceptanceCriteriaTotal} 已覆盖
+                    </small>
+                  ) : null}
+                </div>
+                <div className="metric">
                   <TestTube2 size={18} />
                   <span className="muted">测试结果</span>
                   <strong>
@@ -441,7 +514,13 @@ export default function AcceptancePage() {
                 <div className="metric">
                   <TestTube2 size={18} />
                   <span className="muted">测试用例通过率</span>
-                  <strong>{visibleTestCases.length > 0 ? `${testCasePassRate}%` : "暂无"}</strong>
+                  <strong>
+                    {qualityGate
+                      ? `${qualityGate.metrics.testCasePassRate}%`
+                      : visibleTestCases.length > 0
+                        ? `${testCasePassRate}%`
+                        : "暂无"}
+                  </strong>
                   {visibleTestCases.length > 0 ? (
                     <small>
                       {passedTestCaseCount}/{visibleTestCases.length} 已通过
@@ -455,14 +534,48 @@ export default function AcceptancePage() {
                   <strong>{riskLabel(aggregateRisk)}</strong>
                 </div>
                 <div className="metric">
+                  <XCircle size={18} />
+                  <span className="muted">未解决缺陷</span>
+                  <strong>{qualityGate ? `${qualityGate.metrics.unresolvedDefectCount} 个` : "加载中"}</strong>
+                </div>
+                <div className="metric">
+                  <TestTube2 size={18} />
+                  <span className="muted">Flaky</span>
+                  <strong>{qualityGate ? `${qualityGate.metrics.flakyCount} 条` : "加载中"}</strong>
+                </div>
+                <div className="metric">
+                  <FileCode2 size={18} />
+                  <span className="muted">契约兼容</span>
+                  <strong>
+                    {qualityGate
+                      ? `${qualityGate.metrics.contractCompatible}/${qualityGate.metrics.contractTotal}`
+                      : "加载中"}
+                  </strong>
+                </div>
+                <div className="metric">
                   <GitPullRequest size={18} />
-                  <span className="muted">PR 交付</span>
-                  <strong>{visiblePullRequests.length} 个</strong>
+                  <span className="muted">PR 状态</span>
+                  <strong>
+                    {qualityGate
+                      ? `${qualityGate.metrics.pullRequestReady}/${qualityGate.metrics.pullRequestTotal}`
+                      : `${visiblePullRequests.length} 个`}
+                  </strong>
                 </div>
                 <div className="metric">
                   <ShieldCheck size={18} />
                   <span className="muted">审查记录</span>
                   <strong>{visibleReviewRecords.length} 条</strong>
+                </div>
+                <div className="metric">
+                  <ShieldCheck size={18} />
+                  <span className="muted">审计完整性</span>
+                  <strong>
+                    {qualityGate
+                      ? qualityGate.checks.find((check) => check.key === "audit_integrity")?.passed
+                        ? "完整"
+                        : "需处理"
+                      : "加载中"}
+                  </strong>
                 </div>
                 <div className="metric">
                   <FileCode2 size={18} />
@@ -507,7 +620,7 @@ export default function AcceptancePage() {
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                 <button
                   className="button"
-                  disabled={saving || !allTeamSucceeded}
+                  disabled={saving || !canAccept}
                   onClick={() => void decide("accepted")}
                   type="button"
                 >

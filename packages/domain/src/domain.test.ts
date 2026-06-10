@@ -7,6 +7,7 @@ import {
   createBugFixWorkItem,
   createBugWorkItem,
   createTimeline,
+  evaluateAcceptanceQualityGate,
   createTestCasesForWorkItems,
   createWorkItems,
   emptySnapshot,
@@ -17,6 +18,7 @@ import {
   testCaseStatusFromTestRunStatus,
   verifyAuditChain,
   type AuditEvent,
+  type PatchPilotSnapshot,
   type Requirement
 } from "./index";
 
@@ -142,6 +144,86 @@ describe("domain helpers", () => {
     expect(testCaseStatusFromTestRunStatus("running")).toBe("ready");
   });
 
+  it("passes the acceptance quality gate when delivery evidence is complete", () => {
+    const snapshot = acceptanceGateSnapshot();
+
+    const gate = evaluateAcceptanceQualityGate({
+      snapshot,
+      prdId: "prd_1",
+      runIds: ["run_1"],
+      workItemIds: ["wi_1"],
+      scope: "run"
+    });
+
+    expect(gate.passed).toBe(true);
+    expect(gate.metrics).toMatchObject({
+      acceptanceCriteriaCovered: 2,
+      acceptanceCriteriaTotal: 2,
+      testCasePassRate: 100,
+      unresolvedDefectCount: 0,
+      flakyCount: 0,
+      contractCompatible: 1,
+      pullRequestReady: 1,
+      auditEventCount: 1
+    });
+    expect(gate.blockingReasons).toEqual([]);
+  });
+
+  it("reports every unmet acceptance quality gate check", () => {
+    const snapshot = acceptanceGateSnapshot();
+    snapshot.testCases[0]!.linkedAcceptanceCriteria = ["Criterion A"];
+    snapshot.testCases[0]!.status = "failed";
+    snapshot.testCases[0]!.flaky = true;
+    snapshot.interfaceContracts[0]!.status = "breaking_change_pending";
+    snapshot.pullRequests[0]!.status = "changes_requested";
+    snapshot.bugs.push({
+      id: "bug_1",
+      title: "Failed verification",
+      description: "A failed TestRun created a defect.",
+      reproductionSteps: "Run the failing test.",
+      expectedBehavior: "The gate passes.",
+      actualBehavior: "The gate fails.",
+      severity: "high",
+      status: "reported",
+      reporter: "test-runner",
+      requirementId: "req_1",
+      prdId: "prd_1",
+      workItemId: "wi_1",
+      sourceRunId: "run_1",
+      sourceTestRunId: "test_1",
+      createdAt: "2026-06-10T00:00:00.000Z",
+      updatedAt: "2026-06-10T00:00:00.000Z"
+    });
+    snapshot.auditEvents[0]!.message = "Tampered audit message.";
+
+    const gate = evaluateAcceptanceQualityGate({
+      snapshot,
+      prdId: "prd_1",
+      runIds: ["run_1"],
+      workItemIds: ["wi_1"],
+      scope: "run"
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.checks.filter((check) => !check.passed).map((check) => check.key)).toEqual([
+      "acceptance_criteria_coverage",
+      "test_case_pass_rate",
+      "unresolved_defects",
+      "flaky_tests",
+      "contract_compatibility",
+      "pr_status",
+      "audit_integrity"
+    ]);
+    expect(gate.metrics).toMatchObject({
+      acceptanceCriteriaCovered: 1,
+      testCasePassed: 0,
+      unresolvedDefectCount: 1,
+      flakyCount: 1,
+      contractCompatible: 0,
+      pullRequestReady: 0
+    });
+  });
+
   it("initializes approval records in empty snapshots", () => {
     expect(emptySnapshot().approvals).toEqual([]);
   });
@@ -184,6 +266,181 @@ describe("domain helpers", () => {
     });
   });
 });
+
+function acceptanceGateSnapshot(): PatchPilotSnapshot {
+  const now = "2026-06-10T00:00:00.000Z";
+  const snapshot = emptySnapshot();
+  const testRun = {
+    id: "test_1",
+    testCaseId: "tc_1",
+    runId: "run_1",
+    prdId: "prd_1",
+    workItemId: "wi_1",
+    status: "passed" as const,
+    command: "pnpm test",
+    summary: "All assertions passed.",
+    durationMs: 1200,
+    startedAt: now,
+    endedAt: now,
+    flakySignal: false
+  };
+  const audit = auditEvent({
+    id: "audit_1",
+    action: "agent_run.succeeded",
+    targetType: "agent_run",
+    targetId: "run_1",
+    requirementId: "req_1",
+    prdId: "prd_1",
+    workItemId: "wi_1",
+    runId: "run_1"
+  });
+  audit.hash = computeAuditEventHash(audit);
+
+  snapshot.requirements = [
+    {
+      id: "req_1",
+      title: "Acceptance gate",
+      rawInput: "Ship a gated acceptance flow.",
+      template: "feature",
+      status: "approved",
+      simpleSummary: "Acceptance gate",
+      clarificationQuestions: [],
+      clarificationTurns: [],
+      createdAt: now,
+      updatedAt: now
+    }
+  ];
+  snapshot.prds = [
+    {
+      id: "prd_1",
+      requirementId: "req_1",
+      version: 1,
+      status: "approved",
+      title: "Acceptance gate",
+      bodyMarkdown: "# Acceptance gate",
+      acceptanceCriteria: ["Criterion A", "Criterion B"],
+      approvedAt: now
+    }
+  ];
+  snapshot.workItems = [
+    {
+      id: "wi_1",
+      prdId: "prd_1",
+      title: "Build gate",
+      status: "review",
+      role: "backend",
+      scope: "Gate accepted decisions.",
+      nonGoals: [],
+      acceptanceCriteria: ["Criterion A", "Criterion B"],
+      testSuggestions: ["Run unit tests"],
+      createdAt: now,
+      updatedAt: now
+    }
+  ];
+  snapshot.interfaceContracts = [
+    {
+      id: "contract_1",
+      prdId: "prd_1",
+      name: "HTTP API",
+      kind: "http",
+      status: "approved",
+      version: 1,
+      summary: "Contract remains compatible.",
+      providerRole: "backend",
+      consumerRoles: ["frontend"],
+      specMarkdown: "Compatible.",
+      testSuggestions: [],
+      createdAt: now,
+      updatedAt: now
+    }
+  ];
+  snapshot.agentRuns = [
+    {
+      id: "run_1",
+      requirementId: "req_1",
+      prdId: "prd_1",
+      workItemId: "wi_1",
+      runner: "simulated",
+      status: "succeeded",
+      currentStep: "confirming",
+      timeline: completeTimeline(createTimeline()),
+      events: [],
+      result: {
+        summary: "Gate delivered.",
+        previewUrl: "http://localhost:3000",
+        riskLevel: "low",
+        changedFiles: ["services/api/src/store.ts"],
+        tests: [testRun],
+        reviewerSummary: "Approved.",
+        runner: "simulated"
+      },
+      costEstimateUsd: 0.42,
+      startedAt: now,
+      endedAt: now
+    }
+  ];
+  snapshot.testCases = [
+    {
+      id: "tc_1",
+      requirementId: "req_1",
+      prdId: "prd_1",
+      workItemId: "wi_1",
+      title: "Acceptance gate TestCase",
+      kind: "acceptance",
+      status: "passed",
+      priority: "high",
+      steps: ["Run unit tests"],
+      expectedResult: "Gate passes.",
+      linkedAcceptanceCriteria: ["Criterion A", "Criterion B"],
+      lastRunId: "run_1",
+      lastTestRunId: "test_1",
+      flaky: false,
+      createdAt: now,
+      updatedAt: now
+    }
+  ];
+  snapshot.testRuns = [testRun];
+  snapshot.pullRequests = [
+    {
+      id: "pr_1",
+      provider: "local",
+      status: "ready_for_review",
+      title: "Acceptance gate PR",
+      requirementId: "req_1",
+      prdId: "prd_1",
+      workItemId: "wi_1",
+      runId: "run_1",
+      branchName: "patchpilot/wi_1",
+      baseBranch: "main",
+      url: "local://pull-requests/run_1",
+      bodyMarkdown: "## 测试结果\npassed",
+      reviewerSummary: "Approved.",
+      testSummary: "passed",
+      createdAt: now,
+      updatedAt: now
+    }
+  ];
+  snapshot.reviewRecords = [
+    {
+      id: "review_1",
+      status: "approved",
+      requirementId: "req_1",
+      prdId: "prd_1",
+      workItemId: "wi_1",
+      runId: "run_1",
+      linkedPullRequestId: "pr_1",
+      reviewerAgentId: "agent_reviewer",
+      summary: "Reviewer approved.",
+      testSummary: "passed",
+      riskLevel: "low",
+      findings: [],
+      createdAt: now,
+      updatedAt: now
+    }
+  ];
+  snapshot.auditEvents = [audit];
+  return snapshot;
+}
 
 function auditEvent(input: Partial<AuditEvent> = {}): AuditEvent {
   return {
