@@ -11,6 +11,7 @@ import { redactJsonValue, secretRedactionPolicyVersion } from "@patchpilot/secur
 
 export const auditExportFormatVersion = "patchpilot.audit.prd.v1";
 export const auditRetentionPolicyVersion = "td-308-retention-v1";
+export const auditExportAuthEnforcement = "td_222_rbac_enforced";
 
 export interface BuildPrdAuditExportPackageInput {
   snapshot: PatchPilotSnapshot;
@@ -30,7 +31,7 @@ export interface AuditExportPackage {
       actorType: string;
       actorId: string;
       adminIntent: true;
-      authEnforcement: "pending_td_222_rbac";
+      authEnforcement: typeof auditExportAuthEnforcement;
     };
     scope: {
       type: "prd";
@@ -233,7 +234,7 @@ export function buildPrdAuditExportPackage(input: BuildPrdAuditExportPackageInpu
         actorType: input.actorType,
         actorId: input.actorId,
         adminIntent: true as const,
-        authEnforcement: "pending_td_222_rbac" as const
+        authEnforcement: auditExportAuthEnforcement as typeof auditExportAuthEnforcement
       },
       scope: {
         type: "prd" as const,

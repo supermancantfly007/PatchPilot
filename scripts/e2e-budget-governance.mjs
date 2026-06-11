@@ -8,6 +8,10 @@ const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const dataDir = await mkdtemp(join(tmpdir(), "patchpilot-budget-e2e-"));
 const apiPort = Number(process.env.PATCHPILOT_E2E_BUDGET_PORT || 4200 + (process.pid % 1000));
 const apiBaseUrl = `http://localhost:${apiPort}`;
+const e2eAuthHeaders = {
+  "x-patchpilot-user": "e2e-budget-owner",
+  "x-patchpilot-role": "maintainer"
+};
 
 const api = spawn("pnpm", ["--filter", "@patchpilot/api", "start"], {
   cwd: repoRoot,
@@ -95,6 +99,7 @@ try {
 
 async function requestJson(path, init = {}) {
   const headers = new Headers(init.headers);
+  for (const [key, value] of Object.entries(e2eAuthHeaders)) headers.set(key, value);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const response = await fetch(`${apiBaseUrl}${path}`, { ...init, headers });
   if (!response.ok) {

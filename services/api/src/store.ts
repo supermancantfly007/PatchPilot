@@ -109,6 +109,7 @@ import {
 import { redactJsonValue, redactRecordValues, redactSecrets, type SecretRedactionOptions } from "@patchpilot/security";
 import { getTelemetry, type PatchPilotTelemetry } from "@patchpilot/telemetry";
 import {
+  auditExportAuthEnforcement,
   auditExportFormatVersion,
   auditRetentionPolicyVersion,
   buildPrdAuditExportPackage
@@ -329,6 +330,28 @@ export class PatchPilotStore {
     return structuredClone(this.snapshot.agents);
   }
 
+  async getWorkItem(id: string) {
+    await this.load();
+    return structuredClone(this.findWorkItem(id));
+  }
+
+  async previewWorkItemsForPrd(prdId: string) {
+    await this.load();
+    const prd = this.findPrd(prdId);
+    if (prd.status === "approved") {
+      return structuredClone(this.snapshot.workItems.filter((item) => item.prdId === prdId));
+    }
+    const previewPrd = structuredClone(prd);
+    const workItems = createWorkItems(previewPrd);
+    this.applyConfiguredBudgets(previewPrd, workItems);
+    return structuredClone(workItems);
+  }
+
+  async getApproval(id: string) {
+    await this.load();
+    return structuredClone(this.findApproval(id));
+  }
+
   private redactedSnapshot() {
     return redactJsonValue(structuredClone(this.snapshot));
   }
@@ -368,7 +391,7 @@ export class PatchPilotStore {
         },
         metadataJson: {
           adminIntent: true,
-          authEnforcement: "pending_td_222_rbac",
+          authEnforcement: auditExportAuthEnforcement,
           worm: {
             mode: "metadata_only",
             semantics: "audit hash chain plus export payload checksums"
@@ -537,7 +560,7 @@ export class PatchPilotStore {
     return { requirement, prd, interfaceContracts: this.snapshot.interfaceContracts.filter((item) => item.prdId === prd.id) };
   }
 
-  async approvePrd(prdId: string) {
+  async approvePrd(prdId: string, options: { actor?: string } = {}) {
     await this.load();
     const prd = this.findPrd(prdId);
     if (prd.status === "approved") {
@@ -615,7 +638,7 @@ export class PatchPilotStore {
       ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prdId)
     ];
     this.addAuditEvent({
-      actor: "product_agent",
+      actor: options.actor ?? "product_agent",
       action: "prd.approved",
       targetType: "prd",
       targetId: prd.id,
@@ -635,9 +658,9 @@ export class PatchPilotStore {
     return { prd, workItems, interfaceContracts, testCases: this.snapshot.testCases.filter((testCase) => testCase.prdId === prdId) };
   }
 
-  async startTeam(prdId: string, runnerOverride?: AgentRun["runner"]) {
+  async startTeam(prdId: string, runnerOverride?: AgentRun["runner"], options: { actor?: string } = {}) {
     await this.load();
-    const { prd, interfaceContracts } = await this.approvePrd(prdId);
+    const { prd, interfaceContracts } = await this.approvePrd(prdId, options.actor ? { actor: options.actor } : {});
     const workItems = this.snapshot.workItems.filter((item) => item.prdId === prd.id);
     const runs: AgentRun[] = [];
     const skippedWorkItems: typeof workItems = [];

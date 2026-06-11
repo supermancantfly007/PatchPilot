@@ -25,6 +25,7 @@
     "sandbox:poc": "node scripts/poc-sandbox-runtime.mjs",
     "e2e:cli": "node scripts/e2e-cli.mjs",
     "e2e:approvals": "node scripts/e2e-approvals.mjs",
+    "e2e:rbac-auth": "tsx scripts/e2e-rbac-auth.mjs",
     "e2e:budget": "node scripts/e2e-budget-governance.mjs",
     "e2e:failure-defect": "node scripts/e2e-failure-defect.mjs",
     "e2e:acceptance-gate": "node scripts/e2e-acceptance-gate.mjs",

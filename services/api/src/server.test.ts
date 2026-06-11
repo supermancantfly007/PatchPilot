@@ -25,6 +25,13 @@ import { PatchPilotStore } from "./store";
 process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR = "0";
 delete process.env.PATCHPILOT_RUNNER;
 
+function authHeaders(role: "submitter" | "maintainer" | "reviewer" | "admin", userId = `test-${role}`) {
+  return {
+    "x-patchpilot-user": userId,
+    "x-patchpilot-role": role
+  };
+}
+
 describe("PatchPilot API", () => {
   it("creates a requirement and PRD draft", async () => {
     const app = await buildServer();
@@ -300,10 +307,26 @@ describe("PatchPilot API", () => {
     ];
     const approvals: Array<{ id: string }> = [];
 
+    const anonymousCreate = await app.inject({
+      method: "POST",
+      url: "/api/approvals",
+      payload: {
+        kind: "dangerous_operation",
+        targetType: "policy",
+        targetId: "target_unauthorized",
+        requestedBy: "anonymous",
+        requestedReason: "Unauthorized request",
+        riskLevel: "high",
+        expiresAt: future
+      }
+    });
+    expect(anonymousCreate.statusCode).toBe(401);
+
     for (const kind of kinds) {
       const response = await app.inject({
         method: "POST",
         url: "/api/approvals",
+        headers: authHeaders("maintainer"),
         payload: {
           kind,
           targetType: kind === "secret_grant" ? "secret" : kind === "network_allowlist_change" ? "network" : "policy",
@@ -319,7 +342,7 @@ describe("PatchPilot API", () => {
       expect(response.json()).toMatchObject({
         kind,
         status: "pending",
-        requestedBy: "policy-engine",
+        requestedBy: "test-maintainer",
         requestedReason: `${kind} needs a human decision`
       });
       approvals.push(response.json());
@@ -330,33 +353,51 @@ describe("PatchPilot API", () => {
     expect(approvalToDeny).toBeDefined();
     if (!approvalToApprove || !approvalToDeny) throw new Error("Approval fixtures were not created");
 
+    const anonymousApproval = await app.inject({
+      method: "POST",
+      url: `/api/approvals/${approvalToDeny.id}/approve`,
+      payload: { decidedBy: "anonymous", decisionReason: "Trying to approve without auth" }
+    });
+    expect(anonymousApproval.statusCode).toBe(401);
+
+    const submitterApproval = await app.inject({
+      method: "POST",
+      url: `/api/approvals/${approvalToDeny.id}/approve`,
+      headers: authHeaders("submitter"),
+      payload: { decidedBy: "submitter", decisionReason: "Trying to approve without enough role" }
+    });
+    expect(submitterApproval.statusCode).toBe(403);
+
     const approved = await app.inject({
       method: "POST",
       url: `/api/approvals/${approvalToApprove.id}/approve`,
+      headers: authHeaders("maintainer"),
       payload: { decidedBy: "maintainer", decisionReason: "Budget increase is acceptable for this PRD" }
     });
     expect(approved.statusCode).toBe(200);
     expect(approved.json()).toMatchObject({
       status: "approved",
-      approvedBy: "maintainer",
+      approvedBy: "test-maintainer",
       decisionReason: "Budget increase is acceptable for this PRD"
     });
 
     const denied = await app.inject({
       method: "POST",
       url: `/api/approvals/${approvalToDeny.id}/deny`,
+      headers: authHeaders("admin", "security-admin"),
       payload: { decidedBy: "security-reviewer", decisionReason: "Operation is too risky for the current sandbox" }
     });
     expect(denied.statusCode).toBe(200);
     expect(denied.json()).toMatchObject({
       status: "denied",
-      deniedBy: "security-reviewer",
+      deniedBy: "security-admin",
       decisionReason: "Operation is too risky for the current sandbox"
     });
 
     const expired = await app.inject({
       method: "POST",
       url: "/api/approvals",
+      headers: authHeaders("maintainer"),
       payload: {
         kind: "network_allowlist_change",
         targetType: "network",
@@ -376,6 +417,7 @@ describe("PatchPilot API", () => {
     const approveExpired = await app.inject({
       method: "POST",
       url: `/api/approvals/${expired.json().id}/approve`,
+      headers: authHeaders("admin"),
       payload: { decidedBy: "maintainer", decisionReason: "Too late" }
     });
     expect(approveExpired.statusCode).toBe(409);
@@ -392,6 +434,84 @@ describe("PatchPilot API", () => {
     );
 
     await app.close();
+  });
+
+  it("protects secret-sensitive and production-data work item starts", async () => {
+    const store = new PatchPilotStore();
+    const app = await buildServer({ store });
+
+    try {
+      const secretWorkItem = await createApprovedWorkItem(app, "验证 secret capability start 需要 reviewer 权限");
+      await setWorkItemCapabilities(store, secretWorkItem.id, ["secret:github-ci-token"]);
+
+      const anonymousSecretStart = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${secretWorkItem.id}/start`,
+        payload: { runner: "simulated" }
+      });
+      expect(anonymousSecretStart.statusCode).toBe(401);
+
+      const maintainerSecretStart = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${secretWorkItem.id}/start`,
+        headers: authHeaders("maintainer"),
+        payload: { runner: "simulated" }
+      });
+      expect(maintainerSecretStart.statusCode).toBe(403);
+
+      const reviewerSecretStart = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${secretWorkItem.id}/start`,
+        headers: authHeaders("reviewer"),
+        payload: { runner: "simulated" }
+      });
+      expect(reviewerSecretStart.statusCode).toBe(201);
+      await pollRun(app, reviewerSecretStart.json().id);
+
+      const productionWorkItem = await createApprovedWorkItem(app, "验证 production data capability start 需要 admin 权限");
+      await setWorkItemCapabilities(store, productionWorkItem.id, ["production_data:customer-export"]);
+
+      const reviewerProductionStart = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${productionWorkItem.id}/start`,
+        headers: authHeaders("reviewer"),
+        payload: { runner: "simulated" }
+      });
+      expect(reviewerProductionStart.statusCode).toBe(403);
+
+      const adminProductionStart = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${productionWorkItem.id}/start`,
+        headers: authHeaders("admin"),
+        payload: { runner: "simulated" }
+      });
+      expect(adminProductionStart.statusCode).toBe(201);
+      await pollRun(app, adminProductionStart.json().id);
+
+      const secretTeamPrd = await createApprovedPrd(app, "验证 start-team 也会检查 secret capability");
+      const secretTeamSnapshot = await store.exportJsonSnapshot();
+      const secretTeamWorkItem = secretTeamSnapshot.workItems.find((item) => item.prdId === secretTeamPrd.id);
+      if (!secretTeamWorkItem) throw new Error("Expected start-team capability fixture work item");
+      await setWorkItemCapabilities(store, secretTeamWorkItem.id, ["secret:github-ci-token"]);
+
+      const maintainerSecretTeamStart = await app.inject({
+        method: "POST",
+        url: `/api/prds/${secretTeamPrd.id}/start-team`,
+        headers: authHeaders("maintainer"),
+        payload: { runner: "simulated" }
+      });
+      expect(maintainerSecretTeamStart.statusCode).toBe(403);
+
+      const reviewerSecretTeamStart = await app.inject({
+        method: "POST",
+        url: `/api/prds/${secretTeamPrd.id}/start-team`,
+        headers: authHeaders("reviewer"),
+        payload: { runner: "simulated" }
+      });
+      expect(reviewerSecretTeamStart.statusCode).toBe(201);
+    } finally {
+      await app.close();
+    }
   });
 
   it("routes breaking contract registry diffs through Approval before promotion", async () => {
@@ -434,7 +554,7 @@ describe("PatchPilot API", () => {
         method: "POST",
         url: `/api/requirements/${candidateCreate.json().id}/prd`
       })).json().prd;
-      const approveCandidate = await app.inject({ method: "POST", url: `/api/prds/${candidatePrd.id}/approve` });
+      const approveCandidate = await app.inject({ method: "POST", url: `/api/prds/${candidatePrd.id}/approve`, headers: authHeaders("maintainer") });
       expect(approveCandidate.statusCode).toBe(200);
 
       const pendingHttpContract = approveCandidate
@@ -516,6 +636,7 @@ describe("PatchPilot API", () => {
       const approved = await app.inject({
         method: "POST",
         url: `/api/approvals/${approval.id}/approve`,
+        headers: authHeaders("reviewer", "contract-owner"),
         payload: { decidedBy: "contract-owner", decisionReason: "Migration plan accepted for legacy route removal." }
       });
       expect(approved.statusCode).toBe(200);
@@ -571,7 +692,7 @@ describe("PatchPilot API", () => {
       );
       await store.importJsonSnapshot(downgradedSnapshot);
 
-      const upgraded = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
+      const upgraded = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve`, headers: authHeaders("maintainer") });
       expect(upgraded.statusCode).toBe(200);
       const upgradedContractTestRunIds = upgraded
         .json()
@@ -607,8 +728,8 @@ describe("PatchPilot API", () => {
     const auditEvents = snapshot.json().auditEvents;
     const prdApproved = auditEvents.find((event: { action: string }) => event.action === "prd.approved");
     expect(prdApproved).toMatchObject({
-      actorType: "agent",
-      actorId: "product_agent",
+      actorType: "system",
+      actorId: "test-maintainer",
       targetType: "prd",
       beforeJson: expect.objectContaining({
         prd: expect.objectContaining({ status: "draft" })
@@ -649,10 +770,23 @@ describe("PatchPilot API", () => {
     const completedRun = await pollRun(app, startedRun.id);
     expect(completedRun.status).toBe("succeeded");
 
+    const unauthenticatedExport = await app.inject({
+      method: "GET",
+      url: `/api/prds/${completedRun.prdId}/audit-export`
+    });
+    expect(unauthenticatedExport.statusCode).toBe(401);
+
+    const reviewerExport = await app.inject({
+      method: "GET",
+      url: `/api/prds/${completedRun.prdId}/audit-export`,
+      headers: authHeaders("reviewer", "reviewer_security")
+    });
+    expect(reviewerExport.statusCode).toBe(403);
+
     const exported = await app.inject({
       method: "GET",
       url: `/api/prds/${completedRun.prdId}/audit-export`,
-      headers: { "x-patchpilot-admin-actor": "admin_security" }
+      headers: authHeaders("admin", "admin_security")
     });
     expect(exported.statusCode).toBe(200);
     const auditPackage = exported.json();
@@ -670,7 +804,7 @@ describe("PatchPilot API", () => {
         actorType: "admin",
         actorId: "admin_security",
         adminIntent: true,
-        authEnforcement: "pending_td_222_rbac"
+        authEnforcement: "td_222_rbac_enforced"
       },
       scope: {
         type: "prd",
@@ -862,6 +996,7 @@ describe("PatchPilot API", () => {
       const approved = await app.inject({
         method: "POST",
         url: `/api/approvals/${pausedRun.budgetApprovalId}/approve`,
+        headers: authHeaders("maintainer", "finance-owner"),
         payload: { decidedBy: "finance-owner", decisionReason: "Approve this one-off budget overrun" }
       });
       expect(approved.statusCode).toBe(200);
@@ -1327,7 +1462,8 @@ artifacts:
     const prd = answer.json().prd;
     const approval = await app.inject({
       method: "POST",
-      url: `/api/prds/${prd.id}/approve`
+      url: `/api/prds/${prd.id}/approve`,
+      headers: authHeaders("maintainer")
     });
     const workItem = approval.json().workItems[0];
 
@@ -1366,7 +1502,7 @@ artifacts:
     });
     const prd = answer.json().prd;
 
-    const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
+    const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve`, headers: authHeaders("maintainer") });
     expect(approval.statusCode).toBe(200);
     const workItem = approval.json().workItems[0];
     expect(approval.json().interfaceContracts).toHaveLength(3);
@@ -1654,7 +1790,7 @@ artifacts:
     const requirement = create.json();
     const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
     const prd = prdResponse.json().prd;
-    const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
+    const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve`, headers: authHeaders("maintainer") });
     const workItem = approval.json().workItems[0];
 
     const start = await app.inject({
@@ -1841,7 +1977,7 @@ artifacts:
     const requirement = create.json();
     const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
     const prd = prdResponse.json().prd;
-    const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
+    const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve`, headers: authHeaders("maintainer") });
     const workItem = approval.json().workItems[0];
 
     const start = await app.inject({
@@ -1909,6 +2045,7 @@ artifacts:
       const start = await app.inject({
         method: "POST",
         url: `/api/work-items/${workItem.id}/start`,
+        headers: authHeaders("reviewer"),
         payload: { runner: "codex" }
       });
       expect(start.statusCode).toBe(201);
@@ -1977,6 +2114,7 @@ artifacts:
       const start = await app.inject({
         method: "POST",
         url: `/api/work-items/${workItem.id}/start`,
+        headers: authHeaders("reviewer"),
         payload: { runner: "codex" }
       });
       expect(start.statusCode).toBe(201);
@@ -2112,6 +2250,7 @@ artifacts:
       const start = await app.inject({
         method: "POST",
         url: `/api/work-items/${workItem.id}/start`,
+        headers: authHeaders("reviewer"),
         payload: { runner: "codex" }
       });
       expect(start.statusCode).toBe(201);
@@ -2443,9 +2582,17 @@ artifacts:
     const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
     const prd = prdResponse.json().prd;
 
+    const anonymousStartTeam = await app.inject({
+      method: "POST",
+      url: `/api/prds/${prd.id}/start-team`,
+      payload: { runner: "simulated" }
+    });
+    expect(anonymousStartTeam.statusCode).toBe(401);
+
     const startTeam = await app.inject({
       method: "POST",
       url: `/api/prds/${prd.id}/start-team`,
+      headers: authHeaders("maintainer"),
       payload: { runner: "simulated" }
     });
     expect(startTeam.statusCode).toBe(201);
@@ -2502,6 +2649,10 @@ artifacts:
       .json()
       .auditEvents.filter((event: { prdId?: string }) => event.prdId === prd.id)
       .map((event: { action: string }) => event.action);
+    const prdApprovedAudit = evidence.auditEvents.find(
+      (event: { action: string; prdId?: string }) => event.action === "prd.approved" && event.prdId === prd.id
+    );
+    expect(prdApprovedAudit).toMatchObject({ actor: "test-maintainer" });
     expect(prdWorkspaceRuns).toHaveLength(4);
     expect(prdWorkspaceRuns.every((workspace: { status: string }) => workspace.status === "archived")).toBe(true);
     expect(prdTestCases).toHaveLength(20);
@@ -2619,6 +2770,7 @@ artifacts:
     const restartTeam = await app.inject({
       method: "POST",
       url: `/api/prds/${prd.id}/start-team`,
+      headers: authHeaders("maintainer"),
       payload: { runner: "simulated" }
     });
     expect(restartTeam.statusCode).toBe(201);
@@ -2652,6 +2804,7 @@ artifacts:
     const firstStart = await app.inject({
       method: "POST",
       url: `/api/prds/${prd.id}/start-team`,
+      headers: authHeaders("maintainer"),
       payload: { runner: "simulated" }
     });
     expect(firstStart.statusCode).toBe(201);
@@ -2699,6 +2852,7 @@ artifacts:
     const reworkStart = await app.inject({
       method: "POST",
       url: `/api/prds/${prd.id}/start-team`,
+      headers: authHeaders("maintainer"),
       payload: { runner: "simulated" }
     });
     expect(reworkStart.statusCode).toBe(201);
@@ -2728,7 +2882,7 @@ artifacts:
     const requirement = create.json();
     const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
     const prd = prdResponse.json().prd;
-    const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
+    const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve`, headers: authHeaders("maintainer") });
     const workItem = approval.json().workItems[0];
     const claim = await app.inject({
       method: "POST",
@@ -2745,6 +2899,7 @@ artifacts:
     const teamStart = await app.inject({
       method: "POST",
       url: `/api/prds/${prd.id}/start-team`,
+      headers: authHeaders("maintainer"),
       payload: { runner: "simulated" }
     });
 
@@ -2971,7 +3126,7 @@ async function createApprovedPrd(app: Awaited<ReturnType<typeof buildServer>>, r
   const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
   expect(prdResponse.statusCode).toBe(200);
   const prd = prdResponse.json().prd;
-  const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
+  const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve`, headers: authHeaders("maintainer") });
   expect(approval.statusCode).toBe(200);
   return prd as { id: string };
 }
@@ -3074,7 +3229,7 @@ async function startSimulatedRun(app: Awaited<ReturnType<typeof buildServer>>, r
   expect(prdResponse.statusCode).toBe(200);
   const prd = prdResponse.json().prd as { id: string };
 
-  const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve` });
+  const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve`, headers: authHeaders("maintainer") });
   expect(approval.statusCode).toBe(200);
   const workItem = (approval.json().workItems as Array<{ id: string }>)[0];
   if (!workItem) throw new Error("Expected approved PRD to create at least one work item");

@@ -14,14 +14,20 @@ import type {
   RuntimeConfig,
   WorkItem
 } from "@patchpilot/domain";
-import { apiPath } from "@patchpilot/contracts";
+import { apiPath, authRoleHeader, authUserHeader } from "@patchpilot/contracts";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4000";
+const AUTH_USER = process.env.NEXT_PUBLIC_PATCHPILOT_USER_ID?.trim();
+const AUTH_ROLE = process.env.NEXT_PUBLIC_PATCHPILOT_ROLE?.trim();
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
+  }
+  if (AUTH_USER && AUTH_ROLE) {
+    headers.set(authUserHeader, AUTH_USER);
+    headers.set(authRoleHeader, AUTH_ROLE);
   }
 
   const response = await fetch(`${API_BASE}${path}`, {

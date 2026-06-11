@@ -10,6 +10,10 @@ const { PatchPilotStore } = await import("../services/api/src/store.ts");
 
 const workspace = await mkdtemp(join(tmpdir(), "patchpilot-command-wrapper-e2e-"));
 const markerPath = join(workspace, "bypass-marker.txt");
+const e2eAuthHeaders = {
+  "x-patchpilot-user": "e2e-command-wrapper-maintainer",
+  "x-patchpilot-role": "maintainer"
+};
 let delegatedExecutorCalled = false;
 
 const fakeCodexRunner = {
@@ -90,6 +94,7 @@ async function request(method, url, body) {
   const response = await app.inject({
     method,
     url,
+    headers: e2eAuthHeaders,
     ...(body ? { payload: body } : {})
   });
   if (response.statusCode < 200 || response.statusCode >= 300) {

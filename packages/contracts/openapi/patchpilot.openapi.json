@@ -118,6 +118,12 @@
           "Control Plane"
         ],
         "summary": "GET /api/prds/:id/audit-export",
+        "security": [
+          {
+            "PatchPilotUser": [],
+            "PatchPilotRole": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success",
@@ -125,6 +131,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AuditExportPackage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -298,6 +324,12 @@
           "Control Plane"
         ],
         "summary": "POST /api/prds/:id/approve",
+        "security": [
+          {
+            "PatchPilotUser": [],
+            "PatchPilotRole": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success",
@@ -305,6 +337,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApprovePrdResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -319,6 +371,12 @@
           "Control Plane"
         ],
         "summary": "POST /api/prds/:id/start-team",
+        "security": [
+          {
+            "PatchPilotUser": [],
+            "PatchPilotRole": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -336,6 +394,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StartTeamResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -381,6 +459,12 @@
           "Control Plane"
         ],
         "summary": "POST /api/approvals",
+        "security": [
+          {
+            "PatchPilotUser": [],
+            "PatchPilotRole": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -401,6 +485,26 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -412,6 +516,12 @@
           "Control Plane"
         ],
         "summary": "POST /api/approvals/:id/approve",
+        "security": [
+          {
+            "PatchPilotUser": [],
+            "PatchPilotRole": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -429,6 +539,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApprovalRecord"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -443,6 +573,12 @@
           "Control Plane"
         ],
         "summary": "POST /api/approvals/:id/deny",
+        "security": [
+          {
+            "PatchPilotUser": [],
+            "PatchPilotRole": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -463,6 +599,26 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -474,6 +630,12 @@
           "Work Items"
         ],
         "summary": "POST /api/work-items/:id/start",
+        "security": [
+          {
+            "PatchPilotUser": [],
+            "PatchPilotRole": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -491,6 +653,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AgentRun"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -728,6 +910,20 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "PatchPilotUser": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-patchpilot-user",
+        "description": "PatchPilot authenticated actor id for protected control-plane actions."
+      },
+      "PatchPilotRole": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-patchpilot-role",
+        "description": "PatchPilot actor role. Allowed values: submitter, maintainer, reviewer, admin."
+      }
+    },
     "schemas": {
       "HealthResponse": {
         "type": "object",
@@ -754,6 +950,31 @@
         "properties": {
           "message": {
             "type": "string"
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error",
+          "message"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "requiredHeaders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -886,7 +1107,7 @@
               "authEnforcement": {
                 "type": "string",
                 "enum": [
-                  "pending_td_222_rbac"
+                  "td_222_rbac_enforced"
                 ]
               }
             }

@@ -7,6 +7,10 @@ const expectedRoles = ["backend", "frontend", "test", "ops"];
 const expectedGeneratedContractTests = 16;
 const expectedContractRegistryTests = 3;
 const expectedProviderConsumerContractTests = 13;
+const e2eAuthHeaders = {
+  "x-patchpilot-user": "e2e-maintainer",
+  "x-patchpilot-role": "maintainer"
+};
 
 const requirement = await requestJson("/api/requirements", {
   method: "POST",
@@ -216,6 +220,7 @@ async function runWorkerOnce() {
 
 async function requestJson(path, init = {}) {
   const headers = new Headers(init.headers);
+  for (const [key, value] of Object.entries(e2eAuthHeaders)) headers.set(key, value);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const response = await fetch(`${apiBaseUrl}${path}`, { ...init, headers });
   if (!response.ok) {
