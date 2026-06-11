@@ -28,6 +28,12 @@ import {
   type ContractDiffSummary,
   type ContractRegistryMetadata,
   type EgressPolicyEvidence,
+  type ExternalIssueBlocker,
+  type ExternalIssueLink,
+  type ExternalIssueProvider,
+  type ExternalIssueStatusCategory,
+  type ExternalIssueSyncAction,
+  type ExternalIssueSyncEvidence,
   type FailureType,
   type IntakeArtifactReference,
   type InterfaceContract,
@@ -86,6 +92,15 @@ import {
   asCommandAuditEvidenceList,
   type CommandAuditEvidence
 } from "@patchpilot/command-executor";
+import {
+  createMemoryIssueTrackerAdapters,
+  isPatchPilotTerminalEntity,
+  normalizeExternalIssueStatus,
+  shouldExternalStatusBlockWork,
+  shouldExternalStatusTriggerWork,
+  type ExternalIssueAdapterRegistry,
+  type ExternalIssueTrackerAdapter
+} from "@patchpilot/issue-tracker-adapter";
 import {
   generateCapabilityManifest,
   summarizeCapabilityManifest,
@@ -171,6 +186,29 @@ type AddAuditEventInput = Pick<AuditEvent, "action" | "targetType" | "targetId" 
 type IntakeArtifactReferenceInput = Omit<IntakeArtifactReference, "id" | "createdAt"> &
   Partial<Pick<IntakeArtifactReference, "id" | "createdAt">>;
 
+type ExternalIssueLinkInput = {
+  provider: ExternalIssueProvider;
+  entityType: "work_item" | "defect";
+  entityId: string;
+  externalIssueId?: string;
+  externalKey?: string;
+  externalUrl?: string;
+  statusName?: string;
+  statusCategory?: ExternalIssueStatusCategory;
+  summary?: string;
+};
+
+type ExternalIssueStatusUpdateInput = {
+  provider: ExternalIssueProvider;
+  externalIssueId?: string;
+  externalKey?: string;
+  statusName: string;
+  statusCategory?: ExternalIssueStatusCategory;
+  actor?: string;
+  observedAt?: string;
+  idempotencyKey?: string;
+};
+
 export class PatchPilotStore {
   private snapshot: PatchPilotSnapshot = emptySnapshot();
   private loaded = false;
@@ -178,6 +216,7 @@ export class PatchPilotStore {
   private readonly artifactStore?: ArtifactStore;
   private readonly telemetry: PatchPilotTelemetry;
   private readonly pullRequestAdapter?: PullRequestAdapter;
+  private readonly issueTrackerAdapters: Record<ExternalIssueProvider, ExternalIssueTrackerAdapter>;
   private readonly dataFilePath: string | undefined;
   private readonly repositoryPromise: Promise<PatchPilotRepository> | undefined;
   private mutationQueue: Promise<void> = Promise.resolve();
@@ -190,6 +229,7 @@ export class PatchPilotStore {
       artifactStore?: ArtifactStore;
       telemetry?: PatchPilotTelemetry;
       pullRequestAdapter?: PullRequestAdapter;
+      issueTrackerAdapters?: ExternalIssueAdapterRegistry;
       repository?: PatchPilotRepository | Promise<PatchPilotRepository> | false;
     } = {}
   ) {
@@ -197,6 +237,10 @@ export class PatchPilotStore {
     this.artifactStore = options.artifactStore;
     this.telemetry = options.telemetry ?? getTelemetry({ serviceName: "patchpilot-api" });
     this.pullRequestAdapter = options.pullRequestAdapter;
+    this.issueTrackerAdapters = {
+      ...createMemoryIssueTrackerAdapters(),
+      ...options.issueTrackerAdapters
+    };
     this.dataFilePath =
       options.dataFilePath === false
         ? undefined
@@ -705,6 +749,171 @@ export class PatchPilotStore {
     return { bug, requirement, prd, workItem };
   }
 
+  async registerExternalIssueLink(input: ExternalIssueLinkInput) {
+    return this.withMutation(async () => {
+      await this.load();
+      const now = new Date().toISOString();
+      const entity = input.entityType === "work_item"
+        ? this.findWorkItem(input.entityId)
+        : this.findBug(input.entityId);
+      const normalized = normalizeExternalIssueStatus({
+        provider: input.provider,
+        statusName: input.statusName ?? "Todo",
+        statusCategory: input.statusCategory
+      });
+      const link = this.upsertExternalIssueLink(entity, {
+        provider: input.provider,
+        externalIssueId: input.externalIssueId ?? input.externalKey ?? "",
+        ...(input.externalKey ? { externalKey: input.externalKey } : {}),
+        ...(input.externalUrl ? { externalUrl: input.externalUrl } : {}),
+        statusName: normalized.statusName,
+        statusCategory: normalized.statusCategory,
+        ...(input.summary ? { summary: input.summary } : {})
+      }, now);
+      const beforeJson = {
+        entity: auditExternalIssueEntityState(entity, input.entityType),
+        link: auditExternalIssueLink(link)
+      };
+      const adapterRecord = await this.issueTrackerAdapters[input.provider].upsertIssue({
+        link,
+        entity,
+        entityType: input.entityType,
+        now
+      });
+      link.statusName = adapterRecord.statusName;
+      link.statusCategory = adapterRecord.statusCategory;
+      link.lastSyncedAt = adapterRecord.updatedAt;
+      link.updatedAt = now;
+      const evidence = this.appendExternalIssueEvidence(entity, {
+        link,
+        direction: "patchpilot_to_external",
+        action: "linked",
+        message: `PatchPilot ${input.entityType === "work_item" ? "WorkItem" : "Defect"} linked and mirrored to ${input.provider}.`,
+        observedAt: now,
+        recordedAt: now,
+        patchPilotStatusBefore: entity.status,
+        patchPilotStatusAfter: entity.status
+      });
+      this.addAuditEvent({
+        actor: "issue_tracker_adapter",
+        action: "external_issue.linked",
+        targetType: input.entityType === "work_item" ? "work_item" : "bug",
+        targetId: entity.id,
+        message: `Linked ${input.provider} issue ${link.externalKey || link.externalIssueId} and mirrored PatchPilot state.`,
+        requirementId: this.requirementIdForExternalIssueEntity(entity, input.entityType),
+        prdId: entity.prdId,
+        workItemId: input.entityType === "work_item" ? entity.id : (entity as BugReport).workItemId,
+        beforeJson,
+        afterJson: {
+          entity: auditExternalIssueEntityState(entity, input.entityType),
+          link: auditExternalIssueLink(link),
+          evidence: auditExternalIssueEvidence(evidence),
+          sourceBoundary: "patchpilot_authoritative"
+        },
+        metadataJson: {
+          provider: input.provider,
+          externalIssueId: link.externalIssueId,
+          externalKey: link.externalKey ?? null,
+          direction: "patchpilot_to_external"
+        }
+      });
+      await this.save();
+      return this.externalIssueSyncResponse(input.entityType, link, evidence, entity);
+    });
+  }
+
+  async ingestExternalIssueStatus(input: ExternalIssueStatusUpdateInput) {
+    return this.withMutation(async () => {
+      await this.load();
+      const now = new Date().toISOString();
+      const observedAt = input.observedAt ?? now;
+      const normalized = normalizeExternalIssueStatus({
+        provider: input.provider,
+        statusName: input.statusName,
+        statusCategory: input.statusCategory
+      });
+      const target = this.findExternalIssueTarget(input.provider, input.externalIssueId, input.externalKey);
+      const entity = target.entity;
+      const existingEvidence = input.idempotencyKey
+        ? entity.externalIssueSyncEvidence?.find((item) =>
+            item.direction === "external_to_patchpilot" && item.idempotencyKey === input.idempotencyKey
+          )
+        : undefined;
+      if (existingEvidence) return this.externalIssueSyncResponse(target.entityType, target.link, existingEvidence, entity);
+
+      const beforeJson = {
+        entity: auditExternalIssueEntityState(entity, target.entityType),
+        link: auditExternalIssueLink(target.link)
+      };
+      const beforeStatus = entity.status;
+      target.link.statusName = normalized.statusName;
+      target.link.statusCategory = normalized.statusCategory;
+      target.link.lastSyncedAt = observedAt;
+      target.link.updatedAt = now;
+
+      let action: ExternalIssueSyncAction = "observed";
+      let message = `${input.provider} issue ${target.link.externalKey || target.link.externalIssueId} status observed as ${normalized.statusName}.`;
+      const terminalEntity = isPatchPilotTerminalEntity(entity, target.entityType);
+      if (terminalEntity) {
+        action = "ignored";
+        message = `${message} PatchPilot terminal state remains authoritative.`;
+      } else if (shouldExternalStatusBlockWork(normalized.statusCategory)) {
+        action = "blocked";
+        message = `${message} PatchPilot work is blocked until the external issue is unblocked.`;
+        this.applyExternalIssueBlocker(target, normalized.statusName, observedAt, now);
+      } else if (shouldExternalStatusTriggerWork(normalized.statusCategory)) {
+        const triggered = this.clearExternalIssueBlocker(target, now);
+        action = triggered ? "triggered" : "observed";
+        message = triggered
+          ? `${message} External blocker cleared; PatchPilot work item is ready to run.`
+          : `${message} PatchPilot recorded the trigger without handing over source-of-truth state.`;
+      } else {
+        message = `${message} PatchPilot recorded the external terminal state without completing local work.`;
+      }
+
+      const evidence = this.appendExternalIssueEvidence(entity, {
+        link: target.link,
+        direction: "external_to_patchpilot",
+        action,
+        statusName: normalized.statusName,
+        statusCategory: normalized.statusCategory,
+        message,
+        actor: input.actor,
+        idempotencyKey: input.idempotencyKey,
+        observedAt,
+        recordedAt: now,
+        patchPilotStatusBefore: beforeStatus,
+        patchPilotStatusAfter: entity.status
+      });
+      this.addAuditEvent({
+        actor: input.actor || `${input.provider}_webhook`,
+        action: "external_issue.status_observed",
+        targetType: target.entityType === "work_item" ? "work_item" : "bug",
+        targetId: entity.id,
+        message,
+        requirementId: this.requirementIdForExternalIssueEntity(entity, target.entityType),
+        prdId: entity.prdId,
+        workItemId: target.entityType === "work_item" ? entity.id : (entity as BugReport).workItemId,
+        beforeJson,
+        afterJson: {
+          entity: auditExternalIssueEntityState(entity, target.entityType),
+          link: auditExternalIssueLink(target.link),
+          evidence: auditExternalIssueEvidence(evidence),
+          sourceBoundary: "patchpilot_authoritative"
+        },
+        metadataJson: {
+          provider: input.provider,
+          externalIssueId: target.link.externalIssueId,
+          externalKey: target.link.externalKey ?? null,
+          direction: "external_to_patchpilot",
+          action
+        }
+      });
+      await this.save();
+      return this.externalIssueSyncResponse(target.entityType, target.link, evidence, entity);
+    });
+  }
+
   async claimWorkItem(workItemId: string, agentId: string, options: { leaseDurationMs?: number } = {}) {
     return this.withMutation(async () => {
       await this.load();
@@ -712,6 +921,9 @@ export class PatchPilotStore {
       const agent = this.findAgent(agentId);
       const now = new Date().toISOString();
       const expiredClaim = workItem.status === "claimed" && this.isClaimExpired(workItem, now);
+      if (workItem.status === "blocked" && workItem.externalBlocker) {
+        throw new DomainError("INVALID_STATE", "Work item is blocked by an external issue");
+      }
       if (!["ready", "blocked"].includes(workItem.status) && !expiredClaim) {
         throw new DomainError("INVALID_STATE", "Work item is not available to claim");
       }
@@ -872,6 +1084,9 @@ export class PatchPilotStore {
       );
       if (existingRun && !this.shouldStartReworkRun(workItem, existingRun)) {
         return existingRun;
+      }
+      if (workItem.externalBlocker) {
+        throw new DomainError("INVALID_STATE", "Work item is blocked by an external issue");
       }
       if (!["ready", "claimed"].includes(workItem.status)) {
         throw new DomainError("INVALID_STATE", "Work item is not ready to start");
@@ -1477,6 +1692,12 @@ export class PatchPilotStore {
     return workItem;
   }
 
+  private findBug(id: string) {
+    const bug = this.snapshot.bugs.find((item) => item.id === id);
+    if (!bug) throw new DomainError("NOT_FOUND", `Defect not found: ${id}`);
+    return bug;
+  }
+
   private findAgent(id: string) {
     const agent = this.snapshot.agents.find((item) => item.id === id);
     if (!agent) throw new DomainError("NOT_FOUND", `Agent not found: ${id}`);
@@ -2008,6 +2229,9 @@ export class PatchPilotStore {
       ...item,
       status: normalizeBugStatus(item.status),
       artifactReferences: this.normalizeStoredIntakeArtifactReferences(item.artifactReferences, item.requirementId, item.createdAt || now),
+      externalIssueLinks: item.externalIssueLinks ?? [],
+      externalIssueSyncEvidence: item.externalIssueSyncEvidence ?? [],
+      externalBlocker: item.externalBlocker,
       createdAt: item.createdAt || now,
       updatedAt: item.updatedAt || item.createdAt || now
     }));
@@ -2028,6 +2252,9 @@ export class PatchPilotStore {
       ...item,
       role: item.role || (item.sourceBugId ? "test" : "backend"),
       version: item.version ?? 1,
+      externalIssueLinks: item.externalIssueLinks ?? [],
+      externalIssueSyncEvidence: item.externalIssueSyncEvidence ?? [],
+      externalBlocker: item.externalBlocker,
       createdAt: item.createdAt || now,
       updatedAt: item.updatedAt || now
     }));
@@ -3928,6 +4155,207 @@ export class PatchPilotStore {
     this.ensureTestCasesForWorkItems(this.findPrd(sourceWorkItem.prdId), [fixWorkItem], now);
   }
 
+  private upsertExternalIssueLink(
+    entity: WorkItem | BugReport,
+    input: {
+      provider: ExternalIssueProvider;
+      externalIssueId: string;
+      externalKey?: string;
+      externalUrl?: string;
+      statusName: string;
+      statusCategory: ExternalIssueStatusCategory;
+      summary?: string;
+    },
+    now: string
+  ): ExternalIssueLink {
+    if (!input.externalIssueId && !input.externalKey) {
+      throw new DomainError("INVALID_STATE", "External issue id or key is required");
+    }
+    const links = entity.externalIssueLinks ??= [];
+    const externalIssueId = input.externalIssueId || input.externalKey || "";
+    let link = links.find((candidate) =>
+      externalIssueMatches(candidate, input.provider, externalIssueId, input.externalKey)
+    );
+    if (!link) {
+      link = {
+        id: `ext_${randomUUID()}`,
+        provider: input.provider,
+        externalIssueId,
+        statusName: input.statusName,
+        statusCategory: input.statusCategory,
+        createdAt: now,
+        updatedAt: now
+      };
+      links.unshift(link);
+    }
+    link.externalIssueId = externalIssueId;
+    if (input.externalKey) link.externalKey = input.externalKey;
+    if (input.externalUrl) link.externalUrl = input.externalUrl;
+    if (input.summary) link.summary = input.summary;
+    link.statusName = input.statusName;
+    link.statusCategory = input.statusCategory;
+    link.updatedAt = now;
+    return link;
+  }
+
+  private findExternalIssueTarget(
+    provider: ExternalIssueProvider,
+    externalIssueId: string | undefined,
+    externalKey: string | undefined
+  ): {
+    entityType: "work_item" | "defect";
+    entity: WorkItem | BugReport;
+    link: ExternalIssueLink;
+  } {
+    for (const workItem of this.snapshot.workItems) {
+      const link = (workItem.externalIssueLinks ?? []).find((candidate) =>
+        externalIssueMatches(candidate, provider, externalIssueId, externalKey)
+      );
+      if (link) return { entityType: "work_item", entity: workItem, link };
+    }
+    for (const bug of this.snapshot.bugs) {
+      const link = (bug.externalIssueLinks ?? []).find((candidate) =>
+        externalIssueMatches(candidate, provider, externalIssueId, externalKey)
+      );
+      if (link) return { entityType: "defect", entity: bug, link };
+    }
+    throw new DomainError("NOT_FOUND", `External issue link not found for ${provider}:${externalIssueId || externalKey}`);
+  }
+
+  private appendExternalIssueEvidence(
+    entity: WorkItem | BugReport,
+    input: {
+      link: ExternalIssueLink;
+      direction: ExternalIssueSyncEvidence["direction"];
+      action: ExternalIssueSyncAction;
+      message: string;
+      statusName?: string;
+      statusCategory?: ExternalIssueStatusCategory;
+      actor?: string;
+      idempotencyKey?: string;
+      observedAt: string;
+      recordedAt: string;
+      patchPilotStatusBefore?: ExternalIssueSyncEvidence["patchPilotStatusBefore"];
+      patchPilotStatusAfter?: ExternalIssueSyncEvidence["patchPilotStatusAfter"];
+    }
+  ): ExternalIssueSyncEvidence {
+    const evidence: ExternalIssueSyncEvidence = {
+      id: `sync_${randomUUID()}`,
+      provider: input.link.provider,
+      externalIssueId: input.link.externalIssueId,
+      ...(input.link.externalKey ? { externalKey: input.link.externalKey } : {}),
+      direction: input.direction,
+      action: input.action,
+      statusName: input.statusName ?? input.link.statusName,
+      statusCategory: input.statusCategory ?? input.link.statusCategory,
+      message: input.message,
+      ...(input.actor ? { actor: input.actor } : {}),
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+      observedAt: input.observedAt,
+      recordedAt: input.recordedAt,
+      ...(input.patchPilotStatusBefore ? { patchPilotStatusBefore: input.patchPilotStatusBefore } : {}),
+      ...(input.patchPilotStatusAfter ? { patchPilotStatusAfter: input.patchPilotStatusAfter } : {})
+    };
+    entity.externalIssueSyncEvidence = [evidence, ...(entity.externalIssueSyncEvidence ?? [])].slice(0, 50);
+    return evidence;
+  }
+
+  private applyExternalIssueBlocker(
+    target: { entityType: "work_item" | "defect"; entity: WorkItem | BugReport; link: ExternalIssueLink },
+    statusName: string,
+    observedAt: string,
+    now: string
+  ) {
+    const blocker: ExternalIssueBlocker = {
+      provider: target.link.provider,
+      externalIssueId: target.link.externalIssueId,
+      ...(target.link.externalKey ? { externalKey: target.link.externalKey } : {}),
+      statusName,
+      statusCategory: "blocked",
+      reason: `${target.link.provider} issue ${target.link.externalKey || target.link.externalIssueId} is blocked.`,
+      blockedAt: observedAt
+    };
+    target.entity.externalBlocker = blocker;
+    target.entity.updatedAt = now;
+    if (target.entityType === "work_item") {
+      this.blockWorkItemForExternalIssue(target.entity as WorkItem, blocker, now);
+      return;
+    }
+    const bug = target.entity as BugReport;
+    const workItem = this.snapshot.workItems.find((item) => item.id === bug.workItemId);
+    if (workItem) this.blockWorkItemForExternalIssue(workItem, blocker, now);
+  }
+
+  private clearExternalIssueBlocker(
+    target: { entityType: "work_item" | "defect"; entity: WorkItem | BugReport; link: ExternalIssueLink },
+    now: string
+  ) {
+    if (target.entityType === "work_item") {
+      return this.clearWorkItemExternalBlocker(target.entity as WorkItem, target.link, now);
+    }
+    let triggered = false;
+    if (externalBlockerMatches(target.entity.externalBlocker, target.link)) {
+      target.entity.externalBlocker = undefined;
+      target.entity.updatedAt = now;
+      triggered = true;
+    }
+    const bug = target.entity as BugReport;
+    const workItem = this.snapshot.workItems.find((item) => item.id === bug.workItemId);
+    return (workItem ? this.clearWorkItemExternalBlocker(workItem, target.link, now) : false) || triggered;
+  }
+
+  private blockWorkItemForExternalIssue(workItem: WorkItem, blocker: ExternalIssueBlocker, now: string) {
+    workItem.externalBlocker = blocker;
+    if (workItem.status === "ready" || workItem.status === "claimed" || workItem.status === "proposed") {
+      if (workItem.assignedAgentId) this.releaseAgentAssignment(workItem.assignedAgentId, now);
+      this.clearClaim(workItem);
+      workItem.status = "blocked";
+      workItem.version = (workItem.version ?? 0) + 1;
+    }
+    workItem.updatedAt = now;
+  }
+
+  private clearWorkItemExternalBlocker(workItem: WorkItem, link: ExternalIssueLink, now: string) {
+    if (!externalBlockerMatches(workItem.externalBlocker, link)) return false;
+    workItem.externalBlocker = undefined;
+    if (workItem.status === "blocked") {
+      workItem.status = "ready";
+      this.clearClaim(workItem);
+      workItem.version = (workItem.version ?? 0) + 1;
+    }
+    workItem.updatedAt = now;
+    return true;
+  }
+
+  private requirementIdForExternalIssueEntity(entity: WorkItem | BugReport, entityType: "work_item" | "defect") {
+    return entityType === "work_item"
+      ? this.findPrd((entity as WorkItem).prdId).requirementId
+      : (entity as BugReport).requirementId;
+  }
+
+  private externalIssueSyncResponse(
+    entityType: "work_item" | "defect",
+    link: ExternalIssueLink,
+    evidence: ExternalIssueSyncEvidence,
+    entity: WorkItem | BugReport
+  ) {
+    if (entityType === "work_item") {
+      return {
+        link: structuredClone(link),
+        evidence: structuredClone(evidence),
+        workItem: structuredClone(entity as WorkItem)
+      };
+    }
+    const bug = entity as BugReport;
+    const workItem = this.snapshot.workItems.find((item) => item.id === bug.workItemId);
+    return {
+      link: structuredClone(link),
+      evidence: structuredClone(evidence),
+      bug: structuredClone(bug),
+      ...(workItem ? { workItem: structuredClone(workItem) } : {})
+    };
+  }
+
   private ensureTestCasesForWorkItems(prd: PatchPilotSnapshot["prds"][number], workItems: WorkItem[], now = new Date().toISOString()) {
     const missingWorkItems = workItems.filter(
       (workItem) => !this.snapshot.testCases.some((testCase) => testCase.workItemId === workItem.id)
@@ -3971,6 +4399,83 @@ function auditWorkItemState(workItem: WorkItem): Record<string, AuditJsonValue> 
     reworkCount: workItem.reworkCount ?? null,
     updatedAt: workItem.updatedAt || null
   };
+}
+
+function auditExternalIssueEntityState(
+  entity: WorkItem | BugReport,
+  entityType: "work_item" | "defect"
+): Record<string, AuditJsonValue> {
+  return {
+    id: entity.id,
+    entityType,
+    status: entity.status,
+    externalIssueLinkCount: entity.externalIssueLinks?.length ?? 0,
+    externalSyncEvidenceCount: entity.externalIssueSyncEvidence?.length ?? 0,
+    externalBlocker: entity.externalBlocker
+      ? {
+          provider: entity.externalBlocker.provider,
+          externalIssueId: entity.externalBlocker.externalIssueId,
+          externalKey: entity.externalBlocker.externalKey ?? null,
+          statusName: entity.externalBlocker.statusName,
+          blockedAt: entity.externalBlocker.blockedAt
+        }
+      : null,
+    updatedAt: entity.updatedAt || null
+  };
+}
+
+function auditExternalIssueLink(link: ExternalIssueLink): Record<string, AuditJsonValue> {
+  return {
+    id: link.id,
+    provider: link.provider,
+    externalIssueId: link.externalIssueId,
+    externalKey: link.externalKey ?? null,
+    externalUrl: link.externalUrl ?? null,
+    statusName: link.statusName,
+    statusCategory: link.statusCategory,
+    summary: link.summary ?? null,
+    lastSyncedAt: link.lastSyncedAt ?? null,
+    updatedAt: link.updatedAt
+  };
+}
+
+function auditExternalIssueEvidence(evidence: ExternalIssueSyncEvidence): Record<string, AuditJsonValue> {
+  return {
+    id: evidence.id,
+    provider: evidence.provider,
+    externalIssueId: evidence.externalIssueId,
+    externalKey: evidence.externalKey ?? null,
+    direction: evidence.direction,
+    action: evidence.action,
+    statusName: evidence.statusName,
+    statusCategory: evidence.statusCategory,
+    message: evidence.message,
+    actor: evidence.actor ?? null,
+    idempotencyKey: evidence.idempotencyKey ?? null,
+    observedAt: evidence.observedAt,
+    recordedAt: evidence.recordedAt,
+    patchPilotStatusBefore: evidence.patchPilotStatusBefore ?? null,
+    patchPilotStatusAfter: evidence.patchPilotStatusAfter ?? null
+  };
+}
+
+function externalIssueMatches(
+  link: ExternalIssueLink,
+  provider: ExternalIssueProvider,
+  externalIssueId: string | undefined,
+  externalKey: string | undefined
+) {
+  if (link.provider !== provider) return false;
+  if (externalIssueId && link.externalIssueId === externalIssueId) return true;
+  if (externalKey && link.externalKey === externalKey) return true;
+  return false;
+}
+
+function externalBlockerMatches(blocker: ExternalIssueBlocker | undefined, link: ExternalIssueLink) {
+  if (!blocker) return false;
+  if (blocker.provider !== link.provider) return false;
+  if (blocker.externalIssueId === link.externalIssueId) return true;
+  return Boolean(blocker.externalKey && link.externalKey && blocker.externalKey === link.externalKey);
 }
 
 function auditApprovalState(approval: ApprovalRecord): Record<string, AuditJsonValue> {

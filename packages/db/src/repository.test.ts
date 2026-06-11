@@ -22,6 +22,23 @@ describe("PatchPilot Postgres repository", () => {
     expect(loaded.requirements).toHaveLength(1);
     expect(loaded.prds).toHaveLength(1);
     expect(loaded.workItems).toHaveLength(1);
+    expect(loaded.workItems[0]).toMatchObject({
+      externalIssueLinks: [
+        {
+          provider: "linear",
+          externalIssueId: "LIN-305",
+          externalKey: "LIN-305",
+          statusCategory: "ready"
+        }
+      ],
+      externalIssueSyncEvidence: [
+        {
+          direction: "patchpilot_to_external",
+          action: "mirrored",
+          statusCategory: "ready"
+        }
+      ]
+    });
     expect(loaded.agentRuns.map((run) => run.id).sort()).toEqual(["run_1", "run_2"]);
     expect(loaded.pullRequests.map((pullRequest) => pullRequest.workItemId)).toEqual(["wi_1", "wi_1"]);
     expect(loaded.reviewRecords.map((review) => review.linkedPullRequestId).sort()).toEqual(["pr_1", "pr_2"]);
@@ -77,6 +94,36 @@ function snapshotFixture(): PatchPilotSnapshot {
         acceptanceCriteria: ["State persists in Postgres"],
         testSuggestions: ["Run API tests against PGlite"],
         version: 3,
+        externalIssueLinks: [
+          {
+            id: "ext_wi_1",
+            provider: "linear",
+            externalIssueId: "LIN-305",
+            externalKey: "LIN-305",
+            statusName: "Ready",
+            statusCategory: "ready",
+            createdAt: now,
+            updatedAt: now,
+            lastSyncedAt: now
+          }
+        ],
+        externalIssueSyncEvidence: [
+          {
+            id: "sync_wi_1",
+            provider: "linear",
+            externalIssueId: "LIN-305",
+            externalKey: "LIN-305",
+            direction: "patchpilot_to_external",
+            action: "mirrored",
+            statusName: "Ready",
+            statusCategory: "ready",
+            message: "Mirrored WorkItem to Linear.",
+            observedAt: now,
+            recordedAt: now,
+            patchPilotStatusBefore: "review",
+            patchPilotStatusAfter: "review"
+          }
+        ],
         reworkCount: 1,
         createdAt: now,
         updatedAt: now

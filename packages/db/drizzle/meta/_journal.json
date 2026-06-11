@@ -22,6 +22,13 @@
       "when": 1781111112536,
       "tag": "0002_regular_misty_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1781138728405,
+      "tag": "0003_fantastic_senator_kelly",
+      "breakpoints": true
     }
   ]
 }

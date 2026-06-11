@@ -8,6 +8,8 @@ import {
   clarificationSchema,
   clarificationTurnSchema,
   createApprovalSchema,
+  externalIssueLinkSchema,
+  externalIssueStatusUpdateSchema,
   releaseWorkItemSchema,
   requirementInputSchema,
   startRunSchema
@@ -143,6 +145,17 @@ export async function buildServer(options: { store?: PatchPilotStore; telemetry?
     const input = bugInputSchema.parse(request.body);
     const result = await store.createBug(input);
     return reply.code(201).send(result);
+  });
+
+  app.post(apiRoute("linkExternalIssue"), async (request, reply) => {
+    const input = externalIssueLinkSchema.parse(request.body);
+    const result = await store.registerExternalIssueLink(input);
+    return reply.code(201).send(result);
+  });
+
+  app.post(apiRoute("updateExternalIssueStatus"), async (request) => {
+    const input = externalIssueStatusUpdateSchema.parse(request.body);
+    return store.ingestExternalIssueStatus(input);
   });
 
   app.get(apiRoute("getRun"), async (request) => {

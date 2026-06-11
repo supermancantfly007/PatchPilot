@@ -7,6 +7,8 @@ import type {
   ContractDiffSeverity,
   ContractDiffSummary,
   ContractRegistryMetadata,
+  ExternalIssueProvider,
+  ExternalIssueStatusCategory,
   FailureType,
   InterfaceContract,
   InterfaceContractStatus,
@@ -58,6 +60,15 @@ export const bugStatuses = [
   "closed"
 ] as const;
 export const intakeArtifactKinds = ["file", "screenshot", "recording", "link"] as const;
+export const externalIssueProviders = ["linear", "jira"] as const satisfies readonly ExternalIssueProvider[];
+export const externalIssueStatusCategories = [
+  "todo",
+  "ready",
+  "in_progress",
+  "blocked",
+  "done",
+  "cancelled"
+] as const satisfies readonly ExternalIssueStatusCategory[];
 
 export const intakeArtifactReferenceSchema = z.object({
   id: z.string().trim().min(1).optional(),
@@ -141,6 +152,43 @@ export const startRunSchema = z.object({
 export const releaseWorkItemSchema = z.object({
   claimToken: z.string().trim().min(1).optional()
 }).default({});
+
+export const externalIssueLinkSchema = z.object({
+  provider: z.enum(externalIssueProviders),
+  entityType: z.enum(["work_item", "defect"]),
+  entityId: z.string().trim().min(1),
+  externalIssueId: z.string().trim().min(1).optional(),
+  externalKey: z.string().trim().min(1).optional(),
+  externalUrl: z.string().trim().url().optional(),
+  statusName: z.string().trim().min(1).default("Todo"),
+  statusCategory: z.enum(externalIssueStatusCategories).optional(),
+  summary: z.string().trim().min(1).max(500).optional()
+}).superRefine((input, ctx) => {
+  if (input.externalIssueId || input.externalKey) return;
+  ctx.addIssue({
+    code: "custom",
+    message: "externalIssueId or externalKey is required",
+    path: ["externalIssueId"]
+  });
+});
+
+export const externalIssueStatusUpdateSchema = z.object({
+  provider: z.enum(externalIssueProviders),
+  externalIssueId: z.string().trim().min(1).optional(),
+  externalKey: z.string().trim().min(1).optional(),
+  statusName: z.string().trim().min(1),
+  statusCategory: z.enum(externalIssueStatusCategories).optional(),
+  actor: z.string().trim().min(1).optional(),
+  observedAt: z.string().datetime().optional(),
+  idempotencyKey: z.string().trim().min(1).optional()
+}).superRefine((input, ctx) => {
+  if (input.externalIssueId || input.externalKey) return;
+  ctx.addIssue({
+    code: "custom",
+    message: "externalIssueId or externalKey is required",
+    path: ["externalIssueId"]
+  });
+});
 
 export const createApprovalSchema = z.object({
   kind: z.enum(approvalKinds),
@@ -292,6 +340,18 @@ export const httpApiContract = {
       request: "CreateBugRequest",
       response: "CreateBugResponse"
     },
+    linkExternalIssue: {
+      method: "POST",
+      path: "/api/integrations/issues/link",
+      request: "ExternalIssueLinkRequest",
+      response: "ExternalIssueSyncResponse"
+    },
+    updateExternalIssueStatus: {
+      method: "POST",
+      path: "/api/integrations/issues/status",
+      request: "ExternalIssueStatusUpdateRequest",
+      response: "ExternalIssueSyncResponse"
+    },
     getRun: {
       method: "GET",
       path: "/api/runs/:id",
@@ -378,6 +438,9 @@ export const sharedStateContract = {
     "TestRun",
     "IntakeArtifactReference",
     "ArtifactRecord",
+    "ExternalIssueLink",
+    "ExternalIssueBlocker",
+    "ExternalIssueSyncEvidence",
     "PullRequestRecord",
     "ReviewRecord",
     "ApprovalRecord",
@@ -470,7 +533,15 @@ export function buildOpenApiDocument() {
     const pathItem = (paths[operation.path] ??= {});
     pathItem[method] = {
       operationId,
-      tags: [operation.path.startsWith("/api/bugs") ? "Bugs" : operation.path.startsWith("/api/work-items") ? "Work Items" : "Control Plane"],
+      tags: [
+        operation.path.startsWith("/api/integrations")
+          ? "Integrations"
+          : operation.path.startsWith("/api/bugs")
+            ? "Bugs"
+            : operation.path.startsWith("/api/work-items")
+              ? "Work Items"
+              : "Control Plane"
+      ],
       summary: `${operation.method} ${operation.path}`,
       ...(hasRequestSchema(operation) ? {
         requestBody: {
@@ -1467,6 +1538,7 @@ function hasRequestSchema(operation: (typeof httpApiContract.operations)[ApiOper
 function responseStatusFor(operationId: ApiOperationId) {
   return operationId === "createRequirement" ||
     operationId === "createBug" ||
+    operationId === "linkExternalIssue" ||
     operationId === "createApproval" ||
     operationId === "startTeam" ||
     operationId === "startWorkItem"
@@ -1561,6 +1633,8 @@ const runnerKind = enumSchema(["simulated", "codex"]);
 const agentRole = enumSchema(["product", "frontend", "backend", "test", "ops", "reviewer"]);
 const runStatus = enumSchema(["queued", "running", "needs_approval", "succeeded", "failed", "cancelled"]);
 const workItemStatus = enumSchema(["proposed", "ready", "claimed", "running", "review", "blocked", "done", "cancelled"]);
+const externalIssueProvider = enumSchema(externalIssueProviders);
+const externalIssueStatusCategory = enumSchema(externalIssueStatusCategories);
 const approvalKind = enumSchema(approvalKinds);
 const approvalStatus = enumSchema(["pending", "approved", "denied", "expired"]);
 const approvalTargetType = enumSchema(approvalTargetTypes);
@@ -1784,6 +1858,27 @@ export const openApiSchemas = {
   ReleaseWorkItemRequest: objectSchema({
     claimToken: { type: "string", minLength: 1 }
   }, []),
+  ExternalIssueLinkRequest: objectSchema({
+    provider: externalIssueProvider,
+    entityType: enumSchema(["work_item", "defect"]),
+    entityId: id,
+    externalIssueId: { type: "string", minLength: 1 },
+    externalKey: { type: "string", minLength: 1 },
+    externalUrl: { type: "string", format: "uri" },
+    statusName: { type: "string", minLength: 1 },
+    statusCategory: externalIssueStatusCategory,
+    summary: { type: "string", minLength: 1, maxLength: 500 }
+  }, ["provider", "entityType", "entityId"]),
+  ExternalIssueStatusUpdateRequest: objectSchema({
+    provider: externalIssueProvider,
+    externalIssueId: { type: "string", minLength: 1 },
+    externalKey: { type: "string", minLength: 1 },
+    statusName: { type: "string", minLength: 1 },
+    statusCategory: externalIssueStatusCategory,
+    actor: { type: "string", minLength: 1 },
+    observedAt: isoDate,
+    idempotencyKey: { type: "string", minLength: 1 }
+  }, ["provider", "statusName"]),
   CreateApprovalRequest: objectSchema({
     kind: approvalKind,
     targetType: approvalTargetType,
@@ -2013,6 +2108,9 @@ export const openApiSchemas = {
     heartbeatAt: isoDate,
     version: { type: "integer", minimum: 1 },
     sourceBugId: id,
+    externalIssueLinks: arrayOf(schemaRef("ExternalIssueLink")),
+    externalIssueSyncEvidence: arrayOf(schemaRef("ExternalIssueSyncEvidence")),
+    externalBlocker: schemaRef("ExternalIssueBlocker"),
     reworkCount: { type: "integer", minimum: 0 },
     lastRejectionReason: { type: "string" }
   }, ["id", "prdId", "title", "status", "role", "scope", "nonGoals", "acceptanceCriteria", "testSuggestions"]),
@@ -2331,6 +2429,56 @@ export const openApiSchemas = {
     testRunId: id,
     createdAt: isoDate
   }, ["id", "kind", "storage", "uri", "contentType", "sizeBytes", "checksumSha256", "createdAt"]),
+  ExternalIssueLink: objectSchema({
+    id,
+    provider: externalIssueProvider,
+    externalIssueId: { type: "string" },
+    externalKey: { type: "string" },
+    externalUrl: { type: "string", format: "uri" },
+    statusName: { type: "string" },
+    statusCategory: externalIssueStatusCategory,
+    summary: { type: "string" },
+    createdAt: isoDate,
+    updatedAt: isoDate,
+    lastSyncedAt: isoDate
+  }, ["id", "provider", "externalIssueId", "statusName", "statusCategory", "createdAt", "updatedAt"]),
+  ExternalIssueBlocker: objectSchema({
+    provider: externalIssueProvider,
+    externalIssueId: { type: "string" },
+    externalKey: { type: "string" },
+    statusName: { type: "string" },
+    statusCategory: enumSchema(["blocked"]),
+    reason: { type: "string" },
+    blockedAt: isoDate
+  }, ["provider", "externalIssueId", "statusName", "statusCategory", "reason", "blockedAt"]),
+  ExternalIssueSyncEvidence: objectSchema({
+    id,
+    provider: externalIssueProvider,
+    externalIssueId: { type: "string" },
+    externalKey: { type: "string" },
+    direction: enumSchema(["patchpilot_to_external", "external_to_patchpilot"]),
+    action: enumSchema(["linked", "mirrored", "triggered", "blocked", "observed", "ignored"]),
+    statusName: { type: "string" },
+    statusCategory: externalIssueStatusCategory,
+    message: { type: "string" },
+    actor: { type: "string" },
+    idempotencyKey: { type: "string" },
+    observedAt: isoDate,
+    recordedAt: isoDate,
+    patchPilotStatusBefore: { type: "string" },
+    patchPilotStatusAfter: { type: "string" }
+  }, [
+    "id",
+    "provider",
+    "externalIssueId",
+    "direction",
+    "action",
+    "statusName",
+    "statusCategory",
+    "message",
+    "observedAt",
+    "recordedAt"
+  ]),
   PullRequestRecord: looseObjectSchema({
     id,
     provider: enumSchema(["local", "github"]),
@@ -2433,6 +2581,9 @@ export const openApiSchemas = {
     prdId: id,
     workItemId: id,
     artifactReferences: arrayOf(schemaRef("IntakeArtifactReference")),
+    externalIssueLinks: arrayOf(schemaRef("ExternalIssueLink")),
+    externalIssueSyncEvidence: arrayOf(schemaRef("ExternalIssueSyncEvidence")),
+    externalBlocker: schemaRef("ExternalIssueBlocker"),
     sourceRunId: id,
     sourceTestRunId: id,
     sourceFailureType: failureType,
@@ -2508,6 +2659,12 @@ export const openApiSchemas = {
     prd: schemaRef("Prd"),
     workItem: schemaRef("WorkItem")
   }),
+  ExternalIssueSyncResponse: looseObjectSchema({
+    link: schemaRef("ExternalIssueLink"),
+    evidence: schemaRef("ExternalIssueSyncEvidence"),
+    workItem: schemaRef("WorkItem"),
+    bug: schemaRef("BugReport")
+  }, ["link", "evidence"]),
   PatchPilotSnapshot: objectSchema({
     requirements: arrayOf(schemaRef("Requirement")),
     prds: arrayOf(schemaRef("Prd")),

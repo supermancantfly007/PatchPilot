@@ -883,6 +883,274 @@ describe("PatchPilot API", () => {
     }
   });
 
+  it("links Linear issues and lets external status changes block or trigger WorkItems", async () => {
+    const app = await buildServer({ store: new PatchPilotStore() });
+
+    try {
+      const workItem = await createApprovedWorkItem(app, "同步一个 Linear issue 到 PatchPilot WorkItem");
+      const link = await app.inject({
+        method: "POST",
+        url: "/api/integrations/issues/link",
+        payload: {
+          provider: "linear",
+          entityType: "work_item",
+          entityId: workItem.id,
+          externalIssueId: "LIN-305",
+          externalKey: "LIN-305",
+          externalUrl: "https://linear.app/patchpilot/issue/LIN-305",
+          statusName: "Todo",
+          summary: "TD-305 adapter fixture"
+        }
+      });
+      expect(link.statusCode).toBe(201);
+      expect(link.json()).toMatchObject({
+        link: {
+          provider: "linear",
+          externalIssueId: "LIN-305",
+          externalKey: "LIN-305",
+          statusCategory: "ready"
+        },
+        evidence: {
+          direction: "patchpilot_to_external",
+          action: "linked"
+        },
+        workItem: {
+          id: workItem.id,
+          status: "ready"
+        }
+      });
+
+      const blocked = await app.inject({
+        method: "POST",
+        url: "/api/integrations/issues/status",
+        payload: {
+          provider: "linear",
+          externalIssueId: "LIN-305",
+          statusName: "Blocked",
+          actor: "linear-webhook",
+          idempotencyKey: "linear-event-1"
+        }
+      });
+      expect(blocked.statusCode).toBe(200);
+      expect(blocked.json()).toMatchObject({
+        evidence: {
+          direction: "external_to_patchpilot",
+          action: "blocked",
+          statusCategory: "blocked",
+          patchPilotStatusBefore: "ready",
+          patchPilotStatusAfter: "blocked"
+        },
+        workItem: {
+          id: workItem.id,
+          status: "blocked",
+          externalBlocker: {
+            provider: "linear",
+            externalIssueId: "LIN-305",
+            statusCategory: "blocked"
+          }
+        }
+      });
+
+      const duplicate = await app.inject({
+        method: "POST",
+        url: "/api/integrations/issues/status",
+        payload: {
+          provider: "linear",
+          externalIssueId: "LIN-305",
+          statusName: "Blocked",
+          actor: "linear-webhook",
+          idempotencyKey: "linear-event-1"
+        }
+      });
+      expect(duplicate.statusCode).toBe(200);
+      expect(duplicate.json().evidence.id).toBe(blocked.json().evidence.id);
+
+      const blockedStart = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/start`,
+        payload: { runner: "simulated" }
+      });
+      expect(blockedStart.statusCode).toBe(409);
+
+      const ready = await app.inject({
+        method: "POST",
+        url: "/api/integrations/issues/status",
+        payload: {
+          provider: "linear",
+          externalIssueId: "LIN-305",
+          statusName: "Ready",
+          actor: "linear-webhook",
+          idempotencyKey: "linear-event-2"
+        }
+      });
+      expect(ready.statusCode).toBe(200);
+      expect(ready.json()).toMatchObject({
+        evidence: {
+          action: "triggered",
+          statusCategory: "ready",
+          patchPilotStatusBefore: "blocked",
+          patchPilotStatusAfter: "ready"
+        },
+        workItem: {
+          id: workItem.id,
+          status: "ready"
+        }
+      });
+      expect(ready.json().workItem.externalBlocker).toBeUndefined();
+
+      const start = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/start`,
+        payload: { runner: "simulated" }
+      });
+      expect(start.statusCode).toBe(201);
+      const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      expect(snapshot.json().auditEvents.map((event: { action: string }) => event.action)).toEqual(
+        expect.arrayContaining(["external_issue.linked", "external_issue.status_observed"])
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("syncs Jira Defects while preserving PatchPilot as the terminal-state authority", async () => {
+    const app = await buildServer({ store: new PatchPilotStore() });
+
+    try {
+      const createBug = await app.inject({
+        method: "POST",
+        url: "/api/bugs",
+        payload: {
+          title: "Jira linked regression",
+          description: "External customer issue maps to a PatchPilot Defect.",
+          reproductionSteps: "Open the linked page and submit the form.",
+          expectedBehavior: "The form submits successfully.",
+          actualBehavior: "The form remains stuck.",
+          severity: "high",
+          reporter: "qa"
+        }
+      });
+      expect(createBug.statusCode).toBe(201);
+      const bug = createBug.json().bug;
+      const workItem = createBug.json().workItem;
+
+      const link = await app.inject({
+        method: "POST",
+        url: "/api/integrations/issues/link",
+        payload: {
+          provider: "jira",
+          entityType: "defect",
+          entityId: bug.id,
+          externalIssueId: "10001",
+          externalKey: "PP-305",
+          externalUrl: "https://jira.example.local/browse/PP-305",
+          statusName: "To Do",
+          statusCategory: "todo"
+        }
+      });
+      expect(link.statusCode).toBe(201);
+      expect(link.json()).toMatchObject({
+        bug: {
+          id: bug.id,
+          status: "reported"
+        },
+        link: {
+          provider: "jira",
+          externalIssueId: "10001",
+          statusCategory: "todo"
+        }
+      });
+
+      const blocked = await app.inject({
+        method: "POST",
+        url: "/api/integrations/issues/status",
+        payload: {
+          provider: "jira",
+          externalKey: "PP-305",
+          statusName: "Impediment",
+          actor: "jira-webhook"
+        }
+      });
+      expect(blocked.statusCode).toBe(200);
+      expect(blocked.json()).toMatchObject({
+        evidence: {
+          action: "blocked",
+          statusCategory: "blocked"
+        },
+        bug: {
+          id: bug.id,
+          status: "reported",
+          externalBlocker: {
+            provider: "jira",
+            externalKey: "PP-305"
+          }
+        },
+        workItem: {
+          id: workItem.id,
+          status: "blocked"
+        }
+      });
+
+      const ready = await app.inject({
+        method: "POST",
+        url: "/api/integrations/issues/status",
+        payload: {
+          provider: "jira",
+          externalKey: "PP-305",
+          statusName: "Selected for Development",
+          actor: "jira-webhook"
+        }
+      });
+      expect(ready.statusCode).toBe(200);
+      expect(ready.json()).toMatchObject({
+        evidence: {
+          action: "triggered",
+          statusCategory: "ready",
+          patchPilotStatusBefore: "reported",
+          patchPilotStatusAfter: "reported"
+        },
+        bug: {
+          id: bug.id,
+          status: "reported"
+        },
+        workItem: {
+          id: workItem.id,
+          status: "ready"
+        }
+      });
+
+      const externalDone = await app.inject({
+        method: "POST",
+        url: "/api/integrations/issues/status",
+        payload: {
+          provider: "jira",
+          externalKey: "PP-305",
+          statusName: "Done",
+          actor: "jira-webhook"
+        }
+      });
+      expect(externalDone.statusCode).toBe(200);
+      expect(externalDone.json()).toMatchObject({
+        evidence: {
+          action: "observed",
+          statusCategory: "done",
+          patchPilotStatusBefore: "reported",
+          patchPilotStatusAfter: "reported"
+        },
+        bug: {
+          id: bug.id,
+          status: "reported"
+        },
+        workItem: {
+          id: workItem.id,
+          status: "ready"
+        }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("warns at the budget soft threshold without pausing the run", async () => {
     const restoreBudgetEnv = setBudgetEnv({
       PATCHPILOT_BUDGET_RUN_USD: "0.5",
