@@ -4,6 +4,7 @@ import {
   advanceTimeline,
   completeTimeline,
   createTimeline,
+  createBugFixWorkItem,
   createGrillMeQuestion,
   createPrd,
   createTestCasesForWorkItems,
@@ -15,6 +16,7 @@ import {
   type ArtifactKind,
   type ArtifactRecord,
   type AuditEvent,
+  type BugReport,
   type ClarificationQuestion,
   type IntakeArtifactReference,
   type Prd,
@@ -32,16 +34,22 @@ import type {
   ArchiveWorkItemWorkspaceActivityResult,
   ClaimWorkItemExecutionActivityInput,
   ClaimWorkItemExecutionActivityResult,
+  ClaimDefectReproductionActivityInput,
+  ClaimDefectReproductionActivityResult,
   CompleteWorkItemExecutionActivityInput,
   CompleteWorkItemExecutionActivityResult,
   CreateWorkItemPullRequestActivityInput,
   CreateWorkItemPullRequestActivityResult,
+  DefectReproductionEvidence,
+  DefectReproductionEvidenceChain,
   DraftRequirementPrdActivityInput,
   DraftRequirementPrdActivityResult,
   PlanWorkItemsActivityInput,
   PlanWorkItemsActivityResult,
   PrepareWorkItemWorkspaceActivityInput,
   PrepareWorkItemWorkspaceActivityResult,
+  RecordDefectReproductionActivityInput,
+  RecordDefectReproductionActivityResult,
   RecordApprovalDecisionActivityInput,
   RecordApprovalDecisionActivityResult,
   RecordRequirementClarificationAnswerActivityInput,
@@ -53,6 +61,8 @@ import type {
   RequirementIntakeArtifactReferenceInput,
   ReviewWorkItemExecutionActivityInput,
   ReviewWorkItemExecutionActivityResult,
+  RunDefectDiagnoseActivityInput,
+  RunDefectDiagnoseActivityResult,
   RunWorkItemCodexActivityInput,
   RunWorkItemCodexActivityResult,
   RunWorkItemTestsActivityInput,
@@ -1423,6 +1433,676 @@ export function createWorkItemExecutionActivities(
 
 export type WorkItemExecutionActivities = ReturnType<typeof createWorkItemExecutionActivities>;
 
+export interface DefectReproductionActivityStore {
+  claimDefectReproduction(
+    input: ClaimDefectReproductionActivityInput
+  ): Promise<ClaimDefectReproductionActivityResult>;
+  runDiagnose(input: RunDefectDiagnoseActivityInput): Promise<RunDefectDiagnoseActivityResult>;
+  recordReproduction(
+    input: RecordDefectReproductionActivityInput
+  ): Promise<RecordDefectReproductionActivityResult>;
+}
+
+type DefectReproductionActivityName = "claim" | "runDiagnose" | "recordReproduction";
+
+export class InMemoryDefectReproductionActivityStore implements DefectReproductionActivityStore {
+  readonly claims = new Map<string, ClaimDefectReproductionActivityResult>();
+  readonly diagnoseRuns = new Map<string, RunDefectDiagnoseActivityResult>();
+  readonly recordedReproductions = new Map<string, RecordDefectReproductionActivityResult>();
+  readonly fixWorkItemsByBugId = new Map<string, WorkItem>();
+  readonly regressionTestCasesByBugId = new Map<string, TestCase>();
+  readonly auditEventsByWorkflowId = new Map<string, AuditEvent[]>();
+  private readonly transientFailures = new Map<DefectReproductionActivityName, number>();
+  private readonly attempts = new Map<DefectReproductionActivityName, number>();
+
+  failNext(activityName: DefectReproductionActivityName, times = 1) {
+    this.transientFailures.set(activityName, (this.transientFailures.get(activityName) ?? 0) + Math.max(1, times));
+  }
+
+  getAttemptCount(activityName: DefectReproductionActivityName) {
+    return this.attempts.get(activityName) ?? 0;
+  }
+
+  async claimDefectReproduction(
+    input: ClaimDefectReproductionActivityInput
+  ): Promise<ClaimDefectReproductionActivityResult> {
+    this.beforeActivity("claim");
+    const existing = this.claims.get(input.idempotencyKey);
+    if (existing) return clone(existing);
+
+    if (input.workItem.sourceBugId !== input.bug.id || input.workItem.role !== "test") {
+      throw new Error(`WorkItem ${input.workItem.id} is not a reproduction task for Bug ${input.bug.id}`);
+    }
+    if (!["ready", "claimed"].includes(input.workItem.status)) {
+      throw new Error(`Defect reproduction WorkItem ${input.workItem.id} is not claimable from ${input.workItem.status}`);
+    }
+    if (!["reported", "needs_repro"].includes(input.bug.status)) {
+      throw new Error(`Bug ${input.bug.id} is not awaiting reproduction from status ${input.bug.status}`);
+    }
+
+    const now = new Date().toISOString();
+    const agentId = input.agentId ?? agentIdForRole(input.workItem.role);
+    const claimToken = stableId("claim", `${input.workflowId}:${input.workItem.id}:${input.idempotencyKey}`);
+    const leaseExpiresAt = new Date(Date.parse(now) + (input.leaseDurationMs ?? defaultExecutionLeaseMs)).toISOString();
+    const bug: BugReport = {
+      ...clone(input.bug),
+      status: input.bug.status === "reported" ? "needs_repro" : input.bug.status,
+      updatedAt: now
+    };
+    const workItem: WorkItem = {
+      ...clone(input.workItem),
+      status: "claimed",
+      assignedAgentId: agentId,
+      claimedAt: now,
+      claimToken,
+      leaseExpiresAt,
+      heartbeatAt: now,
+      version: (input.workItem.version ?? 0) + 1,
+      updatedAt: now
+    };
+    const auditEvents = [
+      this.addAuditEvent({
+        workflowId: input.workflowId,
+        actor: agentId,
+        action: "work_item.claimed",
+        targetType: "work_item",
+        targetId: workItem.id,
+        message: `Defect reproduction WorkItem ${workItem.id} was claimed for /diagnose.`,
+        requirementId: bug.requirementId,
+        prdId: bug.prdId,
+        workItemId: workItem.id,
+        beforeJson: {
+          bug: { id: input.bug.id, status: input.bug.status },
+          workItem: { id: input.workItem.id, status: input.workItem.status }
+        },
+        afterJson: {
+          bug: { id: bug.id, status: bug.status },
+          workItem: {
+            id: workItem.id,
+            status: workItem.status,
+            assignedAgentId: workItem.assignedAgentId,
+            leaseExpiresAt: workItem.leaseExpiresAt,
+            version: workItem.version
+          }
+        }
+      })
+    ];
+    const result: ClaimDefectReproductionActivityResult = {
+      bug,
+      workItem,
+      agentId,
+      claimToken,
+      leaseExpiresAt,
+      auditEvents
+    };
+    this.claims.set(input.idempotencyKey, clone(result));
+    return clone(result);
+  }
+
+  async runDiagnose(input: RunDefectDiagnoseActivityInput): Promise<RunDefectDiagnoseActivityResult> {
+    this.beforeActivity("runDiagnose");
+    const existing = this.diagnoseRuns.get(input.idempotencyKey);
+    if (existing) return clone(existing);
+
+    if (input.workItem.claimToken !== input.claimToken) {
+      throw new Error(`Defect reproduction WorkItem ${input.workItem.id} claim token does not match`);
+    }
+
+    const now = new Date().toISOString();
+    const runner = input.runner ?? "codex";
+    const reproduced = input.reproductionExpected ?? true;
+    const runId = stableId("run", `${input.workflowId}:${input.workItem.id}:defect-reproduction`);
+    const workspacePath =
+      runner === "codex"
+        ? `${input.workspaceRoot ?? ".patchpilot/workspaces"}/${runId}`
+        : `simulated://${runId}`;
+    const branch = `patchpilot/diagnose-${slugSegment(input.bug.id)}`;
+    const commit = stableId("head", `${runId}:${input.bug.id}:diagnose:${reproduced}`).replace(/^head_/, "head-");
+    const testCase = normalizeDefectReproductionTestCase(
+      input.reproductionTestCase,
+      input.bug,
+      input.workItem,
+      now
+    );
+    const durationMs = 620;
+    const testRun: TestRun = {
+      id: stableId("test", `${runId}:${testCase.id}:defect-reproduction`),
+      testCaseId: testCase.id,
+      runId,
+      prdId: input.bug.prdId,
+      workItemId: input.workItem.id,
+      status: reproduced ? "failed" : "blocked",
+      command: input.diagnoseCommand ?? `/diagnose ${input.bug.id}`,
+      summary: reproduced
+        ? `Reproduced ${input.bug.title}: ${input.bug.actualBehavior}`
+        : `Could not reproduce ${input.bug.title} from the supplied steps.`,
+      durationMs,
+      startedAt: new Date(Date.parse(now) - durationMs).toISOString(),
+      endedAt: now,
+      commit,
+      branch,
+      workspacePath,
+      runner: runner === "codex" ? "patchpilot-diagnose-runner" : "simulated-diagnose-runner",
+      environmentImage: runner === "codex" ? "local" : "simulated",
+      exitCode: reproduced ? 1 : null,
+      failureSummary: reproduced ? input.bug.actualBehavior : "Reproduction steps did not produce the reported failure.",
+      retryCount: 0,
+      attempt: 1,
+      maxAttempts: 1,
+      flakySignal: false,
+      logArtifactId: stableId("artifact", `${runId}:${testCase.id}:diagnose-log`)
+    };
+    const logArtifact = makeArtifact({
+      id: testRun.logArtifactId ?? stableId("artifact", `${testRun.id}:log`),
+      kind: "log",
+      uri: `file://${workspacePath}/.patchpilot/${testRun.id}.log`,
+      contentType: "text/plain",
+      body: [
+        "Prompt: /diagnose",
+        `Bug: ${input.bug.title}`,
+        `Steps: ${input.bug.reproductionSteps}`,
+        `Expected: ${input.bug.expectedBehavior}`,
+        `Actual: ${input.bug.actualBehavior}`,
+        `Reproduced: ${String(reproduced)}`
+      ].join("\n"),
+      prdId: input.bug.prdId,
+      workItemId: input.workItem.id,
+      runId,
+      testRunId: testRun.id,
+      createdAt: now
+    });
+    const reportArtifact = makeArtifact({
+      id: stableId("artifact", `${runId}:${testCase.id}:diagnose-report`),
+      kind: "test_report",
+      uri: `file://${workspacePath}/.patchpilot/${testRun.id}.json`,
+      contentType: "application/json",
+      body: JSON.stringify({
+        bugId: input.bug.id,
+        reproduced,
+        command: testRun.command,
+        summary: testRun.summary
+      }),
+      prdId: input.bug.prdId,
+      workItemId: input.workItem.id,
+      runId,
+      testRunId: testRun.id,
+      createdAt: now
+    });
+    const traceArtifact = makeArtifact({
+      id: stableId("artifact", `${runId}:diagnose-trace`),
+      kind: "trace",
+      uri: `file://${workspacePath}/.patchpilot/${runId}-diagnose-trace.json`,
+      contentType: "application/json",
+      body: JSON.stringify({
+        workflowId: input.workflowId,
+        bugId: input.bug.id,
+        workItemId: input.workItem.id,
+        prompt: "/diagnose",
+        reproduced
+      }),
+      prdId: input.bug.prdId,
+      workItemId: input.workItem.id,
+      runId,
+      createdAt: now
+    });
+    const artifacts = [logArtifact, reportArtifact, traceArtifact];
+    const artifactIds = artifacts.map((artifact) => artifact.id);
+    const normalizedTestRun: TestRun = {
+      ...testRun,
+      artifactIds
+    };
+    const reproductionTestCase: TestCase = {
+      ...testCase,
+      status: testCaseStatusFromTestRunStatus(normalizedTestRun.status),
+      lastRunId: runId,
+      lastTestRunId: normalizedTestRun.id,
+      flaky: false,
+      updatedAt: now
+    };
+    const agentRun: AgentRun = {
+      id: runId,
+      requirementId: input.bug.requirementId,
+      prdId: input.bug.prdId,
+      workItemId: input.workItem.id,
+      runner,
+      status: "running",
+      currentStep: "testing",
+      timeline: advanceTimeline(createTimeline(), "testing"),
+      events: [
+        makeRunEvent(runId, 0, "requirement.understood", "Bug report and reproduction WorkItem context loaded."),
+        makeRunEvent(runId, 1, "plan.created", "Defect reproduction plan created from the reported steps."),
+        makeRunEvent(runId, 2, "workspace.created", `Workspace prepared at ${workspacePath}.`),
+        makeRunEvent(runId, 3, "codex.started", "/diagnose activity started."),
+        makeRunEvent(
+          runId,
+          4,
+          "codex.output",
+          reproduced ? `Observed reported failure: ${input.bug.actualBehavior}` : "Reported failure was not observed."
+        ),
+        makeRunEvent(runId, 5, "test.started", "Reproduction test activity started."),
+        makeRunEvent(runId, 6, reproduced ? "test.failed" : "agent.progress", normalizedTestRun.summary)
+      ],
+      costEstimateUsd: runner === "codex" ? 0.18 : 0.02,
+      startedAt: new Date(Date.parse(now) - durationMs).toISOString()
+    };
+    const workspaceRun: WorkspaceRun = {
+      id: `ws_${runId}`,
+      runId,
+      requirementId: input.bug.requirementId,
+      prdId: input.bug.prdId,
+      workItemId: input.workItem.id,
+      runner,
+      status: "active",
+      isolation: runner === "codex" ? "git_worktree" : "simulated",
+      path: workspacePath,
+      createdAt: new Date(Date.parse(now) - durationMs).toISOString(),
+      updatedAt: now
+    };
+    const reproductionEvidence: DefectReproductionEvidence = {
+      reproduced,
+      diagnosePrompt: "/diagnose",
+      summary: reproduced
+        ? `The /diagnose run reproduced ${input.bug.title} and captured the pre-fix failure.`
+        : `The /diagnose run could not reproduce ${input.bug.title}; no fix WorkItem should be created automatically.`,
+      ...(reproduced ? { failureObserved: input.bug.actualBehavior } : {}),
+      minimalReproductionSteps: normalizeBugSteps(input.bug.reproductionSteps),
+      hypothesis: reproduced
+        ? `Expected ${input.bug.expectedBehavior}, but observed ${input.bug.actualBehavior}.`
+        : "The supplied steps may be incomplete, environment-specific, or already fixed.",
+      instrumentationNotes: [
+        "Ran the bug report through the /diagnose reproduction path.",
+        `Recorded ${normalizedTestRun.status} TestRun evidence before fix work.`
+      ],
+      regressionTestSuggestions: [
+        `Add a regression check for: ${input.bug.reproductionSteps}`,
+        `Assert expected behavior: ${input.bug.expectedBehavior}`,
+        "Run the same check after the developer fix."
+      ],
+      artifactIds,
+      testRunId: normalizedTestRun.id,
+      workspacePath,
+      branch,
+      commit
+    };
+    const auditEvents = [
+      this.addAuditEvent({
+        workflowId: input.workflowId,
+        actor: input.agentId,
+        action: "work_item.started",
+        targetType: "work_item",
+        targetId: input.workItem.id,
+        message: `Defect reproduction WorkItem ${input.workItem.id} started AgentRun ${agentRun.id}.`,
+        requirementId: agentRun.requirementId,
+        prdId: agentRun.prdId,
+        workItemId: input.workItem.id,
+        runId: agentRun.id,
+        beforeJson: { workItem: { id: input.workItem.id, status: input.workItem.status } },
+        afterJson: {
+          workItem: { id: input.workItem.id, status: "running" },
+          run: { id: agentRun.id, status: agentRun.status, runner: agentRun.runner }
+        }
+      }),
+      this.addAuditEvent({
+        workflowId: input.workflowId,
+        actor: "workspace_manager",
+        action: "workspace_run.created",
+        targetType: "workspace_run",
+        targetId: workspaceRun.id,
+        message: "WorkspaceRun was created for defect reproduction.",
+        requirementId: workspaceRun.requirementId,
+        prdId: workspaceRun.prdId,
+        workItemId: workspaceRun.workItemId,
+        runId: workspaceRun.runId,
+        beforeJson: null,
+        afterJson: {
+          workspaceRun: {
+            id: workspaceRun.id,
+            status: workspaceRun.status,
+            isolation: workspaceRun.isolation,
+            path: workspaceRun.path
+          }
+        }
+      }),
+      this.addAuditEvent({
+        workflowId: input.workflowId,
+        actor: "codex_runner",
+        action: "diagnose.completed",
+        targetType: "agent_run",
+        targetId: agentRun.id,
+        message: "/diagnose completed and returned reproduction evidence.",
+        requirementId: agentRun.requirementId,
+        prdId: agentRun.prdId,
+        workItemId: agentRun.workItemId,
+        runId: agentRun.id,
+        beforeJson: null,
+        afterJson: {
+          diagnose: {
+            prompt: "/diagnose",
+            reproduced,
+            artifactIds
+          }
+        }
+      }),
+      this.addAuditEvent({
+        workflowId: input.workflowId,
+        actor: "test_runner",
+        action: reproduced ? "test_run.failed" : "test_run.blocked",
+        targetType: "test_run",
+        targetId: normalizedTestRun.id,
+        message: "Reproduction TestRun evidence was recorded before fix work.",
+        requirementId: agentRun.requirementId,
+        prdId: agentRun.prdId,
+        workItemId: agentRun.workItemId,
+        runId: agentRun.id,
+        beforeJson: null,
+        afterJson: {
+          testRun: {
+            id: normalizedTestRun.id,
+            status: normalizedTestRun.status,
+            command: normalizedTestRun.command,
+            artifactIds
+          },
+          testCase: {
+            id: reproductionTestCase.id,
+            status: reproductionTestCase.status,
+            lastRunId: reproductionTestCase.lastRunId,
+            lastTestRunId: reproductionTestCase.lastTestRunId
+          }
+        }
+      })
+    ];
+    const result: RunDefectDiagnoseActivityResult = {
+      agentRun,
+      workspaceRun,
+      testRun: normalizedTestRun,
+      reproductionTestCase,
+      reproductionEvidence,
+      artifacts,
+      auditEvents
+    };
+    this.diagnoseRuns.set(input.idempotencyKey, clone(result));
+    return clone(result);
+  }
+
+  async recordReproduction(
+    input: RecordDefectReproductionActivityInput
+  ): Promise<RecordDefectReproductionActivityResult> {
+    this.beforeActivity("recordReproduction");
+    const existing = this.recordedReproductions.get(input.idempotencyKey);
+    if (existing) return clone(existing);
+
+    const now = new Date().toISOString();
+    const status: Extract<BugReport["status"], "reproduced" | "unreproducible"> = input.reproductionEvidence.reproduced
+      ? "reproduced"
+      : "unreproducible";
+    const bug: BugReport = {
+      ...clone(input.bug),
+      status,
+      updatedAt: now
+    };
+    const fixWorkItem = status === "reproduced" ? this.ensureBugFixWorkItem(bug, input.workItem, now) : undefined;
+    const regressionTestCase =
+      status === "reproduced" && fixWorkItem
+        ? this.ensureRegressionTestCase(bug, fixWorkItem, input.reproductionEvidence, now)
+        : undefined;
+    const workspaceRun: WorkspaceRun = {
+      ...clone(input.workspaceRun),
+      status: "archived",
+      archivedAt: now,
+      updatedAt: now
+    };
+    const terminalTestRun: TestRun = {
+      ...clone(input.testRun),
+      artifactIds: input.reproductionEvidence.artifactIds
+    };
+    const artifactIds = input.artifacts.map((artifact) => artifact.id);
+    const result: AgentRunResult = {
+      summary: input.reproductionEvidence.summary,
+      previewUrl: "http://localhost:3000",
+      riskLevel: status === "reproduced" ? "medium" : "low",
+      changedFiles: [],
+      tests: [terminalTestRun],
+      reviewerSummary:
+        status === "reproduced"
+          ? "Reproduction evidence is sufficient to hand off to the developer fix WorkItem."
+          : "No automatic fix WorkItem was created because the defect was not reproduced.",
+      runner: input.agentRun.runner,
+      agentMessages: [
+        status === "reproduced"
+          ? `Bug ${bug.id} reproduced with /diagnose.`
+          : `Bug ${bug.id} was marked unreproducible by /diagnose.`
+      ],
+      reasoningSummaries: [
+        "The workflow requires reproduction evidence before creating the developer fix task."
+      ],
+      testOutputSummary: summarizeTestRuns([terminalTestRun]),
+      workspacePath: input.workspaceRun.path,
+      branchName: input.reproductionEvidence.branch,
+      headCommit: input.reproductionEvidence.commit,
+      artifactIds
+    };
+    const agentRun: AgentRun = {
+      ...clone(input.agentRun),
+      status: "succeeded",
+      currentStep: "confirming",
+      timeline: completeTimeline(input.agentRun.timeline),
+      events: [
+        ...input.agentRun.events,
+        makeRunEvent(
+          input.agentRun.id,
+          input.agentRun.events.length,
+          status === "reproduced" ? "review.completed" : "agent.progress",
+          status === "reproduced"
+            ? "Defect reproduction evidence recorded and fix WorkItem created."
+            : "Defect reproduction evidence recorded as unreproducible."
+        ),
+        makeRunEvent(
+          input.agentRun.id,
+          input.agentRun.events.length + 1,
+          "acceptance.waiting",
+          "Defect reproduction workflow completed."
+        )
+      ],
+      result,
+      costActualUsd: input.agentRun.costEstimateUsd,
+      artifactIds,
+      endedAt: now
+    };
+    const reproductionWorkItem = clearExecutionClaim({
+      ...clone(input.workItem),
+      status: "review",
+      version: (input.workItem.version ?? 0) + 1,
+      updatedAt: now
+    });
+    const bugAudit = this.addAuditEvent({
+      workflowId: input.workflowId,
+      actor: "test_agent",
+      action: status === "reproduced" ? "bug.reproduced" : "bug.unreproducible",
+      targetType: "bug",
+      targetId: bug.id,
+      message:
+        status === "reproduced"
+          ? "The /diagnose workflow reproduced the bug and created a developer fix WorkItem."
+          : "The /diagnose workflow could not reproduce the bug and did not create a developer fix WorkItem.",
+      requirementId: bug.requirementId,
+      prdId: bug.prdId,
+      workItemId: reproductionWorkItem.id,
+      runId: agentRun.id,
+      beforeJson: { bug: { id: input.bug.id, status: input.bug.status } },
+      afterJson: {
+        bug: { id: bug.id, status: bug.status },
+        reproductionEvidence: {
+          reproduced: input.reproductionEvidence.reproduced,
+          testRunId: terminalTestRun.id,
+          artifactIds
+        },
+        fixWorkItem: fixWorkItem ? { id: fixWorkItem.id, status: fixWorkItem.status } : null
+      }
+    });
+    const successAudit = this.addAuditEvent({
+      workflowId: input.workflowId,
+      actor: "workflow",
+      action: "agent_run.succeeded",
+      targetType: "agent_run",
+      targetId: agentRun.id,
+      message: "DefectReproductionWorkflow reached terminal success and recorded its evidence chain.",
+      requirementId: agentRun.requirementId,
+      prdId: agentRun.prdId,
+      workItemId: agentRun.workItemId,
+      runId: agentRun.id,
+      beforeJson: {
+        run: { id: input.agentRun.id, status: input.agentRun.status },
+        bug: { id: input.bug.id, status: input.bug.status }
+      },
+      afterJson: {
+        run: { id: agentRun.id, status: agentRun.status, artifactIds },
+        bug: { id: bug.id, status: bug.status },
+        evidence: {
+          workspaceRunId: workspaceRun.id,
+          testRunId: terminalTestRun.id,
+          fixWorkItemId: fixWorkItem?.id ?? null,
+          artifactIds
+        }
+      }
+    });
+    const auditEvents = this.auditEventsByWorkflowId.get(input.workflowId) ?? [bugAudit, successAudit];
+    const evidenceChain: DefectReproductionEvidenceChain = {
+      workflowId: input.workflowId,
+      bugId: bug.id,
+      reproductionWorkItemId: reproductionWorkItem.id,
+      agentRunId: agentRun.id,
+      workspaceRunId: workspaceRun.id,
+      testRunId: terminalTestRun.id,
+      ...(fixWorkItem ? { fixWorkItemId: fixWorkItem.id } : {}),
+      ...(regressionTestCase ? { regressionTestCaseId: regressionTestCase.id } : {}),
+      artifactIds,
+      auditEventIds: auditEvents.map((event) => event.id),
+      status,
+      completedAt: now
+    };
+    const completed: RecordDefectReproductionActivityResult = {
+      bug,
+      reproductionWorkItem,
+      agentRun,
+      workspaceRun,
+      testRun: terminalTestRun,
+      reproductionTestCase: input.reproductionTestCase,
+      ...(fixWorkItem ? { fixWorkItem } : {}),
+      ...(regressionTestCase ? { regressionTestCase } : {}),
+      reproductionEvidence: input.reproductionEvidence,
+      artifacts: input.artifacts,
+      auditEvents: clone(auditEvents),
+      evidenceChain,
+      completedAt: now
+    };
+    this.recordedReproductions.set(input.idempotencyKey, clone(completed));
+    return clone(completed);
+  }
+
+  private ensureBugFixWorkItem(bug: BugReport, sourceWorkItem: WorkItem, now: string): WorkItem {
+    const existing = this.fixWorkItemsByBugId.get(bug.id);
+    if (existing) return clone(existing);
+
+    const fixWorkItem = createBugFixWorkItem({
+      bugId: bug.id,
+      requirementId: bug.requirementId,
+      prdId: sourceWorkItem.prdId,
+      title: bug.title,
+      now
+    });
+    this.fixWorkItemsByBugId.set(bug.id, clone(fixWorkItem));
+    return clone(fixWorkItem);
+  }
+
+  private ensureRegressionTestCase(
+    bug: BugReport,
+    fixWorkItem: WorkItem,
+    reproductionEvidence: DefectReproductionEvidence,
+    now: string
+  ): TestCase {
+    const existing = this.regressionTestCasesByBugId.get(bug.id);
+    if (existing) return clone(existing);
+
+    const regressionTestCase: TestCase = {
+      id: stableId("tc", `${bug.id}:${fixWorkItem.id}:regression`),
+      requirementId: bug.requirementId,
+      prdId: bug.prdId,
+      workItemId: fixWorkItem.id,
+      sourceBugId: bug.id,
+      title: `回归用例：${bug.title}`,
+      kind: "regression",
+      status: "ready",
+      priority: priorityForBugSeverity(bug.severity),
+      steps: reproductionEvidence.regressionTestSuggestions,
+      expectedResult: bug.expectedBehavior,
+      linkedAcceptanceCriteria: fixWorkItem.acceptanceCriteria,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.regressionTestCasesByBugId.set(bug.id, clone(regressionTestCase));
+    return clone(regressionTestCase);
+  }
+
+  private beforeActivity(activityName: DefectReproductionActivityName) {
+    this.attempts.set(activityName, (this.attempts.get(activityName) ?? 0) + 1);
+    const remainingFailures = this.transientFailures.get(activityName) ?? 0;
+    if (remainingFailures <= 0) return;
+    this.transientFailures.set(activityName, remainingFailures - 1);
+    throw new Error(`Injected transient ${activityName} activity failure`);
+  }
+
+  private addAuditEvent(input: AuditEventInput): AuditEvent {
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    const chain = this.auditEventsByWorkflowId.get(input.workflowId) ?? [];
+    const previousHash = chain.at(-1)?.hash ?? null;
+    const eventWithoutHash: Omit<AuditEvent, "hash"> = {
+      id: stableId("audit", `${input.workflowId}:${chain.length}:${input.action}:${input.targetId}`),
+      traceId: input.workflowId,
+      actorType: auditActorType(input.actor),
+      actorId: input.actor,
+      actor: input.actor,
+      action: input.action,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      message: input.message,
+      beforeJson: input.beforeJson ?? null,
+      afterJson: input.afterJson ?? null,
+      metadataJson: input.metadataJson ?? {},
+      previousHash,
+      ...(input.requirementId ? { requirementId: input.requirementId } : {}),
+      ...(input.prdId ? { prdId: input.prdId } : {}),
+      ...(input.workItemId ? { workItemId: input.workItemId } : {}),
+      ...(input.runId ? { runId: input.runId } : {}),
+      createdAt
+    };
+    const auditEvent: AuditEvent = {
+      ...eventWithoutHash,
+      hash: stableId("hash", JSON.stringify(eventWithoutHash))
+    };
+    chain.push(auditEvent);
+    this.auditEventsByWorkflowId.set(input.workflowId, chain);
+    return clone(auditEvent);
+  }
+}
+
+export function createDefectReproductionActivities(
+  store: DefectReproductionActivityStore = new InMemoryDefectReproductionActivityStore()
+) {
+  return {
+    claimDefectReproductionActivity(input: ClaimDefectReproductionActivityInput) {
+      return store.claimDefectReproduction(input);
+    },
+    runDefectDiagnoseActivity(input: RunDefectDiagnoseActivityInput) {
+      return store.runDiagnose(input);
+    },
+    recordDefectReproductionActivity(input: RecordDefectReproductionActivityInput) {
+      return store.recordReproduction(input);
+    }
+  };
+}
+
+export type DefectReproductionActivities = ReturnType<typeof createDefectReproductionActivities>;
+
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
@@ -1516,6 +2196,46 @@ function executionTestCases(
   const matching = (testCases ?? []).filter((testCase) => testCase.workItemId === workItem.id);
   if (matching.length > 0) return matching.map(clone);
   return createTestCasesForWorkItems(prd, [workItem], now);
+}
+
+function normalizeDefectReproductionTestCase(
+  testCase: TestCase | undefined,
+  bug: BugReport,
+  workItem: WorkItem,
+  now: string
+): TestCase {
+  if (testCase) return clone(testCase);
+
+  return {
+    id: stableId("tc", `${bug.id}:${workItem.id}:reproduction`),
+    requirementId: bug.requirementId,
+    prdId: bug.prdId,
+    workItemId: workItem.id,
+    sourceBugId: bug.id,
+    title: `复现用例：${bug.title}`,
+    kind: "regression",
+    status: "ready",
+    priority: priorityForBugSeverity(bug.severity),
+    steps: normalizeBugSteps(bug.reproductionSteps),
+    expectedResult: `The reported failure is observed before fix work starts: ${bug.actualBehavior}`,
+    linkedAcceptanceCriteria: workItem.acceptanceCriteria,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function normalizeBugSteps(reproductionSteps: string): string[] {
+  const steps = reproductionSteps
+    .split(/\r?\n|(?:^|\s)\d+[.)]\s+/g)
+    .map((step) => step.trim())
+    .filter(Boolean);
+  return steps.length > 0 ? steps : [reproductionSteps.trim() || "Run the reported reproduction steps."];
+}
+
+function priorityForBugSeverity(severity: BugReport["severity"]): TestCase["priority"] {
+  if (severity === "critical" || severity === "high") return "high";
+  if (severity === "medium") return "medium";
+  return "low";
 }
 
 function makeArtifact(input: {

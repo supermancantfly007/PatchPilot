@@ -57,3 +57,15 @@ export const workItemExecutionActivityOptions = {
   startToCloseTimeout: "30 seconds",
   retry: workItemExecutionActivityRetryPolicy
 } as const;
+
+export const defectReproductionActivityRetryPolicy = {
+  initialInterval: "500 milliseconds",
+  backoffCoefficient: 2,
+  maximumInterval: "10 seconds",
+  maximumAttempts: 5
+} as const;
+
+export const defectReproductionActivityOptions = {
+  startToCloseTimeout: "30 seconds",
+  retry: defectReproductionActivityRetryPolicy
+} as const;

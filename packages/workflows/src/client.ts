@@ -15,6 +15,8 @@ import {
   approveTemporalCanarySignal,
   answerRequirementClarificationSignal,
   confirmRequirementPrdSignal,
+  defectReproductionProgressQuery,
+  defectReproductionWorkflow,
   denyApprovalSignal,
   expireApprovalSignal,
   requirementIntakeProgressQuery,
@@ -31,6 +33,9 @@ import {
   type ApprovalWorkflowInput,
   type ApprovalWorkflowProgress,
   type ApprovalWorkflowResult,
+  type DefectReproductionProgress,
+  type DefectReproductionWorkflowInput,
+  type DefectReproductionWorkflowResult,
   type RequirementClarificationAnswerSignalInput,
   type RequirementIntakeProgress,
   type RequirementIntakeWorkflowInput,
@@ -58,6 +63,7 @@ export type ApprovalWorkflowHandle = WorkflowHandle<typeof approvalWorkflow>;
 export type RequirementIntakeWorkflowHandle = WorkflowHandle<typeof requirementIntakeWorkflow>;
 export type WorkItemPlanningWorkflowHandle = WorkflowHandle<typeof workItemPlanningWorkflow>;
 export type WorkItemExecutionWorkflowHandle = WorkflowHandle<typeof workItemExecutionWorkflow>;
+export type DefectReproductionWorkflowHandle = WorkflowHandle<typeof defectReproductionWorkflow>;
 
 export function readTemporalConfig(env: TemporalEnv = process.env): TemporalConnectionConfig {
   return {
@@ -90,6 +96,10 @@ export function workItemPlanningWorkflowId(idempotencyKey: string): string {
 
 export function workItemExecutionWorkflowId(idempotencyKey: string): string {
   return temporalWorkflowId("patchpilot-work-item-execution", idempotencyKey);
+}
+
+export function defectReproductionWorkflowId(idempotencyKey: string): string {
+  return temporalWorkflowId("patchpilot-defect-reproduction", idempotencyKey);
 }
 
 export function temporalCanaryWorkflowStartOptions(
@@ -151,6 +161,19 @@ export function workItemExecutionWorkflowStartOptions(
   return {
     taskQueue: config.taskQueue,
     workflowId: workItemExecutionWorkflowId(input.idempotencyKey),
+    workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
+    workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
+    args: [input]
+  };
+}
+
+export function defectReproductionWorkflowStartOptions(
+  input: DefectReproductionWorkflowInput,
+  config = readTemporalConfig()
+): WorkflowStartOptions<typeof defectReproductionWorkflow> {
+  return {
+    taskQueue: config.taskQueue,
+    workflowId: defectReproductionWorkflowId(input.idempotencyKey),
     workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
     workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
     args: [input]
@@ -242,6 +265,23 @@ export async function startWorkItemExecutionWorkflow(
   }
 }
 
+export async function startDefectReproductionWorkflow(
+  client: Client,
+  input: DefectReproductionWorkflowInput,
+  config = readTemporalConfig()
+): Promise<DefectReproductionWorkflowHandle> {
+  const startOptions = defectReproductionWorkflowStartOptions(input, config);
+
+  try {
+    return await client.workflow.start(defectReproductionWorkflow, startOptions);
+  } catch (error) {
+    if (error instanceof WorkflowExecutionAlreadyStartedError) {
+      return client.workflow.getHandle(startOptions.workflowId) as DefectReproductionWorkflowHandle;
+    }
+    throw error;
+  }
+}
+
 export function queryTemporalCanaryProgress(handle: TemporalCanaryWorkflowHandle): Promise<TemporalCanaryProgress> {
   return handle.query(temporalCanaryProgressQuery);
 }
@@ -285,6 +325,12 @@ export function queryWorkItemExecutionProgress(
   handle: WorkItemExecutionWorkflowHandle
 ): Promise<WorkItemExecutionProgress> {
   return handle.query(workItemExecutionProgressQuery);
+}
+
+export function queryDefectReproductionProgress(
+  handle: DefectReproductionWorkflowHandle
+): Promise<DefectReproductionProgress> {
+  return handle.query(defectReproductionProgressQuery);
 }
 
 export function signalRequirementClarificationAnswer(
@@ -351,6 +397,15 @@ export async function runWorkItemExecutionWorkflow(
   config = readTemporalConfig()
 ): Promise<WorkItemExecutionWorkflowResult> {
   const handle = await startWorkItemExecutionWorkflow(client, input, config);
+  return handle.result();
+}
+
+export async function runDefectReproductionWorkflow(
+  client: Client,
+  input: DefectReproductionWorkflowInput,
+  config = readTemporalConfig()
+): Promise<DefectReproductionWorkflowResult> {
+  const handle = await startDefectReproductionWorkflow(client, input, config);
   return handle.result();
 }
 

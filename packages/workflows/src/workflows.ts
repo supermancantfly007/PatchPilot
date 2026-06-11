@@ -1,6 +1,7 @@
 import { condition, defineQuery, defineSignal, proxyActivities, setHandler, workflowInfo } from "@temporalio/workflow";
 import type {
   ApprovalActivities,
+  DefectReproductionActivities,
   RequirementIntakeActivities,
   TemporalCanaryActivities,
   WorkItemExecutionActivities,
@@ -12,6 +13,9 @@ import type {
   ApprovalWorkflowInput,
   ApprovalWorkflowProgress,
   ApprovalWorkflowResult,
+  DefectReproductionProgress,
+  DefectReproductionWorkflowInput,
+  DefectReproductionWorkflowResult,
   DraftRequirementPrdActivityResult,
   PlanWorkItemsActivityResult,
   RequirementClarificationAnswerSignalInput,
@@ -33,6 +37,7 @@ import type {
 } from "./types";
 import {
   approvalActivityOptions,
+  defectReproductionActivityOptions,
   requirementIntakeActivityOptions,
   temporalCanaryActivityOptions,
   workItemExecutionActivityOptions,
@@ -54,12 +59,14 @@ export const confirmRequirementPrdSignal = defineSignal<[RequirementPrdConfirmat
 export const requirementIntakeProgressQuery = defineQuery<RequirementIntakeProgress>("requirementIntakeProgress");
 export const workItemPlanningProgressQuery = defineQuery<WorkItemPlanningProgress>("workItemPlanningProgress");
 export const workItemExecutionProgressQuery = defineQuery<WorkItemExecutionProgress>("workItemExecutionProgress");
+export const defectReproductionProgressQuery = defineQuery<DefectReproductionProgress>("defectReproductionProgress");
 
 const activities = proxyActivities<TemporalCanaryActivities>(temporalCanaryActivityOptions);
 const approvalActivities = proxyActivities<ApprovalActivities>(approvalActivityOptions);
 const requirementActivities = proxyActivities<RequirementIntakeActivities>(requirementIntakeActivityOptions);
 const workItemPlanningActivities = proxyActivities<WorkItemPlanningActivities>(workItemPlanningActivityOptions);
 const workItemExecutionActivities = proxyActivities<WorkItemExecutionActivities>(workItemExecutionActivityOptions);
+const defectReproductionActivities = proxyActivities<DefectReproductionActivities>(defectReproductionActivityOptions);
 
 export async function temporalCanaryWorkflow(
   input: TemporalCanaryWorkflowInput
@@ -514,5 +521,120 @@ export async function workItemExecutionWorkflow(
     evidenceChain: completed.evidenceChain,
     auditEventCount,
     completedAt: completed.completedAt
+  };
+}
+
+export async function defectReproductionWorkflow(
+  input: DefectReproductionWorkflowInput
+): Promise<DefectReproductionWorkflowResult> {
+  const workflowId = workflowInfo().workflowId;
+  let status: DefectReproductionProgress["status"] = "claiming";
+  let auditEventCount = 0;
+  let bug: DefectReproductionProgress["bug"] = input.bug;
+  let reproductionWorkItem: DefectReproductionProgress["reproductionWorkItem"] = input.reproductionWorkItem;
+  let agentRun: DefectReproductionProgress["agentRun"];
+  let workspaceRun: DefectReproductionProgress["workspaceRun"];
+  let testRun: DefectReproductionProgress["testRun"];
+  let reproductionEvidence: DefectReproductionProgress["reproductionEvidence"];
+  const defectState: {
+    fixWorkItem?: DefectReproductionProgress["fixWorkItem"];
+    evidenceChain?: DefectReproductionProgress["evidenceChain"];
+  } = {};
+
+  setHandler(defectReproductionProgressQuery, () => ({
+    workflowId,
+    idempotencyKey: input.idempotencyKey,
+    bugId: input.bug.id,
+    reproductionWorkItemId: input.reproductionWorkItem.id,
+    status,
+    auditEventCount,
+    ...(bug ? { bug } : {}),
+    ...(reproductionWorkItem ? { reproductionWorkItem } : {}),
+    ...(agentRun ? { agentRun } : {}),
+    ...(workspaceRun ? { workspaceRun } : {}),
+    ...(testRun ? { testRun } : {}),
+    ...(reproductionEvidence ? { reproductionEvidence } : {}),
+    ...(defectState.fixWorkItem ? { fixWorkItem: defectState.fixWorkItem } : {}),
+    ...(defectState.evidenceChain ? { evidenceChain: defectState.evidenceChain } : {})
+  }));
+
+  const claim = await defectReproductionActivities.claimDefectReproductionActivity({
+    workflowId,
+    idempotencyKey: `${input.idempotencyKey}:claim:${input.bug.id}:${input.reproductionWorkItem.id}`,
+    bug: input.bug,
+    workItem: input.reproductionWorkItem,
+    ...(input.agentId ? { agentId: input.agentId } : {}),
+    ...(input.leaseDurationMs !== undefined ? { leaseDurationMs: input.leaseDurationMs } : {})
+  });
+  bug = claim.bug;
+  reproductionWorkItem = claim.workItem;
+  auditEventCount += claim.auditEvents.length;
+  status = "running_diagnose";
+
+  const diagnosed = await defectReproductionActivities.runDefectDiagnoseActivity({
+    workflowId,
+    idempotencyKey: `${input.idempotencyKey}:diagnose:${input.bug.id}:${input.reproductionWorkItem.id}`,
+    bug: claim.bug,
+    workItem: claim.workItem,
+    agentId: claim.agentId,
+    claimToken: claim.claimToken,
+    ...(input.reproductionTestCase ? { reproductionTestCase: input.reproductionTestCase } : {}),
+    ...(input.runner ? { runner: input.runner } : {}),
+    ...(input.workspaceRoot ? { workspaceRoot: input.workspaceRoot } : {}),
+    ...(input.baseBranch ? { baseBranch: input.baseBranch } : {}),
+    ...(input.baseCommit ? { baseCommit: input.baseCommit } : {}),
+    ...(input.diagnoseCommand ? { diagnoseCommand: input.diagnoseCommand } : {}),
+    ...(input.reproductionExpected !== undefined ? { reproductionExpected: input.reproductionExpected } : {})
+  });
+  agentRun = diagnosed.agentRun;
+  workspaceRun = diagnosed.workspaceRun;
+  testRun = diagnosed.testRun;
+  reproductionEvidence = diagnosed.reproductionEvidence;
+  auditEventCount += diagnosed.auditEvents.length;
+  status = "recording_reproduction";
+
+  const recorded = await defectReproductionActivities.recordDefectReproductionActivity({
+    workflowId,
+    idempotencyKey: `${input.idempotencyKey}:record:${input.bug.id}:${input.reproductionWorkItem.id}`,
+    bug: claim.bug,
+    workItem: claim.workItem,
+    agentRun: diagnosed.agentRun,
+    workspaceRun: diagnosed.workspaceRun,
+    testRun: diagnosed.testRun,
+    reproductionTestCase: diagnosed.reproductionTestCase,
+    reproductionEvidence: diagnosed.reproductionEvidence,
+    artifacts: diagnosed.artifacts
+  });
+  bug = recorded.bug;
+  reproductionWorkItem = recorded.reproductionWorkItem;
+  agentRun = recorded.agentRun;
+  workspaceRun = recorded.workspaceRun;
+  testRun = recorded.testRun;
+  reproductionEvidence = recorded.reproductionEvidence;
+  defectState.fixWorkItem = recorded.fixWorkItem;
+  defectState.evidenceChain = recorded.evidenceChain;
+  auditEventCount = recorded.auditEvents.length;
+  status = "completed";
+
+  return {
+    workflowId,
+    idempotencyKey: input.idempotencyKey,
+    bugId: input.bug.id,
+    reproductionWorkItemId: input.reproductionWorkItem.id,
+    status,
+    bug: recorded.bug,
+    reproductionWorkItem: recorded.reproductionWorkItem,
+    agentRun: recorded.agentRun,
+    workspaceRun: recorded.workspaceRun,
+    testRun: recorded.testRun,
+    reproductionTestCase: recorded.reproductionTestCase,
+    ...(recorded.regressionTestCase ? { regressionTestCase: recorded.regressionTestCase } : {}),
+    ...(recorded.fixWorkItem ? { fixWorkItem: recorded.fixWorkItem } : {}),
+    reproductionEvidence: recorded.reproductionEvidence,
+    artifacts: recorded.artifacts,
+    auditEvents: recorded.auditEvents,
+    evidenceChain: recorded.evidenceChain,
+    auditEventCount,
+    completedAt: recorded.completedAt
   };
 }

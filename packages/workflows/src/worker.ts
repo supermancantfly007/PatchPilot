@@ -2,11 +2,13 @@ import { fileURLToPath } from "node:url";
 import { NativeConnection, Worker, type WorkerOptions } from "@temporalio/worker";
 import {
   createApprovalActivities,
+  createDefectReproductionActivities,
   createRequirementIntakeActivities,
   createTemporalCanaryActivities,
   createWorkItemExecutionActivities,
   createWorkItemPlanningActivities,
   type ApprovalActivityStore,
+  type DefectReproductionActivityStore,
   type RequirementIntakeActivityStore,
   type TemporalCanaryActivityStore,
   type WorkItemExecutionActivityStore,
@@ -31,6 +33,7 @@ export interface CreatePatchPilotTemporalWorkerOptions {
   requirementIntakeActivityStore?: RequirementIntakeActivityStore;
   workItemPlanningActivityStore?: WorkItemPlanningActivityStore;
   workItemExecutionActivityStore?: WorkItemExecutionActivityStore;
+  defectReproductionActivityStore?: DefectReproductionActivityStore;
   workerOptions?: Partial<WorkerOptions>;
 }
 
@@ -58,7 +61,8 @@ export async function createPatchPilotTemporalWorker(
       ...createApprovalActivities(options.approvalActivityStore),
       ...createRequirementIntakeActivities(options.requirementIntakeActivityStore),
       ...createWorkItemPlanningActivities(options.workItemPlanningActivityStore),
-      ...createWorkItemExecutionActivities(options.workItemExecutionActivityStore)
+      ...createWorkItemExecutionActivities(options.workItemExecutionActivityStore),
+      ...createDefectReproductionActivities(options.defectReproductionActivityStore)
     },
     reuseV8Context: config.reuseV8Context ?? true,
     ...options.workerOptions

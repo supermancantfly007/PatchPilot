@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import {
   createPatchPilotTemporalWorker,
   createTemporalClient,
+  InMemoryDefectReproductionActivityStore,
   InMemoryWorkItemExecutionActivityStore,
   queryApprovalProgress,
+  queryDefectReproductionProgress,
   queryWorkItemExecutionProgress,
   queryRequirementIntakeProgress,
   queryTemporalCanaryProgress,
@@ -13,6 +15,7 @@ import {
   signalRequirementPrdConfirmation,
   signalTemporalCanary,
   startApprovalWorkflow,
+  startDefectReproductionWorkflow,
   startWorkItemExecutionWorkflow,
   startRequirementIntakeWorkflow,
   startTemporalCanaryWorkflow,
@@ -25,11 +28,18 @@ const intakeIdempotencyKey = `td-205-${randomUUID()}`;
 const planningIdempotencyKey = `td-206-${randomUUID()}`;
 const executionIdempotencyKey = `td-207-${randomUUID()}`;
 const approvalIdempotencyKey = `td-208-${randomUUID()}`;
+const defectReproductionIdempotencyKey = `td-209-${randomUUID()}`;
 
 const workItemExecutionStore = new InMemoryWorkItemExecutionActivityStore();
 workItemExecutionStore.failNext("runCodex");
+const defectReproductionStore = new InMemoryDefectReproductionActivityStore();
+defectReproductionStore.failNext("runDiagnose");
 
-const worker = await createPatchPilotTemporalWorker({ config, workItemExecutionActivityStore: workItemExecutionStore });
+const worker = await createPatchPilotTemporalWorker({
+  config,
+  workItemExecutionActivityStore: workItemExecutionStore,
+  defectReproductionActivityStore: defectReproductionStore
+});
 const client = await createTemporalClient(config);
 
 await worker.runUntil(async () => {
@@ -387,6 +397,123 @@ await worker.runUntil(async () => {
       2
     )
   );
+
+  const defectBug = {
+    id: `bug_td_209_${randomUUID()}`,
+    title: "保存按钮没有反馈",
+    description: "点击保存后页面没有任何反馈。",
+    reproductionSteps: "打开设置页\n修改标题\n点击保存",
+    expectedBehavior: "展示保存成功提示。",
+    actualBehavior: "页面没有变化。",
+    severity: "high",
+    status: "reported",
+    reporter: "td-209-e2e",
+    requirementId: `req_bug_td_209_${randomUUID()}`,
+    prdId: `prd_bug_td_209_${randomUUID()}`,
+    workItemId: `wi_bug_td_209_${randomUUID()}_bugrepro`,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  const defectReproductionWorkItem = {
+    id: defectBug.workItemId,
+    prdId: defectBug.prdId,
+    title: `复现 bug：${defectBug.title}`,
+    status: "ready",
+    role: "test",
+    sourceBugId: defectBug.id,
+    scope: "测试 agent 根据复现步骤确认问题存在，记录最小复现和回归测试建议，然后交给开发 agent 修复。",
+    nonGoals: ["不自动发布", "不修改无关模块", "不访问生产数据"],
+    acceptanceCriteria: [
+      "复现步骤被记录并给出确认结果",
+      "失败现象、期望行为和实际行为被整理成可执行修复上下文",
+      "生成后续开发修复任务"
+    ],
+    testSuggestions: ["用 bug 复现步骤写回归检查", "记录最小复现路径", "给开发 agent 留下回归测试建议"],
+    version: 1,
+    createdAt: defectBug.createdAt,
+    updatedAt: defectBug.updatedAt
+  };
+  const defectHandle = await startDefectReproductionWorkflow(
+    client,
+    {
+      idempotencyKey: defectReproductionIdempotencyKey,
+      bug: defectBug,
+      reproductionWorkItem: defectReproductionWorkItem,
+      runner: "codex",
+      workspaceRoot: ".patchpilot/temporal-e2e",
+      diagnoseCommand: `/diagnose ${defectBug.id}`,
+      reproductionExpected: true
+    },
+    config
+  );
+  const defectProgress = await waitForDefectReproductionProgress(defectHandle, "completed");
+  assertEqual(defectProgress.status, "completed", "defect reproduction query should reach completed");
+  assertEqual(defectProgress.auditEventCount, 7, "defect reproduction should expose the terminal audit chain count");
+  assertEqual(defectProgress.bug?.status, "reproduced", "defect reproduction should mark the bug reproduced");
+  if (!defectProgress.fixWorkItem) throw new Error("defect reproduction did not expose the developer fix WorkItem");
+
+  const defectResult = await defectHandle.result();
+  assertEqual(defectResult.status, "completed", "defect reproduction workflow should complete");
+  assertEqual(defectResult.bug.status, "reproduced", "defect reproduction result should mark the bug reproduced");
+  assertEqual(defectResult.reproductionEvidence.reproduced, true, "defect reproduction should capture reproduced evidence");
+  assertEqual(defectResult.reproductionEvidence.diagnosePrompt, "/diagnose", "defect reproduction should be /diagnose driven");
+  assertEqual(defectResult.testRun.status, "failed", "pre-fix reproduction TestRun should record the observed failure");
+  assertEqual(defectResult.agentRun.status, "succeeded", "reproduction AgentRun should finish successfully");
+  assertEqual(defectResult.workspaceRun.status, "archived", "reproduction WorkspaceRun should be archived");
+  assertEqual(defectResult.fixWorkItem?.role, "backend", "reproduced bug should create a backend fix WorkItem");
+  assertEqual(defectResult.fixWorkItem?.sourceBugId, defectBug.id, "fix WorkItem should stay linked to the bug");
+  assertEqual(
+    defectResult.evidenceChain.auditEventIds.length,
+    defectResult.auditEvents.length,
+    "defect evidence chain should include every audit event"
+  );
+  assertEqual(
+    defectReproductionStore.getAttemptCount("runDiagnose"),
+    2,
+    "injected diagnose activity failure should be retried by Temporal policy"
+  );
+
+  const defectDescription = await defectHandle.describe();
+  const duplicateDefectHandle = await startDefectReproductionWorkflow(
+    client,
+    {
+      idempotencyKey: defectReproductionIdempotencyKey,
+      bug: defectBug,
+      reproductionWorkItem: defectReproductionWorkItem,
+      runner: "simulated",
+      reproductionExpected: false
+    },
+    config
+  );
+  const duplicateDefectDescription = await duplicateDefectHandle.describe();
+  assertEqual(
+    duplicateDefectDescription.runId,
+    defectDescription.runId,
+    "duplicate defect reproduction idempotency key should not create a second Temporal run"
+  );
+
+  console.log(
+    JSON.stringify(
+      {
+        workflowId: defectHandle.workflowId,
+        runId: defectDescription.runId,
+        duplicateRunId: duplicateDefectDescription.runId,
+        status: defectResult.status,
+        idempotencyKey: defectResult.idempotencyKey,
+        bugId: defectResult.bug.id,
+        bugStatus: defectResult.bug.status,
+        reproductionWorkItemId: defectResult.reproductionWorkItem.id,
+        agentRunId: defectResult.agentRun.id,
+        workspaceRunId: defectResult.workspaceRun.id,
+        testRunId: defectResult.testRun.id,
+        fixWorkItemId: defectResult.fixWorkItem?.id,
+        auditEventCount: defectResult.auditEvents.length,
+        diagnoseActivityAttempts: defectReproductionStore.getAttemptCount("runDiagnose")
+      },
+      null,
+      2
+    )
+  );
 });
 
 function assertEqual(actual, expected, message) {
@@ -467,4 +594,21 @@ async function waitForApprovalProgress(handle, expectedStatus) {
   }
 
   throw lastError ?? new Error(`approval workflow did not reach query status ${expectedStatus}`);
+}
+
+async function waitForDefectReproductionProgress(handle, expectedStatus) {
+  const deadline = Date.now() + 10_000;
+  let lastError;
+
+  while (Date.now() < deadline) {
+    try {
+      const progress = await queryDefectReproductionProgress(handle);
+      if (progress.status === expectedStatus) return progress;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  throw lastError ?? new Error(`defect reproduction workflow did not reach query status ${expectedStatus}`);
 }

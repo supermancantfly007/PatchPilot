@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   approvalWorkflowId,
   approvalWorkflowStartOptions,
+  defectReproductionWorkflowId,
+  defectReproductionWorkflowStartOptions,
   readTemporalConfig,
   requirementIntakeWorkflowId,
   requirementIntakeWorkflowStartOptions,
@@ -185,6 +187,59 @@ describe("Temporal client helpers", () => {
     ).toEqual({
       taskQueue: "patchpilot-test",
       workflowId: workItemExecutionWorkflowId(input.idempotencyKey),
+      workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
+      workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
+      args: [input]
+    });
+  });
+
+  it("derives idempotent start options for defect reproduction workflows", () => {
+    const input = {
+      idempotencyKey: "TD-209 / Defect Reproduction!",
+      bug: {
+        id: "bug_td_209",
+        title: "Save button has no feedback",
+        description: "Clicking save leaves the page unchanged.",
+        reproductionSteps: "Open settings and click save.",
+        expectedBehavior: "A saved toast appears.",
+        actualBehavior: "Nothing changes.",
+        severity: "high" as const,
+        status: "reported" as const,
+        reporter: "human",
+        requirementId: "req_bug_td_209",
+        prdId: "prd_req_bug_td_209",
+        workItemId: "wi_req_bug_td_209_bugrepro",
+        createdAt: "2026-06-10T00:00:00.000Z",
+        updatedAt: "2026-06-10T00:00:00.000Z"
+      },
+      reproductionWorkItem: {
+        id: "wi_req_bug_td_209_bugrepro",
+        prdId: "prd_req_bug_td_209",
+        title: "Reproduce save button bug",
+        status: "ready" as const,
+        role: "test" as const,
+        sourceBugId: "bug_td_209",
+        scope: "Run /diagnose and capture reproduction evidence before fix work.",
+        nonGoals: ["No automatic production release"],
+        acceptanceCriteria: ["Reproduction evidence gates developer fix task creation"],
+        testSuggestions: ["Run /diagnose"],
+        version: 1
+      },
+      runner: "simulated" as const
+    };
+
+    expect(defectReproductionWorkflowId(input.idempotencyKey)).toMatch(
+      /^patchpilot-defect-reproduction-td-209-defect-reproduction-[a-f0-9]{12}$/
+    );
+    expect(
+      defectReproductionWorkflowStartOptions(input, {
+        address: "temporal.test:7233",
+        namespace: "default",
+        taskQueue: "patchpilot-test"
+      })
+    ).toEqual({
+      taskQueue: "patchpilot-test",
+      workflowId: defectReproductionWorkflowId(input.idempotencyKey),
       workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
       workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
       args: [input]

@@ -1,15 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   createApprovalActivities,
+  createDefectReproductionActivities,
   createWorkItemExecutionActivities,
   InMemoryApprovalActivityStore,
+  InMemoryDefectReproductionActivityStore,
   createRequirementIntakeActivities,
   InMemoryRequirementIntakeActivityStore,
   InMemoryTemporalCanaryActivityStore,
   InMemoryWorkItemExecutionActivityStore,
   InMemoryWorkItemPlanningActivityStore
 } from "./activities";
-import { createTimeline, type AgentRun, type Prd, type TestCase, type WorkItem } from "@patchpilot/domain";
+import { createTimeline, type AgentRun, type BugReport, type Prd, type TestCase, type WorkItem } from "@patchpilot/domain";
 
 describe("Temporal canary activities", () => {
   it("deduplicates activity completion by idempotency key", async () => {
@@ -449,6 +451,168 @@ describe("Work item execution activities", () => {
   });
 });
 
+describe("Defect reproduction activities", () => {
+  it("records /diagnose reproduction evidence before creating a developer fix task", async () => {
+    const store = new InMemoryDefectReproductionActivityStore();
+    const activities = createDefectReproductionActivities(store);
+    const bug = defectBug();
+    const workItem = defectReproductionWorkItem(bug);
+    const workflowId = "workflow-td-209";
+
+    const claim = await activities.claimDefectReproductionActivity({
+      workflowId,
+      idempotencyKey: "td-209:claim",
+      bug,
+      workItem,
+      agentId: "agent_test"
+    });
+    const duplicateClaim = await activities.claimDefectReproductionActivity({
+      workflowId,
+      idempotencyKey: "td-209:claim",
+      bug,
+      workItem,
+      agentId: "agent_backend"
+    });
+    expect(duplicateClaim).toEqual(claim);
+    expect(claim.bug.status).toBe("needs_repro");
+    expect(claim.workItem.status).toBe("claimed");
+    expect(claim.workItem.claimToken).toBe(claim.claimToken);
+
+    store.failNext("runDiagnose");
+    await expect(
+      activities.runDefectDiagnoseActivity({
+        workflowId,
+        idempotencyKey: "td-209:diagnose",
+        bug: claim.bug,
+        workItem: claim.workItem,
+        agentId: claim.agentId,
+        claimToken: claim.claimToken,
+        runner: "codex",
+        workspaceRoot: "/tmp/patchpilot-workflows",
+        diagnoseCommand: "/diagnose bug_td_209"
+      })
+    ).rejects.toThrow("Injected transient runDiagnose activity failure");
+
+    const diagnosed = await activities.runDefectDiagnoseActivity({
+      workflowId,
+      idempotencyKey: "td-209:diagnose",
+      bug: claim.bug,
+      workItem: claim.workItem,
+      agentId: claim.agentId,
+      claimToken: claim.claimToken,
+      runner: "codex",
+      workspaceRoot: "/tmp/patchpilot-workflows",
+      diagnoseCommand: "/diagnose bug_td_209"
+    });
+    expect(store.getAttemptCount("runDiagnose")).toBe(2);
+    expect(diagnosed.reproductionEvidence).toMatchObject({
+      reproduced: true,
+      diagnosePrompt: "/diagnose",
+      testRunId: diagnosed.testRun.id
+    });
+    expect(diagnosed.testRun.status).toBe("failed");
+    expect(diagnosed.reproductionTestCase.status).toBe("failed");
+    expect(diagnosed.artifacts.map((artifact) => artifact.kind).sort()).toEqual(["log", "test_report", "trace"]);
+
+    const recorded = await activities.recordDefectReproductionActivity({
+      workflowId,
+      idempotencyKey: "td-209:record",
+      bug: claim.bug,
+      workItem: claim.workItem,
+      agentRun: diagnosed.agentRun,
+      workspaceRun: diagnosed.workspaceRun,
+      testRun: diagnosed.testRun,
+      reproductionTestCase: diagnosed.reproductionTestCase,
+      reproductionEvidence: diagnosed.reproductionEvidence,
+      artifacts: diagnosed.artifacts
+    });
+
+    expect(recorded.bug.status).toBe("reproduced");
+    expect(recorded.reproductionWorkItem.status).toBe("review");
+    expect(recorded.reproductionWorkItem.claimToken).toBeUndefined();
+    expect(recorded.agentRun.status).toBe("succeeded");
+    expect(recorded.workspaceRun.status).toBe("archived");
+    expect(recorded.fixWorkItem).toMatchObject({
+      role: "backend",
+      sourceBugId: bug.id,
+      status: "ready"
+    });
+    expect(recorded.regressionTestCase).toMatchObject({
+      workItemId: recorded.fixWorkItem?.id,
+      sourceBugId: bug.id,
+      status: "ready"
+    });
+    expect(recorded.evidenceChain).toMatchObject({
+      workflowId,
+      bugId: bug.id,
+      reproductionWorkItemId: workItem.id,
+      agentRunId: diagnosed.agentRun.id,
+      workspaceRunId: diagnosed.workspaceRun.id,
+      testRunId: diagnosed.testRun.id,
+      fixWorkItemId: recorded.fixWorkItem?.id,
+      regressionTestCaseId: recorded.regressionTestCase?.id,
+      status: "reproduced"
+    });
+    expect(recorded.evidenceChain.auditEventIds).toEqual(recorded.auditEvents.map((event) => event.id));
+    expect(recorded.auditEvents.map((event) => event.action)).toEqual([
+      "work_item.claimed",
+      "work_item.started",
+      "workspace_run.created",
+      "diagnose.completed",
+      "test_run.failed",
+      "bug.reproduced",
+      "agent_run.succeeded"
+    ]);
+    expect(recorded.auditEvents.every((event, index, events) =>
+      index === 0 ? event.previousHash === null : event.previousHash === events[index - 1]?.hash
+    )).toBe(true);
+  });
+
+  it("does not create a fix task when /diagnose cannot reproduce the defect", async () => {
+    const store = new InMemoryDefectReproductionActivityStore();
+    const activities = createDefectReproductionActivities(store);
+    const bug = defectBug({ id: "bug_td_209_unreproducible", status: "needs_repro" });
+    const workItem = defectReproductionWorkItem(bug);
+    const workflowId = "workflow-td-209-unreproducible";
+
+    const claim = await activities.claimDefectReproductionActivity({
+      workflowId,
+      idempotencyKey: "td-209-unrepro:claim",
+      bug,
+      workItem
+    });
+    const diagnosed = await activities.runDefectDiagnoseActivity({
+      workflowId,
+      idempotencyKey: "td-209-unrepro:diagnose",
+      bug: claim.bug,
+      workItem: claim.workItem,
+      agentId: claim.agentId,
+      claimToken: claim.claimToken,
+      runner: "simulated",
+      reproductionExpected: false
+    });
+    const recorded = await activities.recordDefectReproductionActivity({
+      workflowId,
+      idempotencyKey: "td-209-unrepro:record",
+      bug: claim.bug,
+      workItem: claim.workItem,
+      agentRun: diagnosed.agentRun,
+      workspaceRun: diagnosed.workspaceRun,
+      testRun: diagnosed.testRun,
+      reproductionTestCase: diagnosed.reproductionTestCase,
+      reproductionEvidence: diagnosed.reproductionEvidence,
+      artifacts: diagnosed.artifacts
+    });
+
+    expect(diagnosed.testRun.status).toBe("blocked");
+    expect(recorded.bug.status).toBe("unreproducible");
+    expect(recorded.fixWorkItem).toBeUndefined();
+    expect(recorded.regressionTestCase).toBeUndefined();
+    expect(recorded.evidenceChain.fixWorkItemId).toBeUndefined();
+    expect(recorded.auditEvents.map((event) => event.action)).toContain("bug.unreproducible");
+  });
+});
+
 function approvalPausedRun(): AgentRun {
   return {
     id: "run_td_208",
@@ -522,6 +686,48 @@ function executionTestCase(prd: Prd, workItem: WorkItem): TestCase {
     steps: workItem.testSuggestions,
     expectedResult: "The execution workflow reaches review with a complete evidence chain.",
     linkedAcceptanceCriteria: workItem.acceptanceCriteria,
+    createdAt: "2026-06-10T00:00:00.000Z",
+    updatedAt: "2026-06-10T00:00:00.000Z"
+  };
+}
+
+function defectBug(overrides: Partial<BugReport> = {}): BugReport {
+  return {
+    id: "bug_td_209",
+    title: "保存按钮没有反馈",
+    description: "点击保存后页面没有任何反馈。",
+    reproductionSteps: "打开设置页\n修改标题\n点击保存",
+    expectedBehavior: "展示保存成功提示。",
+    actualBehavior: "页面没有变化。",
+    severity: "high",
+    status: "reported",
+    reporter: "human",
+    requirementId: "req_bug_td_209",
+    prdId: "prd_req_bug_td_209",
+    workItemId: "wi_req_bug_td_209_bugrepro",
+    createdAt: "2026-06-10T00:00:00.000Z",
+    updatedAt: "2026-06-10T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+function defectReproductionWorkItem(bug: BugReport): WorkItem {
+  return {
+    id: bug.workItemId,
+    prdId: bug.prdId,
+    title: `复现 bug：${bug.title}`,
+    status: "ready",
+    role: "test",
+    sourceBugId: bug.id,
+    scope: "测试 agent 根据复现步骤确认问题存在，记录最小复现和回归测试建议，然后交给开发 agent 修复。",
+    nonGoals: ["不自动发布", "不修改无关模块", "不访问生产数据"],
+    acceptanceCriteria: [
+      "复现步骤被记录并给出确认结果",
+      "失败现象、期望行为和实际行为被整理成可执行修复上下文",
+      "生成后续开发修复任务"
+    ],
+    testSuggestions: ["用 bug 复现步骤写回归检查", "记录最小复现路径", "给开发 agent 留下回归测试建议"],
+    version: 1,
     createdAt: "2026-06-10T00:00:00.000Z",
     updatedAt: "2026-06-10T00:00:00.000Z"
   };

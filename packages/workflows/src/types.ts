@@ -8,6 +8,7 @@ import type {
   ApprovalTargetType,
   ArtifactRecord,
   AuditEvent,
+  BugReport,
   ClarificationQuestion,
   InterfaceContract,
   InterfaceContractStatus,
@@ -531,5 +532,163 @@ export interface CompleteWorkItemExecutionActivityResult {
   artifacts: ArtifactRecord[];
   auditEvents: AuditEvent[];
   evidenceChain: WorkItemExecutionEvidenceChain;
+  completedAt: string;
+}
+
+export type DefectReproductionWorkflowStatus =
+  | "claiming"
+  | "running_diagnose"
+  | "recording_reproduction"
+  | "completed";
+
+export interface DefectReproductionWorkflowInput {
+  idempotencyKey: string;
+  bug: BugReport;
+  reproductionWorkItem: WorkItem;
+  reproductionTestCase?: TestCase;
+  agentId?: string;
+  runner?: AgentRunnerKind;
+  workspaceRoot?: string;
+  baseBranch?: string;
+  baseCommit?: string;
+  diagnoseCommand?: string;
+  reproductionExpected?: boolean;
+  leaseDurationMs?: number;
+}
+
+export interface DefectReproductionEvidence {
+  reproduced: boolean;
+  diagnosePrompt: "/diagnose";
+  summary: string;
+  failureObserved?: string;
+  minimalReproductionSteps: string[];
+  hypothesis?: string;
+  instrumentationNotes: string[];
+  regressionTestSuggestions: string[];
+  artifactIds: string[];
+  testRunId?: string;
+  workspacePath: string;
+  branch: string;
+  commit: string;
+}
+
+export interface DefectReproductionEvidenceChain {
+  workflowId: string;
+  bugId: string;
+  reproductionWorkItemId: string;
+  agentRunId: string;
+  workspaceRunId: string;
+  testRunId: string;
+  fixWorkItemId?: string;
+  regressionTestCaseId?: string;
+  artifactIds: string[];
+  auditEventIds: string[];
+  status: Extract<BugReport["status"], "reproduced" | "unreproducible">;
+  completedAt: string;
+}
+
+export interface DefectReproductionProgress {
+  workflowId: string;
+  idempotencyKey: string;
+  bugId: string;
+  reproductionWorkItemId: string;
+  status: DefectReproductionWorkflowStatus;
+  bug?: BugReport;
+  reproductionWorkItem?: WorkItem;
+  agentRun?: AgentRun;
+  workspaceRun?: WorkspaceRun;
+  testRun?: TestRun;
+  reproductionEvidence?: DefectReproductionEvidence;
+  fixWorkItem?: WorkItem;
+  evidenceChain?: DefectReproductionEvidenceChain;
+  auditEventCount: number;
+}
+
+export interface DefectReproductionWorkflowResult extends DefectReproductionProgress {
+  status: "completed";
+  bug: BugReport;
+  reproductionWorkItem: WorkItem;
+  agentRun: AgentRun;
+  workspaceRun: WorkspaceRun;
+  testRun: TestRun;
+  reproductionTestCase: TestCase;
+  regressionTestCase?: TestCase;
+  reproductionEvidence: DefectReproductionEvidence;
+  artifacts: ArtifactRecord[];
+  auditEvents: AuditEvent[];
+  evidenceChain: DefectReproductionEvidenceChain;
+  completedAt: string;
+}
+
+export interface ClaimDefectReproductionActivityInput {
+  workflowId: string;
+  idempotencyKey: string;
+  bug: BugReport;
+  workItem: WorkItem;
+  agentId?: string;
+  leaseDurationMs?: number;
+}
+
+export interface ClaimDefectReproductionActivityResult {
+  bug: BugReport;
+  workItem: WorkItem;
+  agentId: string;
+  claimToken: string;
+  leaseExpiresAt: string;
+  auditEvents: AuditEvent[];
+}
+
+export interface RunDefectDiagnoseActivityInput {
+  workflowId: string;
+  idempotencyKey: string;
+  bug: BugReport;
+  workItem: WorkItem;
+  agentId: string;
+  claimToken: string;
+  reproductionTestCase?: TestCase;
+  runner?: AgentRunnerKind;
+  workspaceRoot?: string;
+  baseBranch?: string;
+  baseCommit?: string;
+  diagnoseCommand?: string;
+  reproductionExpected?: boolean;
+}
+
+export interface RunDefectDiagnoseActivityResult {
+  agentRun: AgentRun;
+  workspaceRun: WorkspaceRun;
+  testRun: TestRun;
+  reproductionTestCase: TestCase;
+  reproductionEvidence: DefectReproductionEvidence;
+  artifacts: ArtifactRecord[];
+  auditEvents: AuditEvent[];
+}
+
+export interface RecordDefectReproductionActivityInput {
+  workflowId: string;
+  idempotencyKey: string;
+  bug: BugReport;
+  workItem: WorkItem;
+  agentRun: AgentRun;
+  workspaceRun: WorkspaceRun;
+  testRun: TestRun;
+  reproductionTestCase: TestCase;
+  reproductionEvidence: DefectReproductionEvidence;
+  artifacts: ArtifactRecord[];
+}
+
+export interface RecordDefectReproductionActivityResult {
+  bug: BugReport;
+  reproductionWorkItem: WorkItem;
+  agentRun: AgentRun;
+  workspaceRun: WorkspaceRun;
+  testRun: TestRun;
+  reproductionTestCase: TestCase;
+  fixWorkItem?: WorkItem;
+  regressionTestCase?: TestCase;
+  reproductionEvidence: DefectReproductionEvidence;
+  artifacts: ArtifactRecord[];
+  auditEvents: AuditEvent[];
+  evidenceChain: DefectReproductionEvidenceChain;
   completedAt: string;
 }
