@@ -8,6 +8,10 @@ const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const dataDir = await mkdtemp(join(tmpdir(), "patchpilot-audit-export-e2e-"));
 const apiPort = Number(process.env.PATCHPILOT_E2E_AUDIT_EXPORT_PORT || 4700 + (process.pid % 1000));
 const apiBaseUrl = `http://localhost:${apiPort}`;
+const e2eAuthHeaders = {
+  "x-patchpilot-user": "admin_e2e",
+  "x-patchpilot-role": "admin"
+};
 
 const rawEmail = "security.auditor@example.com";
 const rawPhone = "+1 415-555-0199";
@@ -57,11 +61,7 @@ try {
     return run.status === "succeeded" ? run : undefined;
   }, 15000);
 
-  const auditPackage = await requestJson(`/api/prds/${prd.id}/audit-export`, {
-    headers: {
-      "x-patchpilot-admin-actor": "admin_e2e"
-    }
-  });
+  const auditPackage = await requestJson(`/api/prds/${prd.id}/audit-export`);
   const packageText = JSON.stringify(auditPackage);
   assert(!packageText.includes(rawEmail), "audit export should redact email PII");
   assert(!packageText.includes(rawPhone), "audit export should redact phone PII");
@@ -107,6 +107,7 @@ try {
 
 async function requestJson(path, init = {}) {
   const headers = new Headers(init.headers);
+  for (const [key, value] of Object.entries(e2eAuthHeaders)) headers.set(key, value);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const response = await fetch(`${apiBaseUrl}${path}`, { ...init, headers });
   if (!response.ok) {

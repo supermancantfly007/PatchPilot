@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  PatchPilotAuthError,
+  assertCanDecideApproval,
+  assertCanExportAuditPackage,
+  assertCanStartCapabilities,
   knownSecretsFromEnv,
+  parsePatchPilotAuthHeaders,
   redactJsonValue,
   redactRecordValues,
   redactSecrets,
@@ -8,6 +13,61 @@ import {
 } from "./index";
 
 const fixtureSecret = "patchpilot_fixture_secret_12345";
+
+describe("RBAC auth policy", () => {
+  it("parses explicit user and role headers", () => {
+    expect(parsePatchPilotAuthHeaders({
+      "x-patchpilot-user": "maintainer-1",
+      "x-patchpilot-role": "maintainer"
+    })).toEqual({
+      userId: "maintainer-1",
+      role: "maintainer"
+    });
+
+    expect(parsePatchPilotAuthHeaders({})).toBeUndefined();
+  });
+
+  it("fails closed for partial or unsupported auth headers", () => {
+    expect(() => parsePatchPilotAuthHeaders({ "x-patchpilot-user": "alice" })).toThrow(PatchPilotAuthError);
+    expect(() => parsePatchPilotAuthHeaders({
+      "x-patchpilot-user": "alice",
+      "x-patchpilot-role": "owner"
+    })).toThrow(/Unsupported PatchPilot auth role/u);
+  });
+
+  it("requires admin authorization for high-risk secret and production data approvals", () => {
+    const submitter = { userId: "submitter-1", role: "submitter" as const };
+    const reviewer = { userId: "reviewer-1", role: "reviewer" as const };
+    const admin = { userId: "admin-1", role: "admin" as const };
+
+    expect(() => assertCanDecideApproval(submitter, { kind: "secret_grant", riskLevel: "high" }))
+      .toThrow(PatchPilotAuthError);
+    expect(() => assertCanDecideApproval(reviewer, { kind: "production_data_access", riskLevel: "critical" }))
+      .toThrow(/requires an admin role/u);
+    expect(() => assertCanDecideApproval(admin, { kind: "secret_grant", riskLevel: "high" })).not.toThrow();
+  });
+
+  it("protects secret-sensitive and production-data work item starts by capability", () => {
+    const maintainer = { userId: "maintainer-1", role: "maintainer" as const };
+    const reviewer = { userId: "reviewer-1", role: "reviewer" as const };
+    const admin = { userId: "admin-1", role: "admin" as const };
+
+    expect(() => assertCanStartCapabilities(undefined, ["secret:github-ci-token"])).toThrow(PatchPilotAuthError);
+    expect(() => assertCanStartCapabilities(maintainer, ["secret:github-ci-token"])).toThrow(/reviewer or admin/u);
+    expect(() => assertCanStartCapabilities(reviewer, ["secret:github-ci-token"])).not.toThrow();
+    expect(() => assertCanStartCapabilities(reviewer, ["production_data:customer-export"])).toThrow(/admin role/u);
+    expect(() => assertCanStartCapabilities(admin, ["production_data:customer-export"])).not.toThrow();
+  });
+
+  it("requires admin authorization for audit package export", () => {
+    const reviewer = { userId: "reviewer-1", role: "reviewer" as const };
+    const admin = { userId: "admin-1", role: "admin" as const };
+
+    expect(() => assertCanExportAuditPackage(undefined)).toThrow(PatchPilotAuthError);
+    expect(() => assertCanExportAuditPackage(reviewer)).toThrow(/admin role/u);
+    expect(() => assertCanExportAuditPackage(admin)).not.toThrow();
+  });
+});
 
 describe("secret redaction", () => {
   it("redacts common secret formats from prompt, log, and diff text", () => {

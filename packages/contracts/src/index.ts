@@ -42,6 +42,9 @@ export const approvalTargetTypes = [
 ] as const;
 
 export const approvalRiskLevels = ["low", "medium", "high", "critical"] as const;
+export const authUserHeader = "x-patchpilot-user";
+export const authRoleHeader = "x-patchpilot-role";
+export const authRoles = ["submitter", "maintainer", "reviewer", "admin"] as const;
 export const failureTypes = [
   "transient",
   "deterministic",
@@ -543,6 +546,7 @@ export function buildOpenApiDocument() {
               : "Control Plane"
       ],
       summary: `${operation.method} ${operation.path}`,
+      ...(requiresAuth(operationId as ApiOperationId) ? { security: [{ PatchPilotUser: [], PatchPilotRole: [] }] } : {}),
       ...(hasRequestSchema(operation) ? {
         requestBody: {
           required: isRequestBodyRequired(operationId as ApiOperationId),
@@ -554,7 +558,8 @@ export function buildOpenApiDocument() {
         }
       } : {}),
       responses: {
-        [responseStatusFor(operationId as ApiOperationId)]: responseFor(operation.response)
+        [responseStatusFor(operationId as ApiOperationId)]: responseFor(operation.response),
+        ...(requiresAuth(operationId as ApiOperationId) ? authErrorResponses() : {})
       }
     };
   }
@@ -568,6 +573,20 @@ export function buildOpenApiDocument() {
     },
     paths,
     components: {
+      securitySchemes: {
+        PatchPilotUser: {
+          type: "apiKey",
+          in: "header",
+          name: authUserHeader,
+          description: "PatchPilot authenticated actor id for protected control-plane actions."
+        },
+        PatchPilotRole: {
+          type: "apiKey",
+          in: "header",
+          name: authRoleHeader,
+          description: `PatchPilot actor role. Allowed values: ${authRoles.join(", ")}.`
+        }
+      },
       schemas: openApiSchemas
     }
   };
@@ -1550,6 +1569,23 @@ function isRequestBodyRequired(operationId: ApiOperationId) {
   return operationId !== "releaseWorkItem";
 }
 
+function requiresAuth(operationId: ApiOperationId) {
+  return operationId === "exportPrdAuditPackage" ||
+    operationId === "approvePrd" ||
+    operationId === "startTeam" ||
+    operationId === "createApproval" ||
+    operationId === "approveApproval" ||
+    operationId === "denyApproval" ||
+    operationId === "startWorkItem";
+}
+
+function authErrorResponses() {
+  return {
+    "401": responseFor("ErrorResponse"),
+    "403": responseFor("ErrorResponse")
+  };
+}
+
 function responseFor(schemaName: string) {
   if (schemaName.startsWith("text/event-stream")) {
     return {
@@ -1661,6 +1697,12 @@ export const openApiSchemas = {
   RunEventError: objectSchema({
     message: { type: "string" }
   }),
+  ErrorResponse: objectSchema({
+    error: { type: "string" },
+    message: { type: "string" },
+    code: { type: "string" },
+    requiredHeaders: arrayOf({ type: "string" })
+  }, ["error", "message"]),
   AuditChainVerification: objectSchema({
     valid: { type: "boolean" },
     checkedEvents: { type: "integer", minimum: 0 },
@@ -1689,7 +1731,7 @@ export const openApiSchemas = {
       actorType: { type: "string" },
       actorId: id,
       adminIntent: { type: "boolean" },
-      authEnforcement: enumSchema(["pending_td_222_rbac"])
+      authEnforcement: enumSchema(["td_222_rbac_enforced"])
     }, ["actorType", "actorId", "adminIntent", "authEnforcement"]),
     scope: looseObjectSchema({
       type: enumSchema(["prd"]),

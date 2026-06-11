@@ -11,6 +11,10 @@ const apiPort = Number(process.env.PATCHPILOT_E2E_PRO_API_PORT || 4300 + (proces
 const webPort = Number(process.env.PATCHPILOT_E2E_PRO_WEB_PORT || apiPort + 1000);
 const apiBaseUrl = `http://localhost:${apiPort}`;
 const webBaseUrl = `http://localhost:${webPort}`;
+const e2eAuthHeaders = {
+  "x-patchpilot-user": "e2e-governance-maintainer",
+  "x-patchpilot-role": "maintainer"
+};
 const chromeExecutable =
   process.env.PLAYWRIGHT_CHROME_EXECUTABLE || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
@@ -31,7 +35,9 @@ const web = spawn("pnpm", ["--filter", "@patchpilot/web", "exec", "next", "dev",
   cwd: repoRoot,
   env: {
     ...process.env,
-    NEXT_PUBLIC_API_BASE_URL: apiBaseUrl
+    NEXT_PUBLIC_API_BASE_URL: apiBaseUrl,
+    NEXT_PUBLIC_PATCHPILOT_USER_ID: e2eAuthHeaders["x-patchpilot-user"],
+    NEXT_PUBLIC_PATCHPILOT_ROLE: e2eAuthHeaders["x-patchpilot-role"]
   },
   stdio: ["ignore", "pipe", "pipe"]
 });
@@ -144,6 +150,7 @@ async function findApproval(id) {
 
 async function requestJson(path, init = {}) {
   const headers = new Headers(init.headers);
+  for (const [key, value] of Object.entries(e2eAuthHeaders)) headers.set(key, value);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const response = await fetch(`${apiBaseUrl}${path}`, { ...init, headers });
   if (!response.ok) {

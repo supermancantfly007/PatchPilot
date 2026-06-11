@@ -86,6 +86,31 @@
           }
         }
       },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error",
+          "message"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "requiredHeaders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "AuditChainVerification": {
         "type": "object",
         "additionalProperties": false,
@@ -215,7 +240,7 @@
               "authEnforcement": {
                 "type": "string",
                 "enum": [
-                  "pending_td_222_rbac"
+                  "td_222_rbac_enforced"
                 ]
               }
             }

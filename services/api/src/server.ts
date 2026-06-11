@@ -15,6 +15,19 @@ import {
   startRunSchema
 } from "@patchpilot/contracts";
 import {
+  PatchPilotAuthError,
+  assertCanApprovePrd,
+  assertCanDecideApproval,
+  assertCanExportAuditPackage,
+  assertCanRequestApproval,
+  assertCanStartCapabilities,
+  parsePatchPilotAuthHeaders,
+  type PatchPilotAuthContext,
+  patchPilotAuthRoleHeader,
+  patchPilotAuthUserHeader,
+  type PatchPilotHeaderMap
+} from "@patchpilot/security";
+import {
   getTelemetry,
   prometheusContentType,
   renderPrometheusMetrics,
@@ -25,11 +38,20 @@ import Fastify from "fastify";
 import { z } from "zod";
 import { DomainError, PatchPilotStore } from "./store";
 
+declare module "fastify" {
+  interface FastifyRequest {
+    auth?: PatchPilotAuthContext;
+  }
+}
+
 export async function buildServer(options: { store?: PatchPilotStore; telemetry?: PatchPilotTelemetry } = {}) {
   const app = Fastify({ logger: true });
   const telemetry = options.telemetry ?? getTelemetry({ serviceName: "patchpilot-api" });
   const store = options.store ?? new PatchPilotStore({ telemetry });
   await app.register(cors, { origin: true });
+  app.addHook("preHandler", async (request) => {
+    request.auth = parsePatchPilotAuthHeaders(request.headers as PatchPilotHeaderMap);
+  });
   app.addHook("onClose", async () => {
     await store.close();
     if (options.telemetry) await telemetry.shutdown();
@@ -51,9 +73,8 @@ export async function buildServer(options: { store?: PatchPilotStore; telemetry?
 
   app.get(apiRoute("exportPrdAuditPackage"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
-    const actorHeader = request.headers["x-patchpilot-admin-actor"];
-    const actorId = Array.isArray(actorHeader) ? actorHeader[0] : actorHeader;
-    return store.exportPrdAuditPackage(id, { actorId });
+    assertCanExportAuditPackage(request.auth);
+    return store.exportPrdAuditPackage(id, { actorId: request.auth?.userId });
   });
 
   app.get(apiRoute("agents"), async () => store.getAgents());
@@ -88,13 +109,19 @@ export async function buildServer(options: { store?: PatchPilotStore; telemetry?
 
   app.post(apiRoute("approvePrd"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
-    return store.approvePrd(id);
+    assertCanApprovePrd(request.auth);
+    return store.approvePrd(id, request.auth ? { actor: request.auth.userId } : {});
   });
 
   app.post(apiRoute("startTeam"), async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = startRunSchema.parse(request.body);
-    const result = await store.startTeam(id, input.runner);
+    assertCanApprovePrd(request.auth);
+    const workItems = await store.previewWorkItemsForPrd(id);
+    for (const workItem of workItems) {
+      assertCanStartCapabilities(request.auth, workItem.requiredCapabilities);
+    }
+    const result = await store.startTeam(id, input.runner, request.auth ? { actor: request.auth.userId } : {});
     return reply.code(201).send(result);
   });
 
@@ -106,25 +133,32 @@ export async function buildServer(options: { store?: PatchPilotStore; telemetry?
 
   app.post(apiRoute("createApproval"), async (request, reply) => {
     const input = createApprovalSchema.parse(request.body);
-    const approval = await store.createApproval(input);
+    assertCanRequestApproval(request.auth, input);
+    const approval = await store.createApproval({ ...input, requestedBy: request.auth?.userId ?? input.requestedBy });
     return reply.code(201).send(approval);
   });
 
   app.post(apiRoute("approveApproval"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = approvalDecisionSchema.parse(request.body);
-    return store.approveApproval(id, input);
+    const approval = await store.getApproval(id);
+    assertCanDecideApproval(request.auth, approval);
+    return store.approveApproval(id, { ...input, decidedBy: request.auth?.userId ?? input.decidedBy });
   });
 
   app.post(apiRoute("denyApproval"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = approvalDecisionSchema.parse(request.body);
-    return store.denyApproval(id, input);
+    const approval = await store.getApproval(id);
+    assertCanDecideApproval(request.auth, approval);
+    return store.denyApproval(id, { ...input, decidedBy: request.auth?.userId ?? input.decidedBy });
   });
 
   app.post(apiRoute("startWorkItem"), async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = startRunSchema.parse(request.body);
+    const workItem = await store.getWorkItem(id);
+    assertCanStartCapabilities(request.auth, workItem.requiredCapabilities);
     const run = await store.startRun(id, input.runner, { claimToken: input.claimToken });
     return reply.code(201).send(run);
   });
@@ -208,18 +242,26 @@ export async function buildServer(options: { store?: PatchPilotStore; telemetry?
     const message = error instanceof Error ? error.message : String(error);
     let statusCode = 500;
     if (error instanceof z.ZodError) statusCode = 400;
+    if (error instanceof PatchPilotAuthError) statusCode = error.statusCode;
     if (error instanceof DomainError && error.code === "NOT_FOUND") statusCode = 404;
     if (error instanceof DomainError && error.code === "INVALID_STATE") statusCode = 409;
     reply.code(statusCode).send({
       error:
         statusCode === 400
           ? "Bad Request"
+          : statusCode === 401
+            ? "Unauthorized"
+            : statusCode === 403
+              ? "Forbidden"
           : statusCode === 404
             ? "Not Found"
             : statusCode === 409
               ? "Conflict"
               : "Internal Server Error",
-      message
+      message,
+      ...(error instanceof PatchPilotAuthError
+        ? { code: error.code, requiredHeaders: [patchPilotAuthUserHeader, patchPilotAuthRoleHeader] }
+        : {})
     });
   });
 

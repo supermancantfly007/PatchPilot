@@ -1,6 +1,8 @@
 const apiBaseUrl = process.env.PATCHPILOT_E2E_API_BASE_URL || "http://localhost:4000";
 const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 const past = new Date(Date.now() - 1000).toISOString();
+const maintainerAuth = authHeaders("maintainer", "e2e-maintainer");
+const adminAuth = authHeaders("admin", "e2e-security-admin");
 const kinds = [
   "budget_exceeded",
   "dangerous_operation",
@@ -14,6 +16,7 @@ for (const kind of kinds) {
   approvals.push(
     await requestJson("/api/approvals", {
       method: "POST",
+      headers: maintainerAuth,
       body: JSON.stringify({
         kind,
         targetType: targetTypeFor(kind),
@@ -32,6 +35,7 @@ assertEqual(approvals.every((approval) => approval.status === "pending"), true, 
 
 const approved = await requestJson(`/api/approvals/${approvals[0].id}/approve`, {
   method: "POST",
+  headers: authHeaders("maintainer", "e2e-maintainer"),
   body: JSON.stringify({
     decidedBy: "e2e-maintainer",
     decisionReason: "E2E approves this policy gate"
@@ -42,16 +46,18 @@ assertEqual(approved.approvedBy, "e2e-maintainer", "approved record should prese
 
 const denied = await requestJson(`/api/approvals/${approvals[1].id}/deny`, {
   method: "POST",
+  headers: adminAuth,
   body: JSON.stringify({
     decidedBy: "e2e-security",
     decisionReason: "E2E denies this policy gate"
   })
 });
 assertEqual(denied.status, "denied", "approval should move to denied");
-assertEqual(denied.deniedBy, "e2e-security", "denied record should preserve denier");
+assertEqual(denied.deniedBy, "e2e-security-admin", "denied record should preserve denier");
 
 const expired = await requestJson("/api/approvals", {
   method: "POST",
+  headers: maintainerAuth,
   body: JSON.stringify({
     kind: "network_allowlist_change",
     targetType: "network",
@@ -98,6 +104,13 @@ function targetTypeFor(kind) {
   if (kind === "breaking_contract") return "interface_contract";
   if (kind === "budget_exceeded") return "budget";
   return "policy";
+}
+
+function authHeaders(role, userId) {
+  return {
+    "x-patchpilot-user": userId,
+    "x-patchpilot-role": role
+  };
 }
 
 async function requestJson(path, init = {}) {

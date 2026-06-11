@@ -10,7 +10,9 @@ const apiPort = Number(process.env.PATCHPILOT_E2E_CLI_PORT || 4100 + (process.pi
 const apiBaseUrl = `http://localhost:${apiPort}`;
 const cliEnv = {
   ...process.env,
-  PATCHPILOT_API_BASE_URL: apiBaseUrl
+  PATCHPILOT_API_BASE_URL: apiBaseUrl,
+  PATCHPILOT_AUTH_USER: "e2e-cli-maintainer",
+  PATCHPILOT_AUTH_ROLE: "maintainer"
 };
 
 const api = spawn("pnpm", ["--filter", "@patchpilot/api", "start"], {

@@ -1,5 +1,157 @@
 import { createHash } from "node:crypto";
 
+export const patchPilotAuthUserHeader = "x-patchpilot-user";
+export const patchPilotAuthRoleHeader = "x-patchpilot-role";
+
+export const patchPilotAuthRoles = ["submitter", "maintainer", "reviewer", "admin"] as const;
+
+export type PatchPilotAuthRole = (typeof patchPilotAuthRoles)[number];
+
+export interface PatchPilotAuthContext {
+  userId: string;
+  role: PatchPilotAuthRole;
+}
+
+export interface ApprovalAuthorizationInput {
+  kind: string;
+  riskLevel: string;
+}
+
+export interface PatchPilotHeaderMap {
+  [key: string]: string | string[] | number | undefined;
+}
+
+export class PatchPilotAuthError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: 401 | 403,
+    public readonly code: "UNAUTHENTICATED" | "FORBIDDEN"
+  ) {
+    super(message);
+    this.name = "PatchPilotAuthError";
+  }
+}
+
+const authRoleSet = new Set<string>(patchPilotAuthRoles);
+const maintainerRoles = new Set<PatchPilotAuthRole>(["maintainer", "reviewer", "admin"]);
+const reviewerRoles = new Set<PatchPilotAuthRole>(["reviewer", "admin"]);
+const adminRoles = new Set<PatchPilotAuthRole>(["admin"]);
+const adminApprovalKinds = new Set([
+  "dangerous_operation",
+  "network_allowlist_change",
+  "secret_grant",
+  "production_data_access"
+]);
+const reviewerApprovalKinds = new Set(["breaking_contract"]);
+const maintainerApprovalKinds = new Set(["prd_approval", "budget_exceeded"]);
+const criticalRiskLevels = new Set(["critical"]);
+const highRiskLevels = new Set(["high"]);
+
+export function parsePatchPilotAuthHeaders(headers: PatchPilotHeaderMap): PatchPilotAuthContext | undefined {
+  const userId = firstHeaderValue(headers[patchPilotAuthUserHeader])?.trim();
+  const roleValue = firstHeaderValue(headers[patchPilotAuthRoleHeader])?.trim().toLowerCase();
+
+  if (!userId && !roleValue) return undefined;
+  if (!userId || !roleValue) {
+    throw new PatchPilotAuthError("Authentication requires x-patchpilot-user and x-patchpilot-role headers.", 401, "UNAUTHENTICATED");
+  }
+  if (!authRoleSet.has(roleValue)) {
+    throw new PatchPilotAuthError(`Unsupported PatchPilot auth role: ${roleValue}`, 401, "UNAUTHENTICATED");
+  }
+
+  return {
+    userId,
+    role: roleValue as PatchPilotAuthRole
+  };
+}
+
+export function assertCanApprovePrd(auth: PatchPilotAuthContext | undefined) {
+  assertRole(auth, maintainerRoles, "Approving a PRD requires a maintainer, reviewer, or admin role.");
+}
+
+export function assertCanExportAuditPackage(auth: PatchPilotAuthContext | undefined) {
+  assertRole(auth, adminRoles, "Exporting an audit package requires an admin role.");
+}
+
+export function assertCanRequestApproval(
+  auth: PatchPilotAuthContext | undefined,
+  _approval: ApprovalAuthorizationInput
+) {
+  assertRole(auth, maintainerRoles, "Creating an approval request requires a maintainer, reviewer, or admin role.");
+}
+
+export function assertCanDecideApproval(
+  auth: PatchPilotAuthContext | undefined,
+  approval: ApprovalAuthorizationInput
+) {
+  assertRole(auth, decisionRolesForApproval(approval), `Approving or denying ${approval.kind} requires ${requiredRoleLabel(approval)}.`);
+}
+
+export function assertCanStartCapabilities(
+  auth: PatchPilotAuthContext | undefined,
+  requiredCapabilities: readonly string[] | undefined
+) {
+  const sensitivity = classifyCapabilitySensitivity(requiredCapabilities);
+  if (sensitivity.productionData) {
+    assertRole(auth, adminRoles, "Starting a production-data work item requires an admin role.");
+  }
+  if (sensitivity.secret) {
+    assertRole(auth, reviewerRoles, "Starting a secret-sensitive work item requires a reviewer or admin role.");
+  }
+}
+
+export function classifyCapabilitySensitivity(requiredCapabilities: readonly string[] | undefined) {
+  const capabilities = requiredCapabilities ?? [];
+  return {
+    secret: capabilities.some((capability) => capability.trim().toLowerCase().startsWith("secret:")),
+    productionData: capabilities.some((capability) => isProductionDataCapability(capability))
+  };
+}
+
+function decisionRolesForApproval(approval: ApprovalAuthorizationInput) {
+  if (maintainerApprovalKinds.has(approval.kind)) return maintainerRoles;
+  if (reviewerApprovalKinds.has(approval.kind)) return reviewerRoles;
+  if (adminApprovalKinds.has(approval.kind) || criticalRiskLevels.has(approval.riskLevel)) return adminRoles;
+  if (highRiskLevels.has(approval.riskLevel)) return reviewerRoles;
+  return maintainerRoles;
+}
+
+function requiredRoleLabel(approval: ApprovalAuthorizationInput) {
+  const roles = decisionRolesForApproval(approval);
+  if (roles === adminRoles) return "an admin role";
+  if (roles === reviewerRoles) return "a reviewer or admin role";
+  return "a maintainer, reviewer, or admin role";
+}
+
+function assertRole(
+  auth: PatchPilotAuthContext | undefined,
+  allowedRoles: ReadonlySet<PatchPilotAuthRole>,
+  message: string
+) {
+  if (!auth) {
+    throw new PatchPilotAuthError("Authentication is required for this PatchPilot action.", 401, "UNAUTHENTICATED");
+  }
+  if (!allowedRoles.has(auth.role)) {
+    throw new PatchPilotAuthError(message, 403, "FORBIDDEN");
+  }
+}
+
+function firstHeaderValue(value: string | string[] | number | undefined) {
+  if (Array.isArray(value)) return value[0];
+  if (typeof value === "number") return String(value);
+  return value;
+}
+
+function isProductionDataCapability(value: string) {
+  const normalized = value.trim().toLowerCase();
+  return normalized.startsWith("production_data:") ||
+    normalized.startsWith("production-data:") ||
+    normalized.startsWith("prod_data:") ||
+    normalized.startsWith("prod-data:") ||
+    normalized === "production_data_access" ||
+    normalized === "production-data-access";
+}
+
 export const secretRedactionPolicyVersion = "td-214-secret-redaction-v1";
 
 export type SecretFindingKind =

@@ -28,6 +28,8 @@ interface ParsedArgs {
 interface CliContext {
   apiBaseUrl: string;
   json: boolean;
+  authUserId?: string;
+  authRole?: string;
 }
 
 interface CreatePrdResponse {
@@ -370,6 +372,10 @@ async function getSnapshot(context: CliContext) {
 async function requestJson<T>(context: CliContext, path: string, init: RequestInit): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (context.authUserId && context.authRole) {
+    headers.set("x-patchpilot-user", context.authUserId);
+    headers.set("x-patchpilot-role", context.authRole);
+  }
   const response = await fetch(`${context.apiBaseUrl}${path}`, { ...init, headers });
   if (!response.ok) {
     throw new Error(`${init.method ?? "GET"} ${path} failed: ${response.status} ${await response.text()}`);
@@ -388,9 +394,20 @@ async function poll<T>(read: () => Promise<T | undefined>, timeoutMs: number): P
 }
 
 function getContext(parsed: ParsedArgs): CliContext {
+  const authUserId = trimOptional(
+    option(parsed, "auth-user") ??
+      process.env.PATCHPILOT_AUTH_USER ??
+      process.env.PATCHPILOT_CLI_AUTH_USER
+  );
+  const authRole = trimOptional(
+    option(parsed, "auth-role") ??
+      process.env.PATCHPILOT_AUTH_ROLE ??
+      process.env.PATCHPILOT_CLI_AUTH_ROLE
+  );
   return {
     apiBaseUrl: trimTrailingSlash(option(parsed, "api") ?? process.env.PATCHPILOT_API_BASE_URL ?? defaultApiBaseUrl),
-    json: parsed.options.json === true
+    json: parsed.options.json === true,
+    ...(authUserId && authRole ? { authUserId, authRole } : {})
   };
 }
 
@@ -444,6 +461,11 @@ function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, "");
 }
 
+function trimOptional(value: string | undefined) {
+  const normalized = value?.trim();
+  return normalized || undefined;
+}
+
 function formatError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -465,7 +487,10 @@ function helpText() {
     "",
     "Global options:",
     "  --api <url>   API base URL, default http://localhost:4000",
-    "  --json        Print machine-readable JSON"
+    "  --auth-user <id> --auth-role <role>   Auth context for protected approval actions",
+    "  --json        Print machine-readable JSON",
+    "",
+    "Auth env: PATCHPILOT_AUTH_USER and PATCHPILOT_AUTH_ROLE"
   ].join("\n");
 }
 
