@@ -19,6 +19,7 @@
     "@patchpilot/contracts": "workspace:*",
     "@patchpilot/db": "workspace:*",
     "@patchpilot/domain": "workspace:*",
+    "@patchpilot/issue-tracker-adapter": "workspace:*",
     "@patchpilot/policy": "workspace:*",
     "@patchpilot/pull-request-adapter": "workspace:*",
     "@patchpilot/security": "workspace:*",

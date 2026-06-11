@@ -51,6 +51,26 @@ export type AgentStatus = "idle" | "busy" | "offline";
 
 export type BugSeverity = "low" | "medium" | "high" | "critical";
 
+export type ExternalIssueProvider = "linear" | "jira";
+
+export type ExternalIssueStatusCategory =
+  | "todo"
+  | "ready"
+  | "in_progress"
+  | "blocked"
+  | "done"
+  | "cancelled";
+
+export type ExternalIssueSyncDirection = "patchpilot_to_external" | "external_to_patchpilot";
+
+export type ExternalIssueSyncAction =
+  | "linked"
+  | "mirrored"
+  | "triggered"
+  | "blocked"
+  | "observed"
+  | "ignored";
+
 export type BugStatus =
   | "reported"
   | "needs_repro"
@@ -422,6 +442,9 @@ export interface WorkItem {
   heartbeatAt?: string;
   version?: number;
   sourceBugId?: string;
+  externalIssueLinks?: ExternalIssueLink[];
+  externalIssueSyncEvidence?: ExternalIssueSyncEvidence[];
+  externalBlocker?: ExternalIssueBlocker;
   reworkCount?: number;
   lastRejectionReason?: string;
   createdAt?: string;
@@ -469,6 +492,9 @@ export interface BugReport {
   prdId: string;
   workItemId: string;
   artifactReferences?: IntakeArtifactReference[];
+  externalIssueLinks?: ExternalIssueLink[];
+  externalIssueSyncEvidence?: ExternalIssueSyncEvidence[];
+  externalBlocker?: ExternalIssueBlocker;
   sourceRunId?: string;
   sourceTestRunId?: string;
   sourceFailureType?: FailureType;
@@ -476,6 +502,48 @@ export interface BugReport {
   sourceBranch?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ExternalIssueLink {
+  id: string;
+  provider: ExternalIssueProvider;
+  externalIssueId: string;
+  externalKey?: string;
+  externalUrl?: string;
+  statusName: string;
+  statusCategory: ExternalIssueStatusCategory;
+  summary?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastSyncedAt?: string;
+}
+
+export interface ExternalIssueBlocker {
+  provider: ExternalIssueProvider;
+  externalIssueId: string;
+  externalKey?: string;
+  statusName: string;
+  statusCategory: "blocked";
+  reason: string;
+  blockedAt: string;
+}
+
+export interface ExternalIssueSyncEvidence {
+  id: string;
+  provider: ExternalIssueProvider;
+  externalIssueId: string;
+  externalKey?: string;
+  direction: ExternalIssueSyncDirection;
+  action: ExternalIssueSyncAction;
+  statusName: string;
+  statusCategory: ExternalIssueStatusCategory;
+  message: string;
+  actor?: string;
+  idempotencyKey?: string;
+  observedAt: string;
+  recordedAt: string;
+  patchPilotStatusBefore?: WorkItemStatus | BugStatus;
+  patchPilotStatusAfter?: WorkItemStatus | BugStatus;
 }
 
 export interface AgentRun {

@@ -570,6 +570,68 @@
         }
       }
     },
+    "/api/integrations/issues/link": {
+      "post": {
+        "operationId": "linkExternalIssue",
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "POST /api/integrations/issues/link",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExternalIssueLinkRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExternalIssueSyncResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/integrations/issues/status": {
+      "post": {
+        "operationId": "updateExternalIssueStatus",
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "POST /api/integrations/issues/status",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExternalIssueStatusUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExternalIssueSyncResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/runs/:id": {
       "get": {
         "operationId": "getRun",
@@ -828,6 +890,119 @@
         "required": [],
         "properties": {
           "claimToken": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "ExternalIssueLinkRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "entityType",
+          "entityId"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "linear",
+              "jira"
+            ]
+          },
+          "entityType": {
+            "type": "string",
+            "enum": [
+              "work_item",
+              "defect"
+            ]
+          },
+          "entityId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "externalIssueId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "externalKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "externalUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "statusName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "statusCategory": {
+            "type": "string",
+            "enum": [
+              "todo",
+              "ready",
+              "in_progress",
+              "blocked",
+              "done",
+              "cancelled"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      },
+      "ExternalIssueStatusUpdateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "statusName"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "linear",
+              "jira"
+            ]
+          },
+          "externalIssueId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "externalKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "statusName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "statusCategory": {
+            "type": "string",
+            "enum": [
+              "todo",
+              "ready",
+              "in_progress",
+              "blocked",
+              "done",
+              "cancelled"
+            ]
+          },
+          "actor": {
+            "type": "string",
+            "minLength": 1
+          },
+          "observedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "idempotencyKey": {
             "type": "string",
             "minLength": 1
           }
@@ -1913,6 +2088,21 @@
           "sourceBugId": {
             "type": "string",
             "minLength": 1
+          },
+          "externalIssueLinks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExternalIssueLink"
+            }
+          },
+          "externalIssueSyncEvidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExternalIssueSyncEvidence"
+            }
+          },
+          "externalBlocker": {
+            "$ref": "#/components/schemas/ExternalIssueBlocker"
           },
           "reworkCount": {
             "type": "integer",
@@ -3392,6 +3582,204 @@
           }
         }
       },
+      "ExternalIssueLink": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "provider",
+          "externalIssueId",
+          "statusName",
+          "statusCategory",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "linear",
+              "jira"
+            ]
+          },
+          "externalIssueId": {
+            "type": "string"
+          },
+          "externalKey": {
+            "type": "string"
+          },
+          "externalUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "statusName": {
+            "type": "string"
+          },
+          "statusCategory": {
+            "type": "string",
+            "enum": [
+              "todo",
+              "ready",
+              "in_progress",
+              "blocked",
+              "done",
+              "cancelled"
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastSyncedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ExternalIssueBlocker": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "externalIssueId",
+          "statusName",
+          "statusCategory",
+          "reason",
+          "blockedAt"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "linear",
+              "jira"
+            ]
+          },
+          "externalIssueId": {
+            "type": "string"
+          },
+          "externalKey": {
+            "type": "string"
+          },
+          "statusName": {
+            "type": "string"
+          },
+          "statusCategory": {
+            "type": "string",
+            "enum": [
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "blockedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ExternalIssueSyncEvidence": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "provider",
+          "externalIssueId",
+          "direction",
+          "action",
+          "statusName",
+          "statusCategory",
+          "message",
+          "observedAt",
+          "recordedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "linear",
+              "jira"
+            ]
+          },
+          "externalIssueId": {
+            "type": "string"
+          },
+          "externalKey": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "patchpilot_to_external",
+              "external_to_patchpilot"
+            ]
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "linked",
+              "mirrored",
+              "triggered",
+              "blocked",
+              "observed",
+              "ignored"
+            ]
+          },
+          "statusName": {
+            "type": "string"
+          },
+          "statusCategory": {
+            "type": "string",
+            "enum": [
+              "todo",
+              "ready",
+              "in_progress",
+              "blocked",
+              "done",
+              "cancelled"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "idempotencyKey": {
+            "type": "string"
+          },
+          "observedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "recordedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "patchPilotStatusBefore": {
+            "type": "string"
+          },
+          "patchPilotStatusAfter": {
+            "type": "string"
+          }
+        }
+      },
       "PullRequestRecord": {
         "type": "object",
         "additionalProperties": true,
@@ -3879,6 +4267,21 @@
               "$ref": "#/components/schemas/IntakeArtifactReference"
             }
           },
+          "externalIssueLinks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExternalIssueLink"
+            }
+          },
+          "externalIssueSyncEvidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExternalIssueSyncEvidence"
+            }
+          },
+          "externalBlocker": {
+            "$ref": "#/components/schemas/ExternalIssueBlocker"
+          },
           "sourceRunId": {
             "type": "string",
             "minLength": 1
@@ -4168,6 +4571,28 @@
           },
           "workItem": {
             "$ref": "#/components/schemas/WorkItem"
+          }
+        }
+      },
+      "ExternalIssueSyncResponse": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "link",
+          "evidence"
+        ],
+        "properties": {
+          "link": {
+            "$ref": "#/components/schemas/ExternalIssueLink"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/ExternalIssueSyncEvidence"
+          },
+          "workItem": {
+            "$ref": "#/components/schemas/WorkItem"
+          },
+          "bug": {
+            "$ref": "#/components/schemas/BugReport"
           }
         }
       },
