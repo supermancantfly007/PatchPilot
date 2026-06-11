@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 const apiBaseUrl = process.env.PATCHPILOT_E2E_API_BASE_URL || "http://localhost:4000";
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const expectedRoles = ["backend", "frontend", "test", "ops"];
+const expectedGeneratedContractTests = 16;
+const expectedContractRegistryTests = 3;
+const expectedProviderConsumerContractTests = 13;
 
 const requirement = await requestJson("/api/requirements", {
   method: "POST",
@@ -28,7 +31,12 @@ const completed = await poll(async () => {
   const testCases = snapshot.testCases.filter((testCase) => testCase.prdId === prd.id);
   const testRuns = snapshot.testRuns.filter((test) => test.prdId === prd.id);
   const contractDiffTestRuns = testRuns.filter((test) => test.runner === "patchpilot-contract-registry");
-  const executionTestRuns = testRuns.filter((test) => test.runner !== "patchpilot-contract-registry");
+  const contractValidationTestRuns = testRuns.filter((test) => test.runner === "patchpilot-contract-tests");
+  const executionOnlyTestRuns = testRuns.filter((test) =>
+    test.runner !== "patchpilot-contract-registry" && test.runner !== "patchpilot-contract-tests"
+  );
+  const generatedContractTestCases = testCases.filter((testCase) => testCase.id.startsWith("tc_contract_"));
+  const executionTestCases = testCases.filter((testCase) => !testCase.id.startsWith("tc_contract_"));
   const artifacts = snapshot.artifacts.filter((artifact) => artifact.prdId === prd.id);
   const pullRequests = snapshot.pullRequests.filter((pullRequest) => pullRequest.prdId === prd.id);
   const reviewRecords = snapshot.reviewRecords.filter((review) => review.prdId === prd.id);
@@ -42,15 +50,17 @@ const completed = await poll(async () => {
   if (!workItems.every((item) => item.status === "review")) return undefined;
   if (workspaceRuns.length < expectedRoles.length) return undefined;
   if (!workspaceRuns.every((workspace) => workspace.status === "archived")) return undefined;
-  if (testCases.length < expectedRoles.length) return undefined;
+  if (testCases.length < expectedRoles.length + expectedGeneratedContractTests) return undefined;
   if (!testCases.every((testCase) => testCase.status === "passed")) return undefined;
-  if (!testCases.every((testCase) => testCase.lastRunId && testCase.lastTestRunId)) return undefined;
+  if (!executionTestCases.every((testCase) => testCase.lastRunId && testCase.lastTestRunId)) return undefined;
+  if (!generatedContractTestCases.every((testCase) => !testCase.lastRunId && testCase.lastTestRunId)) return undefined;
   if (!testCases.every((testCase) => testCase.flaky === false)) return undefined;
-  if (contractDiffTestRuns.length < 3) return undefined;
-  if (executionTestRuns.length < expectedRoles.length) return undefined;
+  if (contractDiffTestRuns.length < expectedContractRegistryTests) return undefined;
+  if (contractValidationTestRuns.length < expectedProviderConsumerContractTests) return undefined;
+  if (executionOnlyTestRuns.length < expectedRoles.length) return undefined;
   if (!testRuns.every((test) => test.status === "passed")) return undefined;
   if (!testRuns.every((test) => test.testCaseId)) return undefined;
-  if (!executionTestRuns.every((test) =>
+  if (!executionOnlyTestRuns.every((test) =>
     test.artifactIds?.length >= 2 && test.artifactIds.every((artifactId) => artifactIds.has(artifactId))
   )) return undefined;
   if (artifacts.filter((artifact) => artifact.kind === "log").length < expectedRoles.length) return undefined;
@@ -70,9 +80,12 @@ const completed = await poll(async () => {
     workItems,
     workspaceRuns,
     testCases,
+    generatedContractTestCases,
+    executionTestCases,
     testRuns,
     contractDiffTestRuns,
-    executionTestRuns,
+    contractValidationTestRuns,
+    executionOnlyTestRuns,
     artifacts,
     pullRequests,
     reviewRecords,
@@ -87,9 +100,20 @@ assertEqual(
   "completed work item roles should match team roles"
 );
 assertEqual(completed.workspaceRuns.length, expectedRoles.length, "worker should archive workspace evidence per run");
-assertEqual(completed.testCases.length, expectedRoles.length, "worker should create one test case per work item");
-assertEqual(completed.executionTestRuns.length, expectedRoles.length, "worker should record test evidence per run");
-assertEqual(completed.contractDiffTestRuns.length, 3, "contract registry should record one diff TestRun per artifact");
+assertEqual(
+  completed.testCases.length,
+  expectedRoles.length + expectedGeneratedContractTests,
+  "worker should keep execution and generated contract TestCases"
+);
+assertEqual(completed.executionTestCases.length, expectedRoles.length, "worker should create one execution TestCase per work item");
+assertEqual(completed.generatedContractTestCases.length, expectedGeneratedContractTests, "contract registry should generate TestCases per requirement");
+assertEqual(completed.executionOnlyTestRuns.length, expectedRoles.length, "worker should record test evidence per run");
+assertEqual(completed.contractDiffTestRuns.length, expectedContractRegistryTests, "contract registry should record one diff TestRun per artifact");
+assertEqual(
+  completed.contractValidationTestRuns.length,
+  expectedProviderConsumerContractTests,
+  "provider and consumer contract checks should pass per generated requirement"
+);
 assertEqual(completed.artifacts.length, expectedRoles.length * 5 + 3, "worker plus registry should record run and contract artifacts");
 assertEqual(completed.pullRequests.length, expectedRoles.length, "worker should create one PR record per run");
 assertEqual(completed.reviewRecords.length, expectedRoles.length, "worker should create one review record per run");
@@ -134,6 +158,12 @@ const reworked = await poll(async () => {
   const runs = snapshot.agentRuns.filter((run) => run.prdId === prd.id);
   const latestRuns = latestRunsByWorkItem(runs);
   const testRuns = snapshot.testRuns.filter((test) => test.prdId === prd.id);
+  const contractTestRuns = testRuns.filter((test) =>
+    test.runner === "patchpilot-contract-registry" || test.runner === "patchpilot-contract-tests"
+  );
+  const executionOnlyTestRuns = testRuns.filter((test) =>
+    test.runner !== "patchpilot-contract-registry" && test.runner !== "patchpilot-contract-tests"
+  );
   const pullRequests = snapshot.pullRequests.filter((pullRequest) => pullRequest.prdId === prd.id);
   const reviewRecords = snapshot.reviewRecords.filter((review) => review.prdId === prd.id);
   if (runs.length < expectedRoles.length * 2) return undefined;
@@ -142,15 +172,18 @@ const reworked = await poll(async () => {
   if (latestRuns.some((run) => firstRunIds.has(run.id))) return undefined;
   if (!workItems.every((item) => item.status === "review")) return undefined;
   if (!workItems.every((item) => item.reworkCount === 1)) return undefined;
-  if (testRuns.length < expectedRoles.length * 2 + 3) return undefined;
+  if (contractTestRuns.length < expectedGeneratedContractTests) return undefined;
+  if (executionOnlyTestRuns.length < expectedRoles.length * 2) return undefined;
   if (!testRuns.every((test) => test.status === "passed")) return undefined;
   if (pullRequests.length < expectedRoles.length * 2) return undefined;
   if (reviewRecords.length < expectedRoles.length * 2) return undefined;
-  return { runs, latestRuns, workItems, testRuns, pullRequests, reviewRecords };
+  return { runs, latestRuns, workItems, testRuns, contractTestRuns, executionOnlyTestRuns, pullRequests, reviewRecords };
 }, 15000);
 
 assertEqual(reworked.runs.length, expectedRoles.length * 2, "rework should create a fresh run per team work item");
 assertEqual(reworked.latestRuns.length, expectedRoles.length, "latest team run set should still have one run per work item");
+assertEqual(reworked.contractTestRuns.length, expectedGeneratedContractTests, "contract TestRuns should remain attached through rework");
+assertEqual(reworked.executionOnlyTestRuns.length, expectedRoles.length * 2, "rework should add execution TestRuns without duplicating contract checks");
 await assertAuditChainValid();
 
 console.log("PatchPilot team worker E2E passed");

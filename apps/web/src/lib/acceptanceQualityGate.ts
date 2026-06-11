@@ -4,8 +4,11 @@ import type {
   AgentRun,
   AuditChainVerification,
   BugStatus,
+  InterfaceContract,
   PatchPilotSnapshot,
-  PullRequestStatus
+  PullRequestStatus,
+  TestCase,
+  TestRun
 } from "@patchpilot/domain";
 
 const readyPullRequestStatuses = new Set<PullRequestStatus>(["ready_for_review", "approved", "merged"]);
@@ -29,15 +32,18 @@ export function evaluateAcceptancePageQualityGate(input: {
   const scopedTestRuns = input.snapshot.testRuns.filter(
     (testRun) =>
       (testRun.runId !== undefined && runIdSet.has(testRun.runId)) ||
-      (testRun.testCaseId !== undefined && testCaseIdSet.has(testRun.testCaseId) && testRun.runId !== undefined && runIdSet.has(testRun.runId))
+      (testRun.testCaseId !== undefined &&
+        testCaseIdSet.has(testRun.testCaseId) &&
+        (testRun.runId === undefined || runIdSet.has(testRun.runId)))
   );
+  const scopedTestRunsById = new Map(scopedTestRuns.map((testRun) => [testRun.id, testRun]));
   const requiredCriteria = uniqueStrings((prd?.acceptanceCriteria ?? []).map(normalizeGateText).filter(Boolean));
   const coveredCriteria = new Set(
     scopedTestCases.flatMap((testCase) => testCase.linkedAcceptanceCriteria.map(normalizeGateText)).filter(Boolean)
   );
   const coveredCriteriaCount = requiredCriteria.filter((criterion) => coveredCriteria.has(criterion)).length;
-  const passedTestCases = scopedTestCases.filter(
-    (testCase) => testCase.status === "passed" && testCase.lastRunId !== undefined && runIdSet.has(testCase.lastRunId)
+  const passedTestCases = scopedTestCases.filter((testCase) =>
+    hasPassingTestCaseEvidence(testCase, scopedTestRunsById, runIdSet)
   );
   const flakyTestCaseIds = scopedTestCases.filter((testCase) => testCase.flaky).map((testCase) => testCase.id);
   const flakyTestRunIds = scopedTestRuns.filter((testRun) => testRun.flakySignal).map((testRun) => testRun.id);
@@ -50,7 +56,8 @@ export function evaluateAcceptancePageQualityGate(input: {
     );
   });
   const contracts = input.snapshot.interfaceContracts.filter((contract) => contract.prdId === input.prdId);
-  const compatibleContracts = contracts.filter((contract) => contract.status === "approved");
+  const contractEvidence = evaluateContractTestEvidence(contracts, input.snapshot.testRuns);
+  const compatibleContracts = contracts.filter((contract) => contractEvidence.compatibleContractIds.has(contract.id));
   const pullRequests = input.snapshot.pullRequests.filter((pullRequest) => runIdSet.has(pullRequest.runId));
   const readyPullRequests = pullRequests.filter((pullRequest) => readyPullRequestStatuses.has(pullRequest.status));
   const auditVerification = input.auditVerification ?? {
@@ -98,7 +105,7 @@ export function evaluateAcceptancePageQualityGate(input: {
           ? `${metrics.testCasePassRate}% (${metrics.testCasePassed}/${metrics.testCaseTotal}) TestCase 已通过`
           : "没有可追溯的 TestCase 证据",
       details: scopedTestCases
-        .filter((testCase) => testCase.status !== "passed" || !testCase.lastRunId || !runIdSet.has(testCase.lastRunId))
+        .filter((testCase) => !hasPassingTestCaseEvidence(testCase, scopedTestRunsById, runIdSet))
         .map((testCase) => `${testCase.title}：${testCase.status}`)
     },
     {
@@ -130,8 +137,8 @@ export function evaluateAcceptancePageQualityGate(input: {
           ? `${metrics.contractCompatible}/${metrics.contractTotal} 个 InterfaceContract 已批准且兼容`
           : "没有 InterfaceContract 兼容性证据",
       details: contracts
-        .filter((contract) => contract.status !== "approved")
-        .map((contract) => `${contract.name}：${contract.status}`)
+        .filter((contract) => !contractEvidence.compatibleContractIds.has(contract.id))
+        .flatMap((contract) => contractEvidence.detailsByContractId.get(contract.id) ?? [`${contract.name}：${contract.status}`])
     },
     {
       key: "pr_status",
@@ -182,6 +189,51 @@ export function acceptanceGateRunIds(params: {
     const itemRun = params.runsByWorkItem.get(item.id);
     return itemRun ? [itemRun.id] : [];
   });
+}
+
+function hasPassingTestCaseEvidence(
+  testCase: TestCase,
+  testRunsById: Map<string, TestRun>,
+  runIdSet: Set<string>
+) {
+  if (isGeneratedContractTestCase(testCase)) {
+    const testRun = testCase.lastTestRunId ? testRunsById.get(testCase.lastTestRunId) : undefined;
+    return testCase.status === "passed" && testRun?.status === "passed" && (testRun.runId === undefined || runIdSet.has(testRun.runId));
+  }
+  return testCase.status === "passed" && testCase.lastRunId !== undefined && runIdSet.has(testCase.lastRunId);
+}
+
+function evaluateContractTestEvidence(contracts: InterfaceContract[], testRuns: TestRun[]) {
+  const testRunsById = new Map(testRuns.map((testRun) => [testRun.id, testRun]));
+  const compatibleContractIds = new Set<string>();
+  const detailsByContractId = new Map<string, string[]>();
+
+  for (const contract of contracts) {
+    const details: string[] = [];
+    const requiredTestRunIds = contract.registry?.testRunIds ?? [];
+    if (contract.status !== "approved") details.push(`${contract.name}：${contract.status}`);
+    if (requiredTestRunIds.length === 0) {
+      details.push(`${contract.name}：缺少 contract TestRun 证据`);
+    }
+    for (const testRunId of requiredTestRunIds) {
+      const testRun = testRunsById.get(testRunId);
+      if (!testRun) {
+        details.push(`${contract.name}：缺少 TestRun ${testRunId}`);
+        continue;
+      }
+      if (testRun.status !== "passed") {
+        details.push(`${contract.name}：${testRun.command} -> ${testRun.status}`);
+      }
+    }
+    if (details.length === 0) compatibleContractIds.add(contract.id);
+    else detailsByContractId.set(contract.id, details);
+  }
+
+  return { compatibleContractIds, detailsByContractId };
+}
+
+function isGeneratedContractTestCase(testCase: TestCase) {
+  return testCase.kind === "contract" && testCase.id.startsWith("tc_contract_");
 }
 
 function normalizeGateText(value: string) {

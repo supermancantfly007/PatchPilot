@@ -127,6 +127,21 @@ function acceptanceSnapshot(): PatchPilotSnapshot {
         consumerRoles: ["frontend"],
         specMarkdown: "Compatible",
         testSuggestions: [],
+        registry: {
+          artifactId: "control-api",
+          generatorVersion: "test",
+          revisionId: "cr_control-api_r1",
+          revision: 1,
+          contentHash: "hash_control_api",
+          sourceRef: "packages/contracts/openapi/patchpilot.openapi.json",
+          providerRole: "backend",
+          consumerRoles: ["frontend"],
+          status: "approved",
+          normalizedContent: {},
+          approvedRevisionId: "cr_control-api_r1",
+          approvedAt: now,
+          testRunIds: ["test_contract_1"]
+        },
         createdAt: now,
         updatedAt: now
       }
@@ -175,6 +190,23 @@ function acceptanceSnapshot(): PatchPilotSnapshot {
         flaky: false,
         createdAt: now,
         updatedAt: now
+      },
+      {
+        id: "tc_contract_1",
+        requirementId: "req_1",
+        prdId: "prd_1",
+        workItemId: "wi_1",
+        title: "HTTP API registry diff",
+        kind: "contract",
+        status: "passed",
+        priority: "high",
+        steps: ["Diff the registered contract"],
+        expectedResult: "Contract TestRun passes.",
+        linkedAcceptanceCriteria: ["Criterion A"],
+        lastTestRunId: "test_contract_1",
+        flaky: false,
+        createdAt: now,
+        updatedAt: now
       }
     ],
     testRuns: [
@@ -188,6 +220,22 @@ function acceptanceSnapshot(): PatchPilotSnapshot {
         command: "pnpm test",
         summary: "Passed",
         durationMs: 1200,
+        flakySignal: false
+      },
+      {
+        id: "test_contract_1",
+        testCaseId: "tc_contract_1",
+        prdId: "prd_1",
+        workItemId: "wi_1",
+        status: "passed",
+        command: "patchpilot contract-registry diff --artifact control-api",
+        summary: "Contract evidence passed.",
+        durationMs: 0,
+        startedAt: now,
+        endedAt: now,
+        runner: "patchpilot-contract-registry",
+        environmentImage: "local",
+        exitCode: 0,
         flakySignal: false
       }
     ],

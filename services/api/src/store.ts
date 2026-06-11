@@ -66,9 +66,11 @@ import {
 } from "@patchpilot/domain";
 import {
   buildContractRegistryArtifacts,
+  buildContractTestRequirements,
   createContractRegistryMetadata,
   createInterfaceContracts,
-  type ContractRegistryArtifact
+  type ContractRegistryArtifact,
+  type ContractTestRequirement
 } from "@patchpilot/contracts";
 import {
   CodexRunError,
@@ -455,7 +457,7 @@ export class PatchPilotStore {
           ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prdId)
         ];
         await this.save();
-      } else if (existingInterfaceContracts.some((contract) => !contract.registry)) {
+      } else if (existingInterfaceContracts.some((contract) => this.contractNeedsGeneratedTestRuns(contract))) {
         existingInterfaceContracts = await this.registerInterfaceContracts(
           prd,
           existingInterfaceContracts,
@@ -470,7 +472,12 @@ export class PatchPilotStore {
         await this.save();
       }
       await this.save();
-      return { prd, workItems: existingWorkItems, interfaceContracts: existingInterfaceContracts, testCases: existingTestCases };
+      return {
+        prd,
+        workItems: existingWorkItems,
+        interfaceContracts: existingInterfaceContracts,
+        testCases: this.snapshot.testCases.filter((testCase) => testCase.prdId === prdId)
+      };
     }
     const beforeJson = {
       prd: { id: prd.id, status: prd.status, approvedAt: prd.approvedAt || null },
@@ -520,11 +527,11 @@ export class PatchPilotStore {
         requirement: { id: requirement.id, status: requirement.status },
         workItemIds: workItems.map((item) => item.id),
         interfaceContractIds: interfaceContracts.map((contract) => contract.id),
-        testCaseIds: testCases.map((testCase) => testCase.id)
+        testCaseIds: this.snapshot.testCases.filter((testCase) => testCase.prdId === prdId).map((testCase) => testCase.id)
       }
     });
     await this.save();
-    return { prd, workItems, interfaceContracts, testCases };
+    return { prd, workItems, interfaceContracts, testCases: this.snapshot.testCases.filter((testCase) => testCase.prdId === prdId) };
   }
 
   async startTeam(prdId: string, runnerOverride?: AgentRun["runner"]) {
@@ -608,8 +615,16 @@ export class PatchPilotStore {
     this.snapshot.requirements.unshift(requirement);
     this.snapshot.prds.unshift(prd);
     this.snapshot.workItems.unshift(workItem);
-    this.snapshot.interfaceContracts.unshift(...createInterfaceContracts(prd));
-    this.snapshot.testCases.unshift(...createTestCasesForWorkItems(prd, [workItem], now));
+    const testCases = createTestCasesForWorkItems(prd, [workItem], now);
+    this.snapshot.testCases.unshift(...testCases);
+    const interfaceContracts = await this.registerInterfaceContracts(
+      prd,
+      createInterfaceContracts(prd, "draft", now),
+      [workItem],
+      testCases,
+      now
+    );
+    this.snapshot.interfaceContracts.unshift(...interfaceContracts);
     this.snapshot.bugs.unshift(bug);
     await this.recordIntakeArtifactReferenceArtifacts(requirement, artifactReferences, now);
     this.addAuditEvent({
@@ -2201,7 +2216,9 @@ export class PatchPilotStore {
     }
   ) {
     const prd = this.findPrd(run.prdId);
-    const testCase = this.ensureTestCasesForWorkItems(prd, [workItem], endedAt)[0];
+    const workItemTestCases = this.ensureTestCasesForWorkItems(prd, [workItem], endedAt);
+    const testCase = workItemTestCases.find((candidate) => !isGeneratedContractTestCase(candidate)) ??
+      workItemTestCases[0];
     const normalizedTests: TestRun[] = tests.map((test) => {
       const logArtifactId = test.logArtifactId || `artifact_test_log_${test.id}`;
       const workspacePath = test.workspacePath || options.workspacePath || run.result?.workspacePath || `simulated://${run.id}`;
@@ -2563,9 +2580,18 @@ export class PatchPilotStore {
       });
 
       const diffArtifact = await this.recordContractDiffArtifact(prd, contract, workItems, registry.diff, now);
-      const testRun = this.createContractDiffTestRun(prd, contract, registry, workItems, testCases, diffArtifact?.id, now);
-      registry.testRunIds = [testRun.id];
-      this.upsertContractTestRun(testRun, testCases, now);
+      const contractTestCases = this.ensureContractTestCasesForContract(prd, contract, artifact, workItems, testCases, now);
+      const contractTestRuns = buildContractTestRequirements(artifact).map((requirement) =>
+        this.createContractRequirementTestRun(prd, contract, registry, requirement, contractTestCases, diffArtifact?.id, now)
+      );
+      registry.testRunIds = contractTestRuns.map((testRun) => testRun.id);
+      for (const testRun of contractTestRuns) {
+        this.upsertContractTestRun(testRun, contractTestCases, now);
+        this.addContractTestRunAudit(prd, contract, testRun, now);
+      }
+      const registryDiffTestRun = contractTestRuns.find((testRun) => testRun.runner === "patchpilot-contract-registry") ??
+        contractTestRuns[0];
+      if (!registryDiffTestRun) throw new DomainError("INVALID_STATE", `No contract registry TestRun was generated for ${contract.name}`);
 
       this.addAuditEvent({
         actor: "contract_registry",
@@ -2575,24 +2601,27 @@ export class PatchPilotStore {
         message: contractDiffMessage(contract, registry.diff),
         requirementId: prd.requirementId,
         prdId: prd.id,
-        workItemId: testRun.workItemId,
+        workItemId: registryDiffTestRun.workItemId,
         createdAt: now,
         beforeJson: null,
         afterJson: {
           contract: auditInterfaceContractState(contract),
           diff: auditContractDiffState(registry.diff),
-          testRun: {
+          testRunIds: registry.testRunIds,
+          testRuns: contractTestRuns.map((testRun) => ({
             id: testRun.id,
             status: testRun.status,
+            runner: testRun.runner,
+            command: testRun.command,
             artifactIds: testRun.artifactIds ?? []
-          }
+          }))
         }
       });
 
       if (registry.diff?.hasBreakingChanges) {
-        const approval = this.ensureBreakingContractApproval(prd, contract, registry, testRun, now);
+        const approval = this.ensureBreakingContractApproval(prd, contract, registry, registryDiffTestRun, now);
         registry.approvalId = approval.id;
-        testRun.summary = `Breaking contract diff detected for ${contract.name}; approval ${approval.id} is required.`;
+        registryDiffTestRun.summary = `Breaking contract diff detected for ${contract.name}; approval ${approval.id} is required.`;
       } else if (contentChanged || !baseline) {
         this.addContractBaselinePromotedAudit(prd, contract, "contract_registry", now);
       }
@@ -2619,6 +2648,25 @@ export class PatchPilotStore {
         if (left.revision !== right.revision) return right.revision - left.revision;
         return (right.approvedAt ?? "").localeCompare(left.approvedAt ?? "");
       })[0];
+  }
+
+  private contractNeedsGeneratedTestRuns(contract: InterfaceContract) {
+    if (!contract.registry) return true;
+    const registry = contract.registry;
+    const artifactId = registry.artifactId ?? artifactIdFromContractId(contract.id);
+    const artifact = artifactId ? buildContractRegistryArtifacts().find((candidate) => candidate.artifactId === artifactId) : undefined;
+    const requiredTestRunIds = artifact
+      ? buildContractTestRequirements(artifact).map((requirement) =>
+          contractTestRunId(contract, registry, requirement)
+        )
+      : [];
+    const recordedTestRunIds = registry.testRunIds ?? [];
+    if (requiredTestRunIds.length === 0) return recordedTestRunIds.length === 0;
+    if (recordedTestRunIds.length !== requiredTestRunIds.length) return true;
+    const recordedIds = new Set(recordedTestRunIds);
+    if (!requiredTestRunIds.every((id) => recordedIds.has(id))) return true;
+    const testRunsById = new Map(this.snapshot.testRuns.map((testRun) => [testRun.id, testRun]));
+    return requiredTestRunIds.some((id) => testRunsById.get(id)?.status !== "passed");
   }
 
   private async recordContractDiffArtifact(
@@ -2657,34 +2705,100 @@ export class PatchPilotStore {
     return record;
   }
 
-  private createContractDiffTestRun(
+  private ensureContractTestCasesForContract(
+    prd: Prd,
+    contract: InterfaceContract,
+    artifact: ContractRegistryArtifact,
+    workItems: WorkItem[],
+    testCases: TestCase[],
+    now: string
+  ): TestCase[] {
+    const contractTestCases: TestCase[] = [];
+    for (const requirement of buildContractTestRequirements(artifact)) {
+      const workItem = this.findContractTestWorkItem(workItems, requirement, contract.providerRole);
+      if (!workItem) {
+        throw new DomainError("INVALID_STATE", `No work item can own contract test requirement ${requirement.id}`);
+      }
+      const id = contractTestCaseId(contract, requirement);
+      const existing = this.snapshot.testCases.find((candidate) => candidate.id === id) ??
+        testCases.find((candidate) => candidate.id === id);
+      const next: TestCase = {
+        id,
+        requirementId: prd.requirementId,
+        prdId: prd.id,
+        workItemId: workItem.id,
+        title: requirement.title,
+        kind: "contract",
+        status: existing?.status ?? "ready",
+        priority: "high",
+        steps: requirement.steps,
+        expectedResult: requirement.expectedResult,
+        linkedAcceptanceCriteria: workItem.acceptanceCriteria,
+        ...(existing?.lastRunId ? { lastRunId: existing.lastRunId } : {}),
+        ...(existing?.lastTestRunId ? { lastTestRunId: existing.lastTestRunId } : {}),
+        ...(existing?.flaky !== undefined ? { flaky: existing.flaky } : {}),
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now
+      };
+      if (existing) Object.assign(existing, next);
+      else {
+        this.snapshot.testCases.unshift(next);
+        testCases.push(next);
+      }
+      contractTestCases.push(existing ?? next);
+    }
+    return contractTestCases;
+  }
+
+  private findContractTestWorkItem(
+    workItems: WorkItem[],
+    requirement: ContractTestRequirement,
+    providerRole: WorkItemRole
+  ) {
+    if (requirement.requirementKind === "registry_diff" || requirement.requirementKind === "provider_validation") {
+      return this.findProviderWorkItem(workItems, providerRole);
+    }
+    if (requirement.participantLabel === "worker consumer") {
+      return workItems.find((workItem) => workItem.role === "ops") ??
+        this.findProviderWorkItem(workItems, providerRole);
+    }
+    if (requirement.participantRole === "reviewer") {
+      return workItems.find((workItem) => workItem.role === "test") ??
+        this.findProviderWorkItem(workItems, providerRole);
+    }
+    return workItems.find((workItem) => workItem.role === requirement.participantRole) ??
+      this.findProviderWorkItem(workItems, providerRole);
+  }
+
+  private createContractRequirementTestRun(
     prd: Prd,
     contract: InterfaceContract,
     registry: ContractRegistryMetadata,
-    workItems: WorkItem[],
+    requirement: ContractTestRequirement,
     testCases: TestCase[],
     diffArtifactId: string | undefined,
     now: string
   ): TestRun {
-    const workItem = this.findProviderWorkItem(workItems, contract.providerRole);
-    const testCase = workItem
-      ? testCases.find((candidate) => candidate.workItemId === workItem.id && candidate.kind === "contract")
-      : undefined;
-    const blocked = Boolean(registry.diff?.hasBreakingChanges);
+    const testCaseId = contractTestCaseId(contract, requirement);
+    const testCase = testCases.find((candidate) => candidate.id === testCaseId) ??
+      this.snapshot.testCases.find((candidate) => candidate.id === testCaseId);
+    const blocked = requirement.requirementKind === "registry_diff" && Boolean(registry.diff?.hasBreakingChanges);
     return {
-      id: `test_contract_diff_${shortHash(`${contract.id}:${registry.revisionId}:${registry.diff?.id ?? "none"}`)}`,
+      id: contractTestRunId(contract, registry, requirement),
       testCaseId: testCase?.id,
       prdId: prd.id,
-      workItemId: workItem?.id,
+      workItemId: testCase?.workItemId,
       status: blocked ? "blocked" : "passed",
-      command: `patchpilot contract-registry diff --artifact ${registry.artifactId}`,
+      command: requirement.command,
       summary: blocked
         ? `Breaking contract diff detected for ${contract.name}; approval is required.`
-        : contractDiffMessage(contract, registry.diff),
+        : requirement.requirementKind === "registry_diff"
+          ? contractDiffMessage(contract, registry.diff)
+          : requirement.summary,
       durationMs: 0,
       startedAt: now,
       endedAt: now,
-      runner: "patchpilot-contract-registry",
+      runner: requirement.runner,
       environmentImage: "local",
       exitCode: blocked ? null : 0,
       artifactIds: diffArtifactId ? [diffArtifactId] : [],
@@ -2708,6 +2822,31 @@ export class PatchPilotStore {
     linkedTestCase.lastTestRunId = testRun.id;
     linkedTestCase.flaky = Boolean(testRun.flakySignal);
     linkedTestCase.updatedAt = now;
+  }
+
+  private addContractTestRunAudit(prd: Prd, contract: InterfaceContract, testRun: TestRun, now: string) {
+    this.addAuditEvent({
+      actor: testRun.runner ?? "contract_tests",
+      action: `test_run.${testRun.status}`,
+      targetType: "test_run",
+      targetId: testRun.id,
+      message: `${testRun.command}：${testRun.summary}`,
+      requirementId: prd.requirementId,
+      prdId: prd.id,
+      workItemId: testRun.workItemId,
+      createdAt: now,
+      beforeJson: null,
+      afterJson: {
+        contract: auditInterfaceContractState(contract),
+        testRun: {
+          id: testRun.id,
+          status: testRun.status,
+          command: testRun.command,
+          runner: testRun.runner,
+          artifactIds: testRun.artifactIds ?? []
+        }
+      }
+    });
   }
 
   private ensureBreakingContractApproval(
@@ -3391,6 +3530,28 @@ export class PatchPilotStore {
     return this.pullRequestAdapter ?? createConfiguredPullRequestAdapter();
   }
 
+  private contractEvidenceForWorkItem(prdId: string, workItemId: string) {
+    const contractTestCases = this.snapshot.testCases.filter((testCase) =>
+      testCase.prdId === prdId &&
+      testCase.workItemId === workItemId &&
+      testCase.kind === "contract" &&
+      isGeneratedContractTestCase(testCase)
+    );
+    if (contractTestCases.length === 0) return { passed: true, details: [] };
+    const details: string[] = [];
+    for (const testCase of contractTestCases) {
+      const testRun = testCase.lastTestRunId
+        ? this.snapshot.testRuns.find((candidate) => candidate.id === testCase.lastTestRunId)
+        : undefined;
+      if (testCase.status === "passed" && testRun?.status === "passed") continue;
+      details.push(`${testCase.title}: ${testRun?.status ?? testCase.status}`);
+    }
+    return {
+      passed: details.length === 0,
+      details
+    };
+  }
+
   private recordReview(
     run: AgentRun,
     workItem: WorkItem,
@@ -3400,7 +3561,8 @@ export class PatchPilotStore {
   ): ReviewRecord {
     const existing = this.snapshot.reviewRecords.find((item) => item.runId === run.id);
     const tests = run.result?.tests ?? [];
-    const allTestsPassed = tests.length > 0 && tests.every((test) => test.status === "passed");
+    const contractEvidence = this.contractEvidenceForWorkItem(workItem.prdId, workItem.id);
+    const allTestsPassed = tests.length > 0 && tests.every((test) => test.status === "passed") && contractEvidence.passed;
     const reviewerSummary = redactSecrets(
       run.result?.reviewerSummary || "Reviewer agent 尚未返回摘要。",
       redactionOptions
@@ -3422,8 +3584,8 @@ export class PatchPilotStore {
       testSummary: redactSecrets(testSummary, redactionOptions).redacted,
       riskLevel: run.result?.riskLevel || "medium",
       findings: allTestsPassed
-        ? ["测试证据通过", "PR 交付记录已生成", "未发现阻断验收的高风险问题"]
-        : ["测试证据不足或存在失败，需要返工"],
+        ? ["测试证据通过", "契约 TestRun 证据通过", "PR 交付记录已生成", "未发现阻断验收的高风险问题"]
+        : ["测试证据不足、契约 TestRun 缺失或存在失败，需要返工", ...contractEvidence.details],
       createdAt: existing?.createdAt || now,
       updatedAt: now
     };
@@ -3847,6 +4009,31 @@ function contractRiskLevel(diff: ContractDiffSummary | undefined): ApprovalRecor
 function artifactIdFromContractId(contractId: string) {
   const match = /_([^_]+)$/.exec(contractId);
   return match?.[1];
+}
+
+function contractTestCaseId(contract: InterfaceContract, requirement: ContractTestRequirement) {
+  return `tc_contract_${shortHash([
+    contract.id,
+    contract.registry?.revisionId ?? `r${contract.version}`,
+    requirement.id
+  ].join(":"))}`;
+}
+
+function contractTestRunId(
+  contract: InterfaceContract,
+  registry: ContractRegistryMetadata,
+  requirement: ContractTestRequirement
+) {
+  return `test_contract_${shortHash([
+    contract.id,
+    registry.revisionId,
+    registry.diff?.id ?? "none",
+    requirement.id
+  ].join(":"))}`;
+}
+
+function isGeneratedContractTestCase(testCase: TestCase) {
+  return testCase.id.startsWith("tc_contract_");
 }
 
 function shortHash(value: string) {

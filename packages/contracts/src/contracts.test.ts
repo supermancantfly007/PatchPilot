@@ -3,6 +3,7 @@ import {
   apiPath,
   apiRoute,
   buildContractRegistryArtifacts,
+  buildContractTestRequirements,
   contractArtifacts,
   contractVersion,
   createContractRegistryMetadata,
@@ -79,6 +80,41 @@ describe("contract artifacts", () => {
       generatorVersion: contractVersion
     });
     expect(registryArtifacts.every((artifact) => /^[a-f0-9]{64}$/.test(artifact.contentHash))).toBe(true);
+  });
+
+  it("generates provider and consumer contract test requirements for every artifact", () => {
+    const requirements = buildContractRegistryArtifacts().flatMap((artifact) => buildContractTestRequirements(artifact));
+
+    expect(requirements.filter((requirement) => requirement.requirementKind === "registry_diff")).toHaveLength(3);
+    expect(requirements.filter((requirement) => requirement.requirementKind === "provider_validation")).toHaveLength(3);
+    expect(requirements.map((requirement) => requirement.command)).toEqual(
+      expect.arrayContaining([
+        "pnpm openapi:check && pnpm --filter @patchpilot/api test -- server.test.ts",
+        "pnpm events:check && pnpm --filter @patchpilot/api test -- server.test.ts"
+      ])
+    );
+    expect(requirements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          artifactId: "control-api",
+          requirementKind: "consumer_compatibility",
+          participantLabel: "frontend consumer",
+          command: "pnpm --filter @patchpilot/web test"
+        }),
+        expect.objectContaining({
+          artifactId: "control-api",
+          requirementKind: "consumer_compatibility",
+          participantLabel: "worker consumer",
+          command: "pnpm --filter @patchpilot/worker test"
+        }),
+        expect.objectContaining({
+          artifactId: "delivery-state",
+          requirementKind: "consumer_compatibility",
+          participantLabel: "worker consumer",
+          command: "pnpm --filter @patchpilot/worker test"
+        })
+      ])
+    );
   });
 
   it("classifies removed HTTP operations as breaking contract diffs", () => {

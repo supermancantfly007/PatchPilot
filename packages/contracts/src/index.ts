@@ -412,12 +412,37 @@ export interface ContractRegistryArtifact {
   testSuggestions: string[];
 }
 
+export type ContractTestRequirementKind = "registry_diff" | "provider_validation" | "consumer_compatibility";
+
+export interface ContractTestRequirement {
+  id: string;
+  artifactId: string;
+  kind: ContractArtifactKind;
+  requirementKind: ContractTestRequirementKind;
+  participantRole: AgentRole;
+  participantLabel: string;
+  command: string;
+  runner: "patchpilot-contract-registry" | "patchpilot-contract-tests";
+  title: string;
+  summary: string;
+  steps: string[];
+  expectedResult: string;
+}
+
 export interface ContractRegistryDiffInput {
   baseline?: ContractRegistryMetadata;
   proposed: ContractRegistryArtifact;
   proposedRevisionId: string;
   revision: number;
   now?: string;
+}
+
+export function buildContractTestRequirements(artifact: ContractRegistryArtifact): ContractTestRequirement[] {
+  return [
+    registryDiffRequirement(artifact),
+    providerValidationRequirement(artifact),
+    ...consumerCompatibilityRequirements(artifact)
+  ];
 }
 
 export function apiRoute(operationId: ApiOperationId): ApiRoute {
@@ -728,6 +753,139 @@ function testSuggestionsFor(kind: ContractArtifactKind): string[] {
     return ["SSE first packet contains the current AgentRun", "Terminal statuses close the stream", "Consumers fall back to snapshot polling"];
   }
   return ["Domain type tests cover snapshot schema", "Store migration normalizes missing arrays", "Professional UI displays contract summaries"];
+}
+
+function registryDiffRequirement(artifact: ContractRegistryArtifact): ContractTestRequirement {
+  return {
+    id: `${artifact.artifactId}:registry-diff`,
+    artifactId: artifact.artifactId,
+    kind: artifact.kind,
+    requirementKind: "registry_diff",
+    participantRole: artifact.providerRole,
+    participantLabel: "contract registry",
+    command: `patchpilot contract-registry diff --artifact ${artifact.artifactId}`,
+    runner: "patchpilot-contract-registry",
+    title: `${artifact.name} registry diff`,
+    summary: `Diff ${artifact.artifactId} against the latest approved contract baseline.`,
+    steps: [
+      "Load the latest approved registry baseline for this artifact.",
+      "Diff the proposed normalized artifact against the baseline.",
+      "Classify compatible, warning, and breaking changes with impacted consumers."
+    ],
+    expectedResult: "The registry diff is recorded and any breaking change is blocked until approval."
+  };
+}
+
+function providerValidationRequirement(artifact: ContractRegistryArtifact): ContractTestRequirement {
+  const commandByKind: Record<ContractArtifactKind, string> = {
+    http: "pnpm openapi:check && pnpm --filter @patchpilot/api test -- server.test.ts",
+    event: "pnpm events:check && pnpm --filter @patchpilot/api test -- server.test.ts",
+    schema: "pnpm --filter @patchpilot/contracts test -- contracts.test.ts events.test.ts openapi.test.ts"
+  };
+  return {
+    id: `${artifact.artifactId}:provider:${artifact.providerRole}`,
+    artifactId: artifact.artifactId,
+    kind: artifact.kind,
+    requirementKind: "provider_validation",
+    participantRole: artifact.providerRole,
+    participantLabel: `${artifact.providerRole} provider`,
+    command: commandByKind[artifact.kind],
+    runner: "patchpilot-contract-tests",
+    title: `${artifact.name} provider validation`,
+    summary: `Validate the ${artifact.providerRole} provider publishes the generated ${artifact.kind} contract artifact.`,
+    steps: providerValidationSteps(artifact.kind),
+    expectedResult: "Generated provider artifacts are current and provider behavior matches the registered contract."
+  };
+}
+
+function consumerCompatibilityRequirements(artifact: ContractRegistryArtifact): ContractTestRequirement[] {
+  return artifact.consumerRoles.map((role) => {
+    const participantLabel = consumerParticipantLabel(artifact.kind, role);
+    return {
+      id: `${artifact.artifactId}:consumer:${participantLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      artifactId: artifact.artifactId,
+      kind: artifact.kind,
+      requirementKind: "consumer_compatibility",
+      participantRole: role,
+      participantLabel,
+      command: consumerCommand(artifact.kind, role),
+      runner: "patchpilot-contract-tests",
+      title: `${artifact.name} ${participantLabel} compatibility`,
+      summary: `Verify the ${participantLabel} code path remains compatible with ${artifact.artifactId}.`,
+      steps: consumerCompatibilitySteps(artifact.kind, participantLabel),
+      expectedResult: `${participantLabel} handles the proposed contract revision without missing fields, routes, events, or state fallbacks.`
+    };
+  });
+}
+
+function providerValidationSteps(kind: ContractArtifactKind) {
+  if (kind === "http") {
+    return [
+      "Regenerate and compare the OpenAPI artifact.",
+      "Run API route tests for public request and response shapes.",
+      "Confirm generated routes stay aligned with Fastify handlers."
+    ];
+  }
+  if (kind === "event") {
+    return [
+      "Regenerate and compare the event schema artifact.",
+      "Run SSE tests for first payload, terminal payload, and stream close behavior.",
+      "Confirm event payload fields match the registered AgentRun schema."
+    ];
+  }
+  return [
+    "Validate the shared-state schema generated from domain types.",
+    "Check registry metadata, diff summaries, TestCase, and TestRun schemas.",
+    "Confirm schema artifacts remain reproducible from @patchpilot/contracts."
+  ];
+}
+
+function consumerCompatibilitySteps(kind: ContractArtifactKind, participantLabel: string) {
+  if (kind === "http") {
+    return [
+      `Run ${participantLabel} checks that build URLs through apiPath.`,
+      "Verify required request payloads and response fields are still tolerated.",
+      "Confirm unknown compatible additions do not break the consumer path."
+    ];
+  }
+  if (kind === "event") {
+    return [
+      `Run ${participantLabel} checks for AgentRun SSE payload handling.`,
+      "Verify terminal statuses and disconnect fallback behavior.",
+      "Confirm unknown optional event fields are ignored."
+    ];
+  }
+  return [
+    `Run ${participantLabel} checks against PatchPilotSnapshot and related state types.`,
+    "Verify optional fields, enum additions, and registry metadata are tolerated.",
+    "Confirm state consumers continue to render, dispatch, or report from shared schema data."
+  ];
+}
+
+function consumerParticipantLabel(kind: ContractArtifactKind, role: AgentRole) {
+  if (role === "ops" && (kind === "http" || kind === "schema")) return "worker consumer";
+  if (role === "frontend") return "frontend consumer";
+  if (role === "test") return "test agent consumer";
+  if (role === "reviewer") return "reviewer consumer";
+  return `${role} consumer`;
+}
+
+function consumerCommand(kind: ContractArtifactKind, role: AgentRole) {
+  if (role === "frontend") {
+    return kind === "event"
+      ? "pnpm --filter @patchpilot/web typecheck"
+      : "pnpm --filter @patchpilot/web test";
+  }
+  if (role === "ops") {
+    return kind === "http" || kind === "schema"
+      ? "pnpm --filter @patchpilot/worker test"
+      : "pnpm --filter @patchpilot/worker typecheck";
+  }
+  if (role === "reviewer") return "pnpm --filter @patchpilot/contracts test -- contracts.test.ts";
+  if (role === "test") return kind === "http" || kind === "event"
+    ? "pnpm --filter @patchpilot/api test -- server.test.ts"
+    : "pnpm test";
+  return `pnpm --filter @patchpilot/${role} test`;
 }
 
 function sourceRefFor(artifact: ContractArtifact) {
