@@ -129,7 +129,15 @@ export const approvalTargetType = pgEnum("approval_target_type", [
   "policy",
   "secret",
   "network",
-  "repository"
+  "repository",
+  "release_gate"
+]);
+export const releaseGateOperation = pgEnum("release_gate_operation", ["release", "rollback"]);
+export const releaseGateStatus = pgEnum("release_gate_status", [
+  "approval_pending",
+  "manual_action_required",
+  "denied",
+  "expired"
 ]);
 export const artifactKind = pgEnum("artifact_kind", [
   "log",
@@ -864,6 +872,50 @@ export const approvals = pgTable(
     check("approvals_target_id_not_empty", sql`length(${table.targetId}) > 0`),
     check("approvals_requested_by_not_empty", sql`length(${table.requestedBy}) > 0`),
     check("approvals_requested_reason_not_empty", sql`length(${table.requestedReason}) > 0`)
+  ]
+);
+
+export const releaseGates = pgTable(
+  "release_gates",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    operation: releaseGateOperation("operation").notNull(),
+    status: releaseGateStatus("status").notNull().default("approval_pending"),
+    targetEnvironment: text("target_environment").notNull(),
+    approvalId: text("approval_id")
+      .notNull()
+      .references(() => approvals.id, { onDelete: "cascade" }),
+    requestedBy: text("requested_by").notNull(),
+    requestedReason: text("requested_reason").notNull(),
+    riskLevel: approvalRiskLevel("risk_level").notNull(),
+    gatePassed: boolean("gate_passed").notNull().default(false),
+    blockingReasons: jsonb("blocking_reasons").$type<string[]>().notNull().default(emptyJsonArray),
+    evidence: jsonb("evidence").$type<unknown>().notNull().default(emptyJsonObject),
+    manualAction: text("manual_action").notNull(),
+    requirementId: text("requirement_id").references(() => requirements.id, { onDelete: "set null" }),
+    prdVersionId: text("prd_version_id").references(() => prdVersions.id, { onDelete: "set null" }),
+    workItemId: text("work_item_id").references(() => workItems.id, { onDelete: "set null" }),
+    agentRunId: text("agent_run_id").references(() => agentRuns.id, { onDelete: "set null" }),
+    repositoryId: text("repository_id").references(() => repositories.id, { onDelete: "set null" }),
+    repositoryFullName: text("repository_full_name"),
+    pullRequestId: text("pull_request_id").references(() => pullRequests.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("release_gates_approval_id_unique").on(table.approvalId),
+    index("release_gates_project_id_idx").on(table.projectId),
+    index("release_gates_operation_status_idx").on(table.operation, table.status),
+    index("release_gates_prd_version_id_idx").on(table.prdVersionId),
+    index("release_gates_repository_id_idx").on(table.repositoryId),
+    index("release_gates_pull_request_id_idx").on(table.pullRequestId),
+    check("release_gates_target_environment_not_empty", sql`length(${table.targetEnvironment}) > 0`),
+    check("release_gates_requested_by_not_empty", sql`length(${table.requestedBy}) > 0`),
+    check("release_gates_requested_reason_not_empty", sql`length(${table.requestedReason}) > 0`),
+    check("release_gates_manual_action_not_empty", sql`length(${table.manualAction}) > 0`)
   ]
 );
 

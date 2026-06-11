@@ -222,6 +222,7 @@ const snapshot: PatchPilotSnapshot = {
     }
   ],
   approvals: [],
+  releaseGates: [],
   bugs: [],
   agents: []
 };

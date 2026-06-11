@@ -93,6 +93,7 @@ function snapshot(): PatchPilotSnapshot {
     auditEvents: [],
     acceptances: [],
     approvals: [],
+    releaseGates: [],
     bugs: [],
     agents: [agent()]
   };

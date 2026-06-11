@@ -266,6 +266,7 @@ function acceptanceSnapshot(): PatchPilotSnapshot {
     auditEvents: [],
     acceptances: [],
     approvals: [],
+    releaseGates: [],
     bugs: [],
     agents: []
   };

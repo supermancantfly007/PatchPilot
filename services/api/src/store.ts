@@ -42,6 +42,8 @@ import {
   type Prd,
   type PullRequestRecord,
   type Requirement,
+  type ReleaseGateEvidence,
+  type ReleaseGateRecord,
   type RepositoryRecord,
   type ReviewRecord,
   type SecretBrokerEvidence,
@@ -464,6 +466,142 @@ export class PatchPilotStore {
 
   async denyApproval(id: string, input: { decidedBy: string; decisionReason: string }) {
     return this.decideApproval(id, "denied", input);
+  }
+
+  async requestReleaseApproval(
+    prdId: string,
+    input: {
+      targetEnvironment: string;
+      requestedReason: string;
+      expiresAt?: string;
+      repositoryId?: string;
+      testRunIds?: string[];
+    },
+    options: { actor?: string } = {}
+  ) {
+    return this.withMutation(async () => {
+      await this.load();
+      const now = new Date().toISOString();
+      this.expireOverdueApprovals(now);
+      const prd = this.findPrd(prdId);
+      const evidence = this.buildReleaseGateEvidence(prd, {
+        repositoryId: input.repositoryId,
+        testRunIds: input.testRunIds ?? []
+      });
+      if (!evidence.acceptanceQualityGate.passed) {
+        throw new DomainError("INVALID_STATE", `Release gate failed: ${evidence.acceptanceQualityGate.blockingReasons.join("; ")}`);
+      }
+      const actor = options.actor ?? "release-manager";
+      const releaseGateId = `release_gate_${randomUUID()}`;
+      const approval = this.createApprovalRecord({
+        kind: "dangerous_operation",
+        targetType: "release_gate",
+        targetId: releaseGateId,
+        requestedBy: actor,
+        requestedReason: `Release ${prd.id} to ${input.targetEnvironment}: ${input.requestedReason}`,
+        riskLevel: "high",
+        expiresAt: input.expiresAt ?? defaultReleaseApprovalExpiry(now),
+        requirementId: prd.requirementId,
+        prdId: prd.id
+      }, now);
+      const releaseGate: ReleaseGateRecord = {
+        id: releaseGateId,
+        operation: "release",
+        status: releaseGateStatusForApproval(approval),
+        targetEnvironment: input.targetEnvironment,
+        approvalId: approval.id,
+        requestedBy: actor,
+        requestedReason: input.requestedReason,
+        riskLevel: approval.riskLevel,
+        gatePassed: evidence.acceptanceQualityGate.passed,
+        blockingReasons: evidence.acceptanceQualityGate.blockingReasons,
+        evidence,
+        manualAction: "Approval records release authorization only. PatchPilot will not deploy automatically; a maintainer must execute the release outside the agent runner and preserve audit evidence.",
+        requirementId: prd.requirementId,
+        prdId: prd.id,
+        ...(input.repositoryId ? { repositoryId: input.repositoryId } : {}),
+        ...(repositoryFullNameFromEvidence(this.snapshot.repositories, input.repositoryId) ? {
+          repositoryFullName: repositoryFullNameFromEvidence(this.snapshot.repositories, input.repositoryId)
+        } : {}),
+        createdAt: now,
+        updatedAt: now
+      };
+      this.snapshot.releaseGates.unshift(releaseGate);
+      this.addReleaseGateRequestedAudit(releaseGate, approval, now);
+      if (approval.status !== "pending") this.addReleaseGateDecisionAudit(releaseGate, approval, "scheduler", now);
+      await this.save();
+      return structuredClone({ releaseGate, approval });
+    });
+  }
+
+  async requestRollbackApproval(
+    pullRequestId: string,
+    input: {
+      targetEnvironment: string;
+      requestedReason: string;
+      rollbackPlan: string;
+      expiresAt?: string;
+      defectId?: string;
+      testRunIds?: string[];
+    },
+    options: { actor?: string } = {}
+  ) {
+    return this.withMutation(async () => {
+      await this.load();
+      const now = new Date().toISOString();
+      this.expireOverdueApprovals(now);
+      const pullRequest = this.findPullRequest(pullRequestId);
+      const evidence = this.buildRollbackGateEvidence(pullRequest, {
+        defectId: input.defectId,
+        testRunIds: input.testRunIds ?? []
+      });
+      if (!evidence.acceptanceQualityGate.passed) {
+        throw new DomainError("INVALID_STATE", `Rollback gate failed: ${evidence.acceptanceQualityGate.blockingReasons.join("; ")}`);
+      }
+      const actor = options.actor ?? "release-manager";
+      const releaseGateId = `release_gate_${randomUUID()}`;
+      const approval = this.createApprovalRecord({
+        kind: "dangerous_operation",
+        targetType: "release_gate",
+        targetId: releaseGateId,
+        requestedBy: actor,
+        requestedReason: `Rollback ${pullRequest.id} in ${input.targetEnvironment}: ${input.requestedReason}. Plan: ${input.rollbackPlan}`,
+        riskLevel: "critical",
+        expiresAt: input.expiresAt ?? defaultReleaseApprovalExpiry(now),
+        requirementId: pullRequest.requirementId,
+        prdId: pullRequest.prdId,
+        workItemId: pullRequest.workItemId,
+        runId: pullRequest.runId
+      }, now);
+      const releaseGate: ReleaseGateRecord = {
+        id: releaseGateId,
+        operation: "rollback",
+        status: releaseGateStatusForApproval(approval),
+        targetEnvironment: input.targetEnvironment,
+        approvalId: approval.id,
+        requestedBy: actor,
+        requestedReason: input.requestedReason,
+        riskLevel: approval.riskLevel,
+        gatePassed: evidence.acceptanceQualityGate.passed,
+        blockingReasons: evidence.acceptanceQualityGate.blockingReasons,
+        evidence,
+        manualAction: "Approval records rollback authorization only. PatchPilot will not revert or deploy automatically; create a revert PR or runbook action manually and attach follow-up evidence.",
+        requirementId: pullRequest.requirementId,
+        prdId: pullRequest.prdId,
+        workItemId: pullRequest.workItemId,
+        runId: pullRequest.runId,
+        ...(pullRequest.repositoryId ? { repositoryId: pullRequest.repositoryId } : {}),
+        ...(pullRequest.repositoryFullName ? { repositoryFullName: pullRequest.repositoryFullName } : {}),
+        pullRequestId: pullRequest.id,
+        createdAt: now,
+        updatedAt: now
+      };
+      this.snapshot.releaseGates.unshift(releaseGate);
+      this.addReleaseGateRequestedAudit(releaseGate, approval, now);
+      if (approval.status !== "pending") this.addReleaseGateDecisionAudit(releaseGate, approval, "scheduler", now);
+      await this.save();
+      return structuredClone({ releaseGate, approval });
+    });
   }
 
   async createRequirement(input: {
@@ -1945,6 +2083,12 @@ export class PatchPilotStore {
     return run;
   }
 
+  private findPullRequest(id: string) {
+    const pullRequest = this.snapshot.pullRequests.find((item) => item.id === id);
+    if (!pullRequest) throw new DomainError("NOT_FOUND", `PullRequest not found: ${id}`);
+    return pullRequest;
+  }
+
   private findApproval(id: string) {
     const approval = this.snapshot.approvals.find((item) => item.id === id);
     if (!approval) throw new DomainError("NOT_FOUND", `Approval not found: ${id}`);
@@ -2074,6 +2218,7 @@ export class PatchPilotStore {
       } else {
         this.recordBreakingContractApprovalDenied(approval, input.decidedBy, now);
       }
+      this.syncReleaseGateApprovalDecision(approval, input.decidedBy, now);
       const output = structuredClone(approval);
       await this.save();
       if (resumeRunId) this.scheduleRunExecution(resumeRunId);
@@ -2219,6 +2364,7 @@ export class PatchPilotStore {
       approval.updatedAt = now;
       this.addApprovalExpiredAudit(approval, now);
       this.recordBreakingContractApprovalExpired(approval, now);
+      this.syncReleaseGateApprovalDecision(approval, "scheduler", now);
       changed = true;
     }
     return changed;
@@ -2244,6 +2390,84 @@ export class PatchPilotStore {
       },
       afterJson: {
         approval: auditApprovalState(approval)
+      }
+    });
+  }
+
+  private addReleaseGateRequestedAudit(releaseGate: ReleaseGateRecord, approval: ApprovalRecord, now: string) {
+    this.addAuditEvent({
+      actor: releaseGate.requestedBy,
+      action: releaseGate.operation === "release" ? "release.approval_requested" : "rollback.approval_requested",
+      targetType: "release_gate",
+      targetId: releaseGate.id,
+      message: releaseGate.operation === "release"
+        ? "已请求生产发布审批。PatchPilot 不会自动发布。"
+        : "已请求回滚审批。PatchPilot 不会自动回滚。",
+      requirementId: releaseGate.requirementId,
+      prdId: releaseGate.prdId,
+      workItemId: releaseGate.workItemId,
+      runId: releaseGate.runId,
+      createdAt: now,
+      beforeJson: null,
+      afterJson: {
+        releaseGate: auditReleaseGateState(releaseGate),
+        approval: auditApprovalState(approval)
+      },
+      metadataJson: {
+        operation: releaseGate.operation,
+        targetEnvironment: releaseGate.targetEnvironment,
+        approvalId: approval.id,
+        evidence: auditReleaseGateEvidence(releaseGate.evidence),
+        manualAction: releaseGate.manualAction
+      }
+    });
+  }
+
+  private syncReleaseGateApprovalDecision(approval: ApprovalRecord, actor: string, now: string) {
+    const releaseGate = this.snapshot.releaseGates.find((gate) => gate.approvalId === approval.id);
+    if (!releaseGate) return;
+    const beforeJson = { releaseGate: auditReleaseGateState(releaseGate), approval: auditApprovalState(approval) };
+    releaseGate.status = releaseGateStatusForApproval(approval);
+    releaseGate.updatedAt = now;
+    this.addReleaseGateDecisionAudit(releaseGate, approval, actor, now, beforeJson);
+  }
+
+  private addReleaseGateDecisionAudit(
+    releaseGate: ReleaseGateRecord,
+    approval: ApprovalRecord,
+    actor: string,
+    now: string,
+    beforeJson: AuditJsonValue = {
+      releaseGate: auditReleaseGateState(releaseGate),
+      approval: auditApprovalState(approval)
+    }
+  ) {
+    const decision = approval.status === "approved"
+      ? "approved"
+      : approval.status === "denied"
+        ? "denied"
+        : "expired";
+    this.addAuditEvent({
+      actor,
+      action: `${releaseGate.operation}.approval_${decision}`,
+      targetType: "release_gate",
+      targetId: releaseGate.id,
+      message: releaseGateDecisionMessage(releaseGate, approval.status),
+      requirementId: releaseGate.requirementId,
+      prdId: releaseGate.prdId,
+      workItemId: releaseGate.workItemId,
+      runId: releaseGate.runId,
+      createdAt: now,
+      beforeJson,
+      afterJson: {
+        releaseGate: auditReleaseGateState(releaseGate),
+        approval: auditApprovalState(approval)
+      },
+      metadataJson: {
+        operation: releaseGate.operation,
+        targetEnvironment: releaseGate.targetEnvironment,
+        approvalId: approval.id,
+        manualAction: releaseGate.manualAction
       }
     });
   }
@@ -2454,6 +2678,7 @@ export class PatchPilotStore {
     this.snapshot.auditEvents = this.normalizeAuditEvents(this.snapshot.auditEvents || [], now);
     this.snapshot.acceptances ||= [];
     this.snapshot.approvals ||= [];
+    this.snapshot.releaseGates ||= [];
     this.snapshot.bugs ||= [];
     this.snapshot.agents = this.mergeDefaultAgents(this.snapshot.agents || [], now);
     this.snapshot.repositories = this.snapshot.repositories.map((repository) => ({
@@ -2474,6 +2699,14 @@ export class PatchPilotStore {
     this.snapshot.approvals = this.snapshot.approvals.map((item) => ({
       ...item,
       status: item.status || "pending",
+      createdAt: item.createdAt || now,
+      updatedAt: item.updatedAt || item.createdAt || now
+    }));
+    this.snapshot.releaseGates = this.snapshot.releaseGates.map((item) => ({
+      ...item,
+      status: item.status || "approval_pending",
+      gatePassed: item.gatePassed ?? item.evidence?.acceptanceQualityGate?.passed ?? false,
+      blockingReasons: item.blockingReasons ?? item.evidence?.acceptanceQualityGate?.blockingReasons ?? [],
       createdAt: item.createdAt || now,
       updatedAt: item.updatedAt || item.createdAt || now
     }));
@@ -2632,6 +2865,129 @@ export class PatchPilotStore {
 
   private isRunRejected(runId: string) {
     return this.snapshot.acceptances.some((acceptance) => acceptance.runId === runId && acceptance.status === "rejected");
+  }
+
+  private buildReleaseGateEvidence(
+    prd: Prd,
+    options: { repositoryId?: string; testRunIds: string[] }
+  ): ReleaseGateEvidence {
+    const workItems = this.snapshot.workItems.filter((workItem) =>
+      workItem.prdId === prd.id && (!options.repositoryId || workItem.repositoryId === options.repositoryId)
+    );
+    if (workItems.length === 0) {
+      throw new DomainError("INVALID_STATE", options.repositoryId
+        ? `PRD has no work items for repository ${options.repositoryId}`
+        : "PRD has no work items for release approval");
+    }
+    const runs = workItems
+      .map((workItem) => this.latestRunForWorkItem(workItem.id))
+      .filter((run): run is AgentRun => Boolean(run));
+    const evidence = this.buildReleaseGateEvidenceForScope({
+      prdId: prd.id,
+      runIds: runs.map((run) => run.id),
+      workItemIds: workItems.map((workItem) => workItem.id),
+      requestedTestRunIds: options.testRunIds,
+      pullRequestIds: this.snapshot.pullRequests
+        .filter((pullRequest) => runs.some((run) => run.id === pullRequest.runId))
+        .map((pullRequest) => pullRequest.id),
+      repositoryIds: uniqueStrings(workItems.map((workItem) => workItem.repositoryId)),
+      scope: workItems.length > 1 ? "prd" : "run"
+    });
+    if (runs.length !== workItems.length) {
+      evidence.acceptanceQualityGate.passed = false;
+      evidence.acceptanceQualityGate.blockingReasons.push("Not every release work item has a completed run.");
+    }
+    return evidence;
+  }
+
+  private buildRollbackGateEvidence(
+    pullRequest: PullRequestRecord,
+    options: { defectId?: string; testRunIds: string[] }
+  ): ReleaseGateEvidence {
+    if (options.defectId && !this.snapshot.bugs.some((bug) => bug.id === options.defectId)) {
+      throw new DomainError("NOT_FOUND", `Defect not found: ${options.defectId}`);
+    }
+    return this.buildReleaseGateEvidenceForScope({
+      prdId: pullRequest.prdId,
+      runIds: [pullRequest.runId],
+      workItemIds: [pullRequest.workItemId],
+      requestedTestRunIds: options.testRunIds,
+      pullRequestIds: [pullRequest.id],
+      repositoryIds: uniqueStrings([pullRequest.repositoryId]),
+      scope: "run",
+      rollbackOfPullRequestId: pullRequest.id,
+      defectId: options.defectId
+    });
+  }
+
+  private buildReleaseGateEvidenceForScope(input: {
+    prdId: string;
+    runIds: string[];
+    workItemIds: string[];
+    requestedTestRunIds: string[];
+    pullRequestIds: string[];
+    repositoryIds: string[];
+    scope: "run" | "prd";
+    rollbackOfPullRequestId?: string;
+    defectId?: string;
+  }): ReleaseGateEvidence {
+    const gate = evaluateAcceptanceQualityGate({
+      snapshot: this.snapshot,
+      prdId: input.prdId,
+      runIds: input.runIds,
+      workItemIds: input.workItemIds,
+      scope: input.scope
+    });
+    const acceptedRunIds = this.snapshot.acceptances
+      .filter((acceptance) => acceptance.status === "accepted" && input.runIds.includes(acceptance.runId))
+      .map((acceptance) => acceptance.runId);
+    const invalidRequestedTestRunIds = input.requestedTestRunIds.filter((testRunId) => {
+      const testRun = this.snapshot.testRuns.find((candidate) => candidate.id === testRunId);
+      return !testRun || testRun.status !== "passed" || !this.isReleaseGateScopedTestRun(testRun, input);
+    });
+    const validRequestedTestRunIds = input.requestedTestRunIds.filter((testRunId) => !invalidRequestedTestRunIds.includes(testRunId));
+    const inferredTestRunIds = this.snapshot.testRuns
+      .filter((testRun) =>
+        testRun.status === "passed" && this.isReleaseGateScopedTestRun(testRun, input)
+      )
+      .map((testRun) => testRun.id);
+    const testRunIds = uniqueStrings([...validRequestedTestRunIds, ...inferredTestRunIds]);
+    const blockingReasons = [...gate.blockingReasons];
+    if (acceptedRunIds.length !== input.runIds.length) {
+      blockingReasons.push("Not every release/rollback run has an accepted decision.");
+    }
+    if (testRunIds.length === 0) {
+      blockingReasons.push("Release/rollback approval requires passed TestRun evidence.");
+    }
+    if (invalidRequestedTestRunIds.length > 0) {
+      blockingReasons.push(`Requested TestRun evidence is missing or not passed: ${invalidRequestedTestRunIds.join(", ")}`);
+    }
+
+    return {
+      acceptanceQualityGate: {
+        ...gate,
+        passed: gate.passed && blockingReasons.length === 0,
+        blockingReasons
+      },
+      acceptanceDecisionRunIds: acceptedRunIds,
+      pullRequestIds: input.pullRequestIds,
+      testRunIds,
+      repositoryIds: input.repositoryIds,
+      ...(input.rollbackOfPullRequestId ? { rollbackOfPullRequestId: input.rollbackOfPullRequestId } : {}),
+      ...(input.defectId ? { defectId: input.defectId } : {})
+    };
+  }
+
+  private isReleaseGateScopedTestRun(
+    testRun: TestRun,
+    input: { prdId: string; runIds: string[]; workItemIds: string[] }
+  ) {
+    if (testRun.prdId !== input.prdId) return false;
+    if (testRun.runId !== undefined && input.runIds.includes(testRun.runId)) return true;
+    if (testRun.workItemId !== undefined && input.workItemIds.includes(testRun.workItemId)) return true;
+    return testRun.testCaseId !== undefined && this.snapshot.testCases.some((testCase) =>
+      testCase.id === testRun.testCaseId && input.workItemIds.includes(testCase.workItemId)
+    );
   }
 
   private assertAcceptanceQualityGate(input: { prdId: string; runIds: string[]; workItemIds: string[]; scope: "run" | "prd" }) {
@@ -4895,6 +5251,34 @@ function uniqueStrings(values: Array<string | undefined>) {
   return [...new Set(values.filter((value): value is string => Boolean(value)))];
 }
 
+function defaultReleaseApprovalExpiry(now: string) {
+  return new Date(Date.parse(now) + 24 * 60 * 60 * 1000).toISOString();
+}
+
+function releaseGateStatusForApproval(approval: ApprovalRecord): ReleaseGateRecord["status"] {
+  if (approval.status === "approved") return "manual_action_required";
+  if (approval.status === "denied") return "denied";
+  if (approval.status === "expired") return "expired";
+  return "approval_pending";
+}
+
+function releaseGateDecisionMessage(releaseGate: ReleaseGateRecord, approvalStatus: ApprovalRecord["status"]) {
+  if (approvalStatus === "approved") {
+    return releaseGate.operation === "release"
+      ? "发布审批已批准；PatchPilot 不会自动生产发布，等待人工执行。"
+      : "回滚审批已批准；PatchPilot 不会自动回滚，等待人工执行。";
+  }
+  if (approvalStatus === "denied") {
+    return releaseGate.operation === "release" ? "发布审批已拒绝。" : "回滚审批已拒绝。";
+  }
+  return releaseGate.operation === "release" ? "发布审批已过期。" : "回滚审批已过期。";
+}
+
+function repositoryFullNameFromEvidence(repositories: RepositoryRecord[], repositoryId: string | undefined) {
+  if (!repositoryId) return undefined;
+  return repositories.find((repository) => repository.id === repositoryId)?.fullName;
+}
+
 function auditWorkItemState(workItem: WorkItem): Record<string, AuditJsonValue> {
   return {
     id: workItem.id,
@@ -4994,6 +5378,36 @@ function auditApprovalState(approval: ApprovalRecord): Record<string, AuditJsonV
     riskLevel: approval.riskLevel,
     decidedAt: approval.decidedAt || null,
     updatedAt: approval.updatedAt
+  };
+}
+
+function auditReleaseGateState(releaseGate: ReleaseGateRecord): Record<string, AuditJsonValue> {
+  return {
+    id: releaseGate.id,
+    operation: releaseGate.operation,
+    status: releaseGate.status,
+    targetEnvironment: releaseGate.targetEnvironment,
+    approvalId: releaseGate.approvalId,
+    riskLevel: releaseGate.riskLevel,
+    gatePassed: releaseGate.gatePassed,
+    blockingReasonCount: releaseGate.blockingReasons.length,
+    prdId: releaseGate.prdId ?? null,
+    pullRequestId: releaseGate.pullRequestId ?? null,
+    repositoryId: releaseGate.repositoryId ?? null,
+    updatedAt: releaseGate.updatedAt
+  };
+}
+
+function auditReleaseGateEvidence(evidence: ReleaseGateEvidence): Record<string, AuditJsonValue> {
+  return {
+    gatePassed: evidence.acceptanceQualityGate.passed,
+    blockingReasons: evidence.acceptanceQualityGate.blockingReasons,
+    acceptanceDecisionRunIds: evidence.acceptanceDecisionRunIds,
+    pullRequestIds: evidence.pullRequestIds,
+    testRunIds: evidence.testRunIds,
+    repositoryIds: evidence.repositoryIds,
+    rollbackOfPullRequestId: evidence.rollbackOfPullRequestId ?? null,
+    defectId: evidence.defectId ?? null
   };
 }
 
@@ -5627,6 +6041,7 @@ function isProductSnapshotEmpty(snapshot: PatchPilotSnapshot) {
     snapshot.auditEvents.length === 0 &&
     snapshot.acceptances.length === 0 &&
     snapshot.approvals.length === 0 &&
+    snapshot.releaseGates.length === 0 &&
     snapshot.bugs.length === 0
   );
 }

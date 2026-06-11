@@ -354,6 +354,14 @@ export type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
 
 export type ApprovalRiskLevel = "low" | "medium" | "high" | "critical";
 
+export type ReleaseGateOperation = "release" | "rollback";
+
+export type ReleaseGateStatus =
+  | "approval_pending"
+  | "manual_action_required"
+  | "denied"
+  | "expired";
+
 export type ApprovalTargetType =
   | "prd"
   | "work_item"
@@ -363,7 +371,8 @@ export type ApprovalTargetType =
   | "policy"
   | "secret"
   | "network"
-  | "repository";
+  | "repository"
+  | "release_gate";
 
 export interface TimelineStep {
   key: TimelineStepKey;
@@ -848,7 +857,8 @@ export interface AuditEvent {
     | "repository"
     | "bug"
     | "acceptance"
-    | "approval";
+    | "approval"
+    | "release_gate";
   targetId: string;
   message: string;
   beforeJson: AuditJsonValue | null;
@@ -881,6 +891,40 @@ export interface ApprovalRecord {
   prdId?: string;
   workItemId?: string;
   runId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReleaseGateEvidence {
+  acceptanceQualityGate: AcceptanceQualityGateResult;
+  acceptanceDecisionRunIds: string[];
+  pullRequestIds: string[];
+  testRunIds: string[];
+  repositoryIds: string[];
+  rollbackOfPullRequestId?: string;
+  defectId?: string;
+}
+
+export interface ReleaseGateRecord {
+  id: string;
+  operation: ReleaseGateOperation;
+  status: ReleaseGateStatus;
+  targetEnvironment: string;
+  approvalId: string;
+  requestedBy: string;
+  requestedReason: string;
+  riskLevel: ApprovalRiskLevel;
+  gatePassed: boolean;
+  blockingReasons: string[];
+  evidence: ReleaseGateEvidence;
+  manualAction: string;
+  requirementId?: string;
+  prdId?: string;
+  workItemId?: string;
+  runId?: string;
+  repositoryId?: string;
+  repositoryFullName?: string;
+  pullRequestId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -1002,6 +1046,7 @@ export interface PatchPilotSnapshot {
   auditEvents: AuditEvent[];
   acceptances: AcceptanceDecision[];
   approvals: ApprovalRecord[];
+  releaseGates: ReleaseGateRecord[];
   bugs: BugReport[];
   agents: AgentProfile[];
 }
@@ -1023,6 +1068,7 @@ export const emptySnapshot = (): PatchPilotSnapshot => ({
   auditEvents: [],
   acceptances: [],
   approvals: [],
+  releaseGates: [],
   bugs: [],
   agents: createDefaultAgents(new Date().toISOString())
 });

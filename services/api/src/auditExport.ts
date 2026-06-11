@@ -128,6 +128,7 @@ export interface AuditExportRecords {
   pullRequests: PatchPilotSnapshot["pullRequests"];
   reviewRecords: PatchPilotSnapshot["reviewRecords"];
   approvals: PatchPilotSnapshot["approvals"];
+  releaseGates: PatchPilotSnapshot["releaseGates"];
   bugs: PatchPilotSnapshot["bugs"];
   acceptances: PatchPilotSnapshot["acceptances"];
 }
@@ -173,6 +174,11 @@ export function buildPrdAuditExportPackage(input: BuildPrdAuditExportPackageInpu
       (approval.workItemId ? workItemIds.has(approval.workItemId) : false) ||
       (approval.runId ? runIds.has(approval.runId) : false)
     ),
+    releaseGates: snapshot.releaseGates.filter((releaseGate) =>
+      releaseGate.prdId === prd.id ||
+      (releaseGate.workItemId ? workItemIds.has(releaseGate.workItemId) : false) ||
+      (releaseGate.runId ? runIds.has(releaseGate.runId) : false)
+    ),
     bugs: snapshot.bugs.filter((bug) => bug.prdId === prd.id || workItemIds.has(bug.workItemId)),
     acceptances: snapshot.acceptances.filter((acceptance) => runIds.has(acceptance.runId))
   };
@@ -211,6 +217,7 @@ export function buildPrdAuditExportPackage(input: BuildPrdAuditExportPackageInpu
     pullRequests: records.pullRequests.length,
     reviewRecords: records.reviewRecords.length,
     approvals: records.approvals.length,
+    releaseGates: records.releaseGates.length,
     bugs: records.bugs.length,
     acceptances: records.acceptances.length,
     auditEvents: auditEvents.length,

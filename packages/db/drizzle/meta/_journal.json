@@ -50,6 +50,13 @@
       "when": 1781190210566,
       "tag": "0006_adorable_red_wolf",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1781191967863,
+      "tag": "0007_pale_moonstone",
+      "breakpoints": true
     }
   ]
 }

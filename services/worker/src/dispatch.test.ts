@@ -310,6 +310,7 @@ function snapshot(input: {
     auditEvents: [],
     acceptances: [],
     approvals: [],
+    releaseGates: [],
     bugs: [],
     agents: input.agents
   };

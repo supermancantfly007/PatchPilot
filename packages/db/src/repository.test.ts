@@ -115,6 +115,17 @@ describe("PatchPilot Postgres repository", () => {
         decidedAt: now
       }
     ]);
+    expect(loaded.releaseGates).toEqual([
+      expect.objectContaining({
+        id: "release_gate_1",
+        operation: "release",
+        status: "approval_pending",
+        approvalId: "approval_1",
+        prdId: "prd_1",
+        repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+        pullRequestId: "pr_2"
+      })
+    ]);
     expect(loaded.auditEvents.map((event) => event.id)).toEqual(["audit_2", "audit_1"]);
   });
 });
@@ -480,7 +491,79 @@ function snapshotFixture(): PatchPilotSnapshot {
         decidedAt: now
       }
     ],
-    approvals: [],
+    approvals: [
+      {
+        id: "approval_1",
+        kind: "dangerous_operation",
+        status: "pending",
+        targetType: "release_gate",
+        targetId: "release_gate_1",
+        requestedBy: "release-manager",
+        requestedReason: "Release validated PRD to production",
+        riskLevel: "high",
+        expiresAt: "2026-06-11T00:00:00.000Z",
+        requirementId: "req_1",
+        prdId: "prd_1",
+        workItemId: "wi_1",
+        runId: "run_2",
+        createdAt: now,
+        updatedAt: now
+      }
+    ],
+    releaseGates: [
+      {
+        id: "release_gate_1",
+        operation: "release",
+        status: "approval_pending",
+        targetEnvironment: "production",
+        approvalId: "approval_1",
+        requestedBy: "release-manager",
+        requestedReason: "Release validated PRD to production",
+        riskLevel: "high",
+        gatePassed: true,
+        blockingReasons: [],
+        evidence: {
+          acceptanceQualityGate: {
+            scope: "prd",
+            prdId: "prd_1",
+            runIds: ["run_2"],
+            workItemIds: ["wi_1"],
+            passed: true,
+            checks: [],
+            blockingReasons: [],
+            metrics: {
+              acceptanceCriteriaTotal: 1,
+              acceptanceCriteriaCovered: 1,
+              acceptanceCriteriaCoverageRate: 100,
+              testCaseTotal: 1,
+              testCasePassed: 1,
+              testCasePassRate: 100,
+              unresolvedDefectCount: 0,
+              flakyCount: 0,
+              contractTotal: 1,
+              contractCompatible: 1,
+              pullRequestTotal: 1,
+              pullRequestReady: 1,
+              auditEventCount: 2
+            }
+          },
+          acceptanceDecisionRunIds: ["run_2"],
+          pullRequestIds: ["pr_2"],
+          testRunIds: ["tr_1"],
+          repositoryIds: ["repo_github_4242_patchpilot_fixtures_delivery"]
+        },
+        manualAction: "Approval records release authorization only. PatchPilot will not deploy automatically.",
+        requirementId: "req_1",
+        prdId: "prd_1",
+        workItemId: "wi_1",
+        runId: "run_2",
+        repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+        repositoryFullName: "patchpilot-fixtures/delivery",
+        pullRequestId: "pr_2",
+        createdAt: now,
+        updatedAt: now
+      }
+    ],
     bugs: [],
     agents: createDefaultAgents(now)
   };

@@ -291,8 +291,9 @@ describe("domain helpers", () => {
     });
   });
 
-  it("initializes approval records in empty snapshots", () => {
+  it("initializes approval and release gate records in empty snapshots", () => {
     expect(emptySnapshot().approvals).toEqual([]);
+    expect(emptySnapshot().releaseGates).toEqual([]);
   });
 
   it("computes stable audit hashes for equivalent JSON payloads", () => {

@@ -33,7 +33,8 @@ export const approvalTargetLabels: Record<ApprovalRecord["targetType"], string> 
   policy: "策略",
   secret: "密钥",
   network: "网络",
-  repository: "仓库"
+  repository: "仓库",
+  release_gate: "发布门禁"
 };
 
 export const failureTypeLabels: Record<FailureType, string> = {

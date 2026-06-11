@@ -442,6 +442,196 @@ describe("PatchPilot API", () => {
     await app.close();
   });
 
+  it("requires audited manual approval gates for release and rollback", async () => {
+    const app = await buildServer({ store: new PatchPilotStore() });
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/requirements",
+      payload: { rawInput: "发布和回滚都必须经过人工审批和审计", template: "feature" }
+    });
+    expect(create.statusCode).toBe(201);
+    const requirement = create.json();
+    const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
+    expect(prdResponse.statusCode).toBe(200);
+    const prd = prdResponse.json().prd as { id: string };
+
+    const startTeam = await app.inject({
+      method: "POST",
+      url: `/api/prds/${prd.id}/start-team`,
+      headers: authHeaders("maintainer"),
+      payload: { runner: "simulated" }
+    });
+    expect(startTeam.statusCode).toBe(201);
+    expect(startTeam.json().runs).toHaveLength(4);
+    const completedRuns = await pollPrdRuns(app, prd.id, 4);
+    expect(completedRuns.every((run: { status: string }) => run.status === "succeeded")).toBe(true);
+
+    const releaseBeforeAcceptance = await app.inject({
+      method: "POST",
+      url: `/api/prds/${prd.id}/release-approval`,
+      headers: authHeaders("maintainer"),
+      payload: {
+        targetEnvironment: "production",
+        requestedReason: "Ready to release after implementation."
+      }
+    });
+    expect(releaseBeforeAcceptance.statusCode).toBe(409);
+    expect(releaseBeforeAcceptance.json().message).toContain("Release gate failed");
+
+    const teamAcceptance = await app.inject({
+      method: "POST",
+      url: `/api/prds/${prd.id}/acceptance`,
+      payload: { status: "accepted" }
+    });
+    expect(teamAcceptance.statusCode).toBe(200);
+
+    const releaseResponse = await app.inject({
+      method: "POST",
+      url: `/api/prds/${prd.id}/release-approval`,
+      headers: authHeaders("maintainer"),
+      payload: {
+        targetEnvironment: "production",
+        requestedReason: "Accepted validation evidence is complete."
+      }
+    });
+    expect(releaseResponse.statusCode).toBe(201);
+    const releaseBody = releaseResponse.json();
+    expect(releaseBody.releaseGate).toMatchObject({
+      operation: "release",
+      status: "approval_pending",
+      targetEnvironment: "production",
+      requestedBy: "test-maintainer",
+      riskLevel: "high",
+      gatePassed: true,
+      blockingReasons: [],
+      prdId: prd.id,
+      approvalId: releaseBody.approval.id
+    });
+    expect(releaseBody.releaseGate.manualAction).toContain("will not deploy automatically");
+    expect(releaseBody.releaseGate.evidence.acceptanceDecisionRunIds).toHaveLength(4);
+    expect(releaseBody.releaseGate.evidence.testRunIds.length).toBeGreaterThan(0);
+    expect(releaseBody.approval).toMatchObject({
+      kind: "dangerous_operation",
+      targetType: "release_gate",
+      targetId: releaseBody.releaseGate.id,
+      status: "pending",
+      riskLevel: "high"
+    });
+
+    const maintainerApproval = await app.inject({
+      method: "POST",
+      url: `/api/approvals/${releaseBody.approval.id}/approve`,
+      headers: authHeaders("maintainer", "release-maintainer"),
+      payload: {
+        decidedBy: "release-maintainer",
+        decisionReason: "Maintainer should not decide dangerous operations."
+      }
+    });
+    expect(maintainerApproval.statusCode).toBe(403);
+
+    const approvedRelease = await app.inject({
+      method: "POST",
+      url: `/api/approvals/${releaseBody.approval.id}/approve`,
+      headers: authHeaders("admin", "release-admin"),
+      payload: {
+        decidedBy: "release-admin",
+        decisionReason: "Approved for manual production release."
+      }
+    });
+    expect(approvedRelease.statusCode).toBe(200);
+    expect(approvedRelease.json()).toMatchObject({ status: "approved", approvedBy: "release-admin" });
+
+    let snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const releaseGate = snapshot
+      .json()
+      .releaseGates.find((gate: { id: string }) => gate.id === releaseBody.releaseGate.id);
+    expect(releaseGate).toMatchObject({
+      status: "manual_action_required",
+      approvalId: releaseBody.approval.id
+    });
+    expect(releaseGate).not.toHaveProperty("deploymentId");
+    expect(releaseGate).not.toHaveProperty("executedAt");
+
+    const pullRequest = snapshot.json().pullRequests.find((item: { prdId: string }) => item.prdId === prd.id);
+    expect(pullRequest).toBeDefined();
+    if (!pullRequest) throw new Error("Expected accepted PRD to have pull request evidence");
+
+    const rollbackResponse = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${pullRequest.id}/rollback-approval`,
+      headers: authHeaders("maintainer"),
+      payload: {
+        targetEnvironment: "production",
+        requestedReason: "Regression found after release candidate review.",
+        rollbackPlan: "Create a revert PR, run validation, and attach the operator log."
+      }
+    });
+    expect(rollbackResponse.statusCode).toBe(201);
+    const rollbackBody = rollbackResponse.json();
+    expect(rollbackBody.releaseGate).toMatchObject({
+      operation: "rollback",
+      status: "approval_pending",
+      targetEnvironment: "production",
+      riskLevel: "critical",
+      gatePassed: true,
+      pullRequestId: pullRequest.id,
+      approvalId: rollbackBody.approval.id
+    });
+    expect(rollbackBody.releaseGate.manualAction).toContain("will not revert or deploy automatically");
+    expect(rollbackBody.releaseGate.evidence.rollbackOfPullRequestId).toBe(pullRequest.id);
+    expect(rollbackBody.approval).toMatchObject({
+      kind: "dangerous_operation",
+      targetType: "release_gate",
+      targetId: rollbackBody.releaseGate.id,
+      status: "pending",
+      riskLevel: "critical"
+    });
+
+    const reviewerRollbackApproval = await app.inject({
+      method: "POST",
+      url: `/api/approvals/${rollbackBody.approval.id}/approve`,
+      headers: authHeaders("reviewer", "rollback-reviewer"),
+      payload: {
+        decidedBy: "rollback-reviewer",
+        decisionReason: "Reviewer should not decide critical dangerous operations."
+      }
+    });
+    expect(reviewerRollbackApproval.statusCode).toBe(403);
+
+    const approvedRollback = await app.inject({
+      method: "POST",
+      url: `/api/approvals/${rollbackBody.approval.id}/approve`,
+      headers: authHeaders("admin", "rollback-admin"),
+      payload: {
+        decidedBy: "rollback-admin",
+        decisionReason: "Approved for manual revert workflow."
+      }
+    });
+    expect(approvedRollback.statusCode).toBe(200);
+    expect(approvedRollback.json()).toMatchObject({ status: "approved", approvedBy: "rollback-admin" });
+
+    snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+    const rollbackGate = snapshot
+      .json()
+      .releaseGates.find((gate: { id: string }) => gate.id === rollbackBody.releaseGate.id);
+    expect(rollbackGate).toMatchObject({
+      status: "manual_action_required",
+      approvalId: rollbackBody.approval.id
+    });
+    expect(rollbackGate).not.toHaveProperty("revertRunId");
+    expect(rollbackGate).not.toHaveProperty("executedAt");
+    expect(snapshot.json().auditEvents.map((event: { action: string }) => event.action)).toEqual(
+      expect.arrayContaining([
+        "release.approval_requested",
+        "release.approval_approved",
+        "rollback.approval_requested",
+        "rollback.approval_approved"
+      ])
+    );
+
+    await app.close();
+  });
+
   it("protects secret-sensitive and production-data work item starts", async () => {
     const store = new PatchPilotStore();
     const app = await buildServer({ store });

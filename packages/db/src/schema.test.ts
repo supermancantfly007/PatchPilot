@@ -23,6 +23,7 @@ const expectedTableNames = [
   "prd_versions",
   "projects",
   "pull_requests",
+  "release_gates",
   "repositories",
   "review_records",
   "requirements",
@@ -100,6 +101,7 @@ describe("PatchPilot Drizzle schema", () => {
         "pull_requests_provider_url_unique",
         "pull_requests_agent_run_id_unique",
         "pull_requests_work_item_id_idx",
+        "release_gates_approval_id_unique",
         "review_records_agent_run_id_unique",
         "acceptance_decisions_project_id_idx",
         "budgets_scope_unique"
@@ -198,6 +200,16 @@ describe("PatchPilot Drizzle schema", () => {
       ) values (
         'approval_1', 'proj_1', 'prd_approval', 'pending', 'prd', 'prd_1_v1', 'user_1', 'Approve PRD', 'low',
         now() + interval '1 day', 'req_1', 'prd_1_v1', 'wi_1', 'run_1'
+      );
+      insert into release_gates (
+        id, project_id, operation, status, target_environment, approval_id, requested_by, requested_reason,
+        risk_level, gate_passed, blocking_reasons, evidence, manual_action, requirement_id, prd_version_id,
+        work_item_id, agent_run_id, repository_id, pull_request_id
+      ) values (
+        'release_gate_1', 'proj_1', 'release', 'approval_pending', 'production', 'approval_1', 'user_1',
+        'Release after validation', 'high', true, '[]'::jsonb, '{}'::jsonb,
+        'Manual release only; PatchPilot does not deploy automatically.', 'req_1', 'prd_1_v1',
+        'wi_1', 'run_1', 'repo_1', 'pr_1'
       );
       insert into acceptance_decisions (run_id, project_id, status, reason, decided_at)
         values ('run_1', 'proj_1', 'accepted', 'Looks good', now());

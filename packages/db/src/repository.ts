@@ -16,6 +16,7 @@ import type {
   PatchPilotSnapshot,
   Prd,
   PullRequestRecord,
+  ReleaseGateRecord,
   Requirement,
   RepositoryRecord,
   ReviewRecord,
@@ -192,6 +193,10 @@ class DrizzlePatchPilotRepository implements PatchPilotRepository {
       .select()
       .from(schema.approvals)
       .orderBy(desc(schema.approvals.updatedAt), asc(schema.approvals.id));
+    const releaseGateRows = await this.db
+      .select()
+      .from(schema.releaseGates)
+      .orderBy(desc(schema.releaseGates.updatedAt), asc(schema.releaseGates.id));
     const acceptanceRows = await this.db
       .select()
       .from(schema.acceptanceDecisions)
@@ -223,6 +228,7 @@ class DrizzlePatchPilotRepository implements PatchPilotRepository {
       auditEvents,
       acceptances: acceptanceRows.map(mapAcceptanceDecisionRow),
       approvals: approvalRows.map(mapApprovalRow),
+      releaseGates: releaseGateRows.map(mapReleaseGateRow),
       bugs: defectRows.map(mapBugReportRow),
       agents: agentRows.map(mapAgentRow)
     };
@@ -251,6 +257,7 @@ class DrizzlePatchPilotRepository implements PatchPilotRepository {
       await insertRows(tx, schema.defects, rows.defects);
       await insertRows(tx, schema.acceptanceDecisions, rows.acceptanceDecisions);
       await insertRows(tx, schema.approvals, rows.approvals);
+      await insertRows(tx, schema.releaseGates, rows.releaseGates);
       await insertRows(tx, schema.artifacts, rows.artifacts);
       await insertRows(tx, schema.auditEvents, rows.auditEvents);
     });
@@ -262,6 +269,7 @@ async function clearProductState(tx: any) {
   await tx.delete(schema.capabilityManifests);
   await tx.delete(schema.auditEvents);
   await tx.delete(schema.artifacts);
+  await tx.delete(schema.releaseGates);
   await tx.delete(schema.approvals);
   await tx.delete(schema.acceptanceDecisions);
   await tx.delete(schema.reviewRecords);
@@ -299,6 +307,7 @@ function prepareRows(snapshot: PatchPilotSnapshot) {
   const testCaseIds = new Set(snapshot.testCases.map((testCase) => testCase.id));
   const testRunIds = new Set(snapshot.testRuns.map((testRun) => testRun.id));
   const pullRequestIds = new Set(snapshot.pullRequests.map((pullRequest) => pullRequest.id));
+  const approvalIds = new Set(snapshot.approvals.map((approval) => approval.id));
   const agentIds = new Set(snapshot.agents.map((agent) => agent.id));
   const repositoryIds = new Set((snapshot.repositories ?? []).map((repository) => repository.id));
 
@@ -654,6 +663,32 @@ function prepareRows(snapshot: PatchPilotSnapshot) {
       createdAt: toDate(approval.createdAt) ?? now,
       updatedAt: toDate(approval.updatedAt) ?? now
     })),
+    releaseGates: (snapshot.releaseGates ?? [])
+      .filter((releaseGate) => approvalIds.has(releaseGate.approvalId))
+      .map((releaseGate) => ({
+        id: releaseGate.id,
+        projectId: defaultProjectId,
+        operation: releaseGate.operation,
+        status: releaseGate.status,
+        targetEnvironment: releaseGate.targetEnvironment,
+        approvalId: releaseGate.approvalId,
+        requestedBy: releaseGate.requestedBy,
+        requestedReason: releaseGate.requestedReason,
+        riskLevel: releaseGate.riskLevel,
+        gatePassed: releaseGate.gatePassed,
+        blockingReasons: releaseGate.blockingReasons,
+        evidence: releaseGate.evidence,
+        manualAction: releaseGate.manualAction,
+        requirementId: optionalReference(releaseGate.requirementId, requirementIds),
+        prdVersionId: optionalReference(releaseGate.prdId, prdIds),
+        workItemId: optionalReference(releaseGate.workItemId, workItemIds),
+        agentRunId: optionalReference(releaseGate.runId, agentRunIds),
+        repositoryId: optionalReference(releaseGate.repositoryId, repositoryIds),
+        repositoryFullName: releaseGate.repositoryFullName ?? null,
+        pullRequestId: optionalReference(releaseGate.pullRequestId, pullRequestIds),
+        createdAt: toDate(releaseGate.createdAt) ?? now,
+        updatedAt: toDate(releaseGate.updatedAt) ?? now
+      })),
     artifacts: snapshot.artifacts.map((artifact) => ({
       id: artifact.id,
       projectId: defaultProjectId,
@@ -1084,6 +1119,32 @@ function mapApprovalRow(row: any): ApprovalRecord {
     prdId: row.prdVersionId ?? undefined,
     workItemId: row.workItemId ?? undefined,
     runId: row.agentRunId ?? undefined,
+    createdAt: iso(row.createdAt),
+    updatedAt: iso(row.updatedAt)
+  });
+}
+
+function mapReleaseGateRow(row: any): ReleaseGateRecord {
+  return removeUndefined({
+    id: row.id,
+    operation: row.operation,
+    status: row.status,
+    targetEnvironment: row.targetEnvironment,
+    approvalId: row.approvalId,
+    requestedBy: row.requestedBy,
+    requestedReason: row.requestedReason,
+    riskLevel: row.riskLevel,
+    gatePassed: row.gatePassed,
+    blockingReasons: jsonArray<string>(row.blockingReasons),
+    evidence: row.evidence,
+    manualAction: row.manualAction,
+    requirementId: row.requirementId ?? undefined,
+    prdId: row.prdVersionId ?? undefined,
+    workItemId: row.workItemId ?? undefined,
+    runId: row.agentRunId ?? undefined,
+    repositoryId: row.repositoryId ?? undefined,
+    repositoryFullName: row.repositoryFullName ?? undefined,
+    pullRequestId: row.pullRequestId ?? undefined,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt)
   });

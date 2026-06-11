@@ -40,10 +40,13 @@ export const approvalTargetTypes = [
   "policy",
   "secret",
   "network",
-  "repository"
+  "repository",
+  "release_gate"
 ] as const;
 
 export const approvalRiskLevels = ["low", "medium", "high", "critical"] as const;
+export const releaseGateOperations = ["release", "rollback"] as const;
+export const releaseGateStatuses = ["approval_pending", "manual_action_required", "denied", "expired"] as const;
 export const authUserHeader = "x-patchpilot-user";
 export const authRoleHeader = "x-patchpilot-role";
 export const authRoles = ["submitter", "maintainer", "reviewer", "admin"] as const;
@@ -231,6 +234,23 @@ export const approvalDecisionSchema = z.object({
   decisionReason: z.string().trim().min(1)
 });
 
+export const requestReleaseApprovalSchema = z.object({
+  targetEnvironment: z.string().trim().min(1).default("production"),
+  requestedReason: z.string().trim().min(1),
+  expiresAt: z.string().datetime().optional(),
+  repositoryId: z.string().trim().min(1).optional(),
+  testRunIds: z.array(z.string().trim().min(1)).default([])
+});
+
+export const requestRollbackApprovalSchema = z.object({
+  targetEnvironment: z.string().trim().min(1).default("production"),
+  requestedReason: z.string().trim().min(1),
+  rollbackPlan: z.string().trim().min(1),
+  expiresAt: z.string().datetime().optional(),
+  defectId: z.string().trim().min(1).optional(),
+  testRunIds: z.array(z.string().trim().min(1)).default([])
+});
+
 export const httpApiContract = {
   artifactId: "control-api",
   kind: "http",
@@ -337,6 +357,18 @@ export const httpApiContract = {
       path: "/api/approvals/:id/deny",
       request: "ApprovalDecisionRequest",
       response: "ApprovalRecord"
+    },
+    requestReleaseApproval: {
+      method: "POST",
+      path: "/api/prds/:id/release-approval",
+      request: "ReleaseApprovalRequest",
+      response: "ReleaseGateResponse"
+    },
+    requestRollbackApproval: {
+      method: "POST",
+      path: "/api/pull-requests/:id/rollback-approval",
+      request: "RollbackApprovalRequest",
+      response: "ReleaseGateResponse"
     },
     startWorkItem: {
       method: "POST",
@@ -1622,6 +1654,8 @@ function responseStatusFor(operationId: ApiOperationId) {
     operationId === "createBug" ||
     operationId === "linkExternalIssue" ||
     operationId === "createApproval" ||
+    operationId === "requestReleaseApproval" ||
+    operationId === "requestRollbackApproval" ||
     operationId === "startTeam" ||
     operationId === "startWorkItem"
     ? "201"
@@ -1639,6 +1673,8 @@ function requiresAuth(operationId: ApiOperationId) {
     operationId === "createApproval" ||
     operationId === "approveApproval" ||
     operationId === "denyApproval" ||
+    operationId === "requestReleaseApproval" ||
+    operationId === "requestRollbackApproval" ||
     operationId === "startWorkItem";
 }
 
@@ -1741,6 +1777,8 @@ const approvalKind = enumSchema(approvalKinds);
 const approvalStatus = enumSchema(["pending", "approved", "denied", "expired"]);
 const approvalTargetType = enumSchema(approvalTargetTypes);
 const approvalRiskLevel = enumSchema(approvalRiskLevels);
+const releaseGateOperation = enumSchema(releaseGateOperations);
+const releaseGateStatus = enumSchema(releaseGateStatuses);
 const contractDiffSeverity = enumSchema(["compatible", "warning", "breaking"]);
 const failureType = enumSchema(failureTypes);
 const jsonValue = {
@@ -1933,6 +1971,7 @@ export const openApiSchemas = {
     pullRequests: arrayOf(schemaRef("PullRequestRecord")),
     reviewRecords: arrayOf(schemaRef("ReviewRecord")),
     approvals: arrayOf(schemaRef("ApprovalRecord")),
+    releaseGates: arrayOf(schemaRef("ReleaseGateRecord")),
     bugs: arrayOf(schemaRef("BugReport")),
     acceptances: arrayOf(schemaRef("AcceptanceDecision"))
   }),
@@ -2014,6 +2053,21 @@ export const openApiSchemas = {
     decidedBy: { type: "string", minLength: 1 },
     decisionReason: { type: "string", minLength: 1 }
   }),
+  ReleaseApprovalRequest: objectSchema({
+    targetEnvironment: { type: "string", minLength: 1 },
+    requestedReason: { type: "string", minLength: 1 },
+    expiresAt: isoDate,
+    repositoryId: id,
+    testRunIds: arrayOf(id)
+  }, ["requestedReason"]),
+  RollbackApprovalRequest: objectSchema({
+    targetEnvironment: { type: "string", minLength: 1 },
+    requestedReason: { type: "string", minLength: 1 },
+    rollbackPlan: { type: "string", minLength: 1 },
+    expiresAt: isoDate,
+    defectId: id,
+    testRunIds: arrayOf(id)
+  }, ["requestedReason", "rollbackPlan"]),
   CreateBugRequest: objectSchema({
     title: { type: "string", minLength: 3 },
     description: { type: "string", minLength: 3 },
@@ -2729,6 +2783,57 @@ export const openApiSchemas = {
     createdAt: isoDate,
     updatedAt: isoDate
   }, ["id", "kind", "status", "targetType", "targetId", "requestedBy", "requestedReason", "riskLevel", "expiresAt", "createdAt", "updatedAt"]),
+  ReleaseGateEvidence: objectSchema({
+    acceptanceQualityGate: schemaRef("AcceptanceQualityGateResult"),
+    acceptanceDecisionRunIds: arrayOf(id),
+    pullRequestIds: arrayOf(id),
+    testRunIds: arrayOf(id),
+    repositoryIds: arrayOf(id),
+    rollbackOfPullRequestId: id,
+    defectId: id
+  }, ["acceptanceQualityGate", "acceptanceDecisionRunIds", "pullRequestIds", "testRunIds", "repositoryIds"]),
+  ReleaseGateRecord: objectSchema({
+    id,
+    operation: releaseGateOperation,
+    status: releaseGateStatus,
+    targetEnvironment: { type: "string" },
+    approvalId: id,
+    requestedBy: { type: "string" },
+    requestedReason: { type: "string" },
+    riskLevel: approvalRiskLevel,
+    gatePassed: { type: "boolean" },
+    blockingReasons: arrayOf({ type: "string" }),
+    evidence: schemaRef("ReleaseGateEvidence"),
+    manualAction: { type: "string" },
+    requirementId: id,
+    prdId: id,
+    workItemId: id,
+    runId: id,
+    repositoryId: id,
+    repositoryFullName: { type: "string" },
+    pullRequestId: id,
+    createdAt: isoDate,
+    updatedAt: isoDate
+  }, [
+    "id",
+    "operation",
+    "status",
+    "targetEnvironment",
+    "approvalId",
+    "requestedBy",
+    "requestedReason",
+    "riskLevel",
+    "gatePassed",
+    "blockingReasons",
+    "evidence",
+    "manualAction",
+    "createdAt",
+    "updatedAt"
+  ]),
+  ReleaseGateResponse: objectSchema({
+    releaseGate: schemaRef("ReleaseGateRecord"),
+    approval: schemaRef("ApprovalRecord")
+  }),
   AuditEvent: looseObjectSchema({
     id,
     traceId: id,
@@ -2885,6 +2990,7 @@ export const openApiSchemas = {
     auditEvents: arrayOf(schemaRef("AuditEvent")),
     acceptances: arrayOf(schemaRef("AcceptanceDecision")),
     approvals: arrayOf(schemaRef("ApprovalRecord")),
+    releaseGates: arrayOf(schemaRef("ReleaseGateRecord")),
     bugs: arrayOf(schemaRef("BugReport")),
     agents: arrayOf(schemaRef("AgentProfile"))
   })

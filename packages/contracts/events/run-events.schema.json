@@ -617,6 +617,7 @@
           "pullRequests",
           "reviewRecords",
           "approvals",
+          "releaseGates",
           "bugs",
           "acceptances"
         ],
@@ -692,6 +693,12 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ApprovalRecord"
+            }
+          },
+          "releaseGates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReleaseGateRecord"
             }
           },
           "bugs": {
@@ -1019,7 +1026,8 @@
               "policy",
               "secret",
               "network",
-              "repository"
+              "repository",
+              "release_gate"
             ]
           },
           "targetId": {
@@ -1080,6 +1088,75 @@
           "decisionReason": {
             "type": "string",
             "minLength": 1
+          }
+        }
+      },
+      "ReleaseApprovalRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestedReason"
+        ],
+        "properties": {
+          "targetEnvironment": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requestedReason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "repositoryId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "testRunIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      },
+      "RollbackApprovalRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestedReason",
+          "rollbackPlan"
+        ],
+        "properties": {
+          "targetEnvironment": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requestedReason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rollbackPlan": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "defectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "testRunIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         }
       },
@@ -4218,7 +4295,8 @@
               "policy",
               "secret",
               "network",
-              "repository"
+              "repository",
+              "release_gate"
             ]
           },
           "targetId": {
@@ -4280,6 +4358,188 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "ReleaseGateEvidence": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "acceptanceQualityGate",
+          "acceptanceDecisionRunIds",
+          "pullRequestIds",
+          "testRunIds",
+          "repositoryIds"
+        ],
+        "properties": {
+          "acceptanceQualityGate": {
+            "$ref": "#/components/schemas/AcceptanceQualityGateResult"
+          },
+          "acceptanceDecisionRunIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "pullRequestIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "testRunIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "repositoryIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "rollbackOfPullRequestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "defectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "ReleaseGateRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "operation",
+          "status",
+          "targetEnvironment",
+          "approvalId",
+          "requestedBy",
+          "requestedReason",
+          "riskLevel",
+          "gatePassed",
+          "blockingReasons",
+          "evidence",
+          "manualAction",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "release",
+              "rollback"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "approval_pending",
+              "manual_action_required",
+              "denied",
+              "expired"
+            ]
+          },
+          "targetEnvironment": {
+            "type": "string"
+          },
+          "approvalId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requestedBy": {
+            "type": "string"
+          },
+          "requestedReason": {
+            "type": "string"
+          },
+          "riskLevel": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "gatePassed": {
+            "type": "boolean"
+          },
+          "blockingReasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/ReleaseGateEvidence"
+          },
+          "manualAction": {
+            "type": "string"
+          },
+          "requirementId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "repositoryId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "repositoryFullName": {
+            "type": "string"
+          },
+          "pullRequestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ReleaseGateResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "releaseGate",
+          "approval"
+        ],
+        "properties": {
+          "releaseGate": {
+            "$ref": "#/components/schemas/ReleaseGateRecord"
+          },
+          "approval": {
+            "$ref": "#/components/schemas/ApprovalRecord"
           }
         }
       },
@@ -4871,6 +5131,7 @@
           "auditEvents",
           "acceptances",
           "approvals",
+          "releaseGates",
           "bugs",
           "agents"
         ],
@@ -4969,6 +5230,12 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ApprovalRecord"
+            }
+          },
+          "releaseGates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReleaseGateRecord"
             }
           },
           "bugs": {

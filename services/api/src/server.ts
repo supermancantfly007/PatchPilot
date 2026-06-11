@@ -13,6 +13,8 @@ import {
   githubWebhookSchema,
   releaseWorkItemSchema,
   requirementInputSchema,
+  requestReleaseApprovalSchema,
+  requestRollbackApprovalSchema,
   selectGitHubRepositorySchema,
   startRunSchema
 } from "@patchpilot/contracts";
@@ -156,6 +158,22 @@ export async function buildServer(options: { store?: PatchPilotStore; telemetry?
     const approval = await store.getApproval(id);
     assertCanDecideApproval(request.auth, approval);
     return store.denyApproval(id, { ...input, decidedBy: request.auth?.userId ?? input.decidedBy });
+  });
+
+  app.post(apiRoute("requestReleaseApproval"), async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = requestReleaseApprovalSchema.parse(request.body);
+    assertCanRequestApproval(request.auth, { kind: "dangerous_operation", riskLevel: "high" });
+    const result = await store.requestReleaseApproval(id, input, request.auth ? { actor: request.auth.userId } : {});
+    return reply.code(201).send(result);
+  });
+
+  app.post(apiRoute("requestRollbackApproval"), async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = requestRollbackApprovalSchema.parse(request.body);
+    assertCanRequestApproval(request.auth, { kind: "dangerous_operation", riskLevel: "critical" });
+    const result = await store.requestRollbackApproval(id, input, request.auth ? { actor: request.auth.userId } : {});
+    return reply.code(201).send(result);
   });
 
   app.post(apiRoute("startWorkItem"), async (request, reply) => {
