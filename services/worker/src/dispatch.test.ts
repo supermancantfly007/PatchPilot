@@ -294,6 +294,8 @@ function snapshot(input: {
   agentRuns?: AgentRun[];
 }): PatchPilotSnapshot {
   return {
+    repositories: [],
+    githubInstallations: [],
     requirements: [],
     prds: [],
     workItems: input.workItems,

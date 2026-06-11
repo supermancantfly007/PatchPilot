@@ -48,6 +48,8 @@ describe("PatchPilot CLI", () => {
 });
 
 const snapshot: PatchPilotSnapshot = {
+  repositories: [],
+  githubInstallations: [],
   requirements: [
     {
       id: "req_1",

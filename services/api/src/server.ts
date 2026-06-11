@@ -10,8 +10,10 @@ import {
   createApprovalSchema,
   externalIssueLinkSchema,
   externalIssueStatusUpdateSchema,
+  githubWebhookSchema,
   releaseWorkItemSchema,
   requirementInputSchema,
+  selectGitHubRepositorySchema,
   startRunSchema
 } from "@patchpilot/contracts";
 import {
@@ -19,6 +21,7 @@ import {
   assertCanApprovePrd,
   assertCanDecideApproval,
   assertCanExportAuditPackage,
+  assertCanManageRepositoryIntegration,
   assertCanRequestApproval,
   assertCanStartCapabilities,
   parsePatchPilotAuthHeaders,
@@ -36,6 +39,7 @@ import {
 } from "@patchpilot/telemetry";
 import Fastify from "fastify";
 import { z } from "zod";
+import { readConfiguredGitHubWebhookSecret } from "./pullRequestAdapter";
 import { DomainError, PatchPilotStore } from "./store";
 
 declare module "fastify" {
@@ -192,6 +196,30 @@ export async function buildServer(options: { store?: PatchPilotStore; telemetry?
     return store.ingestExternalIssueStatus(input);
   });
 
+  app.get(apiRoute("listGitHubAppRepositories"), async (request) => {
+    assertCanManageRepositoryIntegration(request.auth);
+    return store.listGitHubAppRepositories();
+  });
+
+  app.post(apiRoute("selectGitHubAppRepository"), async (request) => {
+    assertCanManageRepositoryIntegration(request.auth);
+    const input = selectGitHubRepositorySchema.parse(request.body);
+    return store.selectGitHubAppRepository(input.repositoryId, request.auth ? { actor: request.auth.userId } : {});
+  });
+
+  app.post(apiRoute("ingestGitHubAppWebhook"), async (request) => {
+    const payload = githubWebhookSchema.parse(request.body ?? {});
+    const payloadText = JSON.stringify(payload);
+    return store.ingestGitHubAppWebhook({
+      event: headerValue(request.headers["x-github-event"]) ?? "unknown",
+      payload,
+      payloadText,
+      signature: headerValue(request.headers["x-hub-signature-256"]),
+      secret: readConfiguredGitHubWebhookSecret(),
+      deliveryId: headerValue(request.headers["x-github-delivery"])
+    });
+  });
+
   app.get(apiRoute("getRun"), async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     return store.getRun(id);
@@ -266,6 +294,12 @@ export async function buildServer(options: { store?: PatchPilotStore; telemetry?
   });
 
   return app;
+}
+
+function headerValue(value: string | string[] | number | undefined) {
+  if (Array.isArray(value)) return value[0];
+  if (typeof value === "number") return String(value);
+  return value;
 }
 
 const port = Number(process.env.PORT || 4000);

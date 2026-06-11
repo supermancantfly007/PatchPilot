@@ -34,6 +34,7 @@
     "e2e:metrics": "node scripts/e2e-metrics.mjs",
     "e2e:audit-export": "node scripts/e2e-audit-export.mjs",
     "e2e:external-issue": "node scripts/e2e-external-issue-sync.mjs",
+    "e2e:github-app": "tsx scripts/e2e-github-app.mjs",
     "e2e:egress": "tsx scripts/e2e-egress-allowlist.mjs",
     "e2e:command-wrapper": "tsx scripts/e2e-command-wrapper.mjs",
     "e2e:temporal": "tsx scripts/e2e-temporal.mjs",

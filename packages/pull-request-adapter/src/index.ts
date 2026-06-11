@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
+import { createHmac, createSign, timingSafeEqual } from "node:crypto";
 import { Octokit } from "@octokit/rest";
-import type { PullRequestRecord, PullRequestStatus } from "@patchpilot/domain";
+import type { GitHubAppPermissionLevel, PullRequestRecord, PullRequestStatus } from "@patchpilot/domain";
 
 export interface PullRequestDraft {
   id: string;
@@ -116,6 +117,7 @@ export interface GitHubPullRequestAdapterConfig {
   owner: string;
   repo: string;
   token?: string;
+  tokenProvider?: GitHubTokenProvider;
   apiBaseUrl?: string;
   remote?: string;
   headOwner?: string;
@@ -131,7 +133,9 @@ export class GitHubPullRequestAdapter implements PullRequestAdapter {
   private readonly remote: string;
   private readonly headOwner: string;
   private readonly pushTimeoutMs: number;
-  private readonly octokit: GitHubOctokitClient;
+  private readonly apiBaseUrl?: string;
+  private readonly octokit?: GitHubOctokitClient;
+  private readonly tokenProvider?: GitHubTokenProvider;
   private readonly git: GitCommandRunner;
 
   constructor(config: GitHubPullRequestAdapterConfig) {
@@ -140,8 +144,10 @@ export class GitHubPullRequestAdapter implements PullRequestAdapter {
     this.remote = config.remote?.trim() || "origin";
     this.headOwner = config.headOwner?.trim() || this.owner;
     this.pushTimeoutMs = config.pushTimeoutMs ?? 30000;
+    this.apiBaseUrl = config.apiBaseUrl;
     this.git = config.git ?? new ShellGitCommandRunner();
-    this.octokit = config.octokit ?? createOctokit(config);
+    this.octokit = config.octokit;
+    this.tokenProvider = config.tokenProvider ?? (config.token ? new StaticGitHubTokenProvider(config.token) : undefined);
   }
 
   async upsertPullRequest(input: UpsertPullRequestInput): Promise<PullRequestRecord> {
@@ -157,9 +163,10 @@ export class GitHubPullRequestAdapter implements PullRequestAdapter {
       timeoutMs: this.pushTimeoutMs
     });
 
-    const currentPullRequest = await this.findPullRequest(draft, existing);
+    const octokit = await this.getOctokit();
+    const currentPullRequest = await this.findPullRequest(octokit, draft, existing);
     const pullRequest = currentPullRequest
-      ? (await this.octokit.rest.pulls.update({
+      ? (await octokit.rest.pulls.update({
           owner: this.owner,
           repo: this.repo,
           pull_number: currentPullRequest.number,
@@ -167,7 +174,7 @@ export class GitHubPullRequestAdapter implements PullRequestAdapter {
           body: draft.bodyMarkdown,
           base: draft.baseBranch
         })).data
-      : (await this.octokit.rest.pulls.create({
+      : (await octokit.rest.pulls.create({
           owner: this.owner,
           repo: this.repo,
           title: draft.title,
@@ -191,7 +198,8 @@ export class GitHubPullRequestAdapter implements PullRequestAdapter {
 
   async readChecks(input: ReadPullRequestChecksInput): Promise<PullRequestCheckSummary> {
     const ref = input.pullRequest.headCommit || input.pullRequest.branchName;
-    const response = await this.octokit.rest.checks.listForRef({
+    const octokit = await this.getOctokit();
+    const response = await octokit.rest.checks.listForRef({
       owner: this.owner,
       repo: this.repo,
       ref,
@@ -217,7 +225,8 @@ export class GitHubPullRequestAdapter implements PullRequestAdapter {
     if (!pullNumber) {
       throw new Error(`Cannot determine GitHub pull request number from ${input.pullRequest.id} / ${input.pullRequest.url}`);
     }
-    const response = await this.octokit.rest.issues.createComment({
+    const octokit = await this.getOctokit();
+    const response = await octokit.rest.issues.createComment({
       owner: this.owner,
       repo: this.repo,
       issue_number: pullNumber,
@@ -230,12 +239,13 @@ export class GitHubPullRequestAdapter implements PullRequestAdapter {
   }
 
   private async findPullRequest(
+    octokit: GitHubOctokitClient,
     draft: PullRequestDraft,
     existing?: PullRequestRecord
   ): Promise<GitHubPullRequest | undefined> {
     const pullNumber = existing ? parseGitHubPullNumber(existing, this.owner, this.repo) : undefined;
     if (pullNumber) {
-      const response = await this.octokit.rest.pulls.get({
+      const response = await octokit.rest.pulls.get({
         owner: this.owner,
         repo: this.repo,
         pull_number: pullNumber
@@ -243,7 +253,7 @@ export class GitHubPullRequestAdapter implements PullRequestAdapter {
       return response.data;
     }
 
-    const response = await this.octokit.rest.pulls.list({
+    const response = await octokit.rest.pulls.list({
       owner: this.owner,
       repo: this.repo,
       state: "open",
@@ -260,6 +270,132 @@ export class GitHubPullRequestAdapter implements PullRequestAdapter {
 
   private formatHeadForList(branchName: string) {
     return `${this.headOwner}:${branchName}`;
+  }
+
+  private async getOctokit() {
+    if (this.octokit) return this.octokit;
+    if (!this.tokenProvider) {
+      throw new Error("GitHub PR adapter requires a token, token provider, or an injected Octokit client.");
+    }
+    return createOctokitForToken(await this.tokenProvider.getToken(), this.apiBaseUrl);
+  }
+}
+
+export interface GitHubTokenProvider {
+  getToken(): Promise<string>;
+}
+
+export class StaticGitHubTokenProvider implements GitHubTokenProvider {
+  constructor(private readonly token: string) {}
+
+  async getToken() {
+    return this.token;
+  }
+}
+
+export interface GitHubAppInstallationTokenProviderConfig {
+  appId: string | number;
+  privateKey: string;
+  installationId: number;
+  apiBaseUrl?: string;
+  permissions?: Record<string, GitHubAppPermissionLevel | string>;
+  repositories?: string[];
+  octokit?: GitHubRequestClient;
+  now?: () => Date;
+}
+
+export class GitHubAppInstallationTokenProvider implements GitHubTokenProvider {
+  private cachedToken: { token: string; expiresAt: number } | undefined;
+  private readonly appId: string;
+  private readonly privateKey: string;
+  private readonly installationId: number;
+  private readonly apiBaseUrl?: string;
+  private readonly permissions?: Record<string, GitHubAppPermissionLevel | string>;
+  private readonly repositories?: string[];
+  private readonly octokit?: GitHubRequestClient;
+  private readonly now: () => Date;
+
+  constructor(config: GitHubAppInstallationTokenProviderConfig) {
+    this.appId = requireNonEmpty(String(config.appId), "GitHub App id");
+    this.privateKey = normalizePrivateKey(requireNonEmpty(config.privateKey, "GitHub App private key"));
+    this.installationId = config.installationId;
+    this.apiBaseUrl = config.apiBaseUrl;
+    this.permissions = config.permissions;
+    this.repositories = config.repositories;
+    this.octokit = config.octokit;
+    this.now = config.now ?? (() => new Date());
+  }
+
+  async getToken() {
+    const nowMs = this.now().getTime();
+    if (this.cachedToken && this.cachedToken.expiresAt - nowMs > 60_000) return this.cachedToken.token;
+    const appOctokit = this.octokit ?? createAppOctokit(this.appId, this.privateKey, this.apiBaseUrl, this.now);
+    const response = await appOctokit.request<GitHubInstallationAccessTokenResponse>(
+      "POST /app/installations/{installation_id}/access_tokens",
+      {
+        installation_id: this.installationId,
+        ...(this.permissions ? { permissions: this.permissions } : {}),
+        ...(this.repositories ? { repositories: this.repositories } : {})
+      }
+    );
+    this.cachedToken = {
+      token: response.data.token,
+      expiresAt: Date.parse(response.data.expires_at)
+    };
+    return response.data.token;
+  }
+}
+
+export interface GitHubAppRepository {
+  id: string;
+  githubRepositoryId: string;
+  installationId: number;
+  owner: string;
+  name: string;
+  fullName: string;
+  private: boolean;
+  htmlUrl: string;
+  cloneUrl: string;
+  defaultBranch: string;
+  permissions: Record<string, boolean>;
+}
+
+export interface GitHubAppInstallationRepositoryClientConfig {
+  installationId: number;
+  token?: string;
+  tokenProvider?: GitHubTokenProvider;
+  apiBaseUrl?: string;
+  octokit?: GitHubRequestClient;
+}
+
+export class GitHubAppInstallationRepositoryClient {
+  private readonly installationId: number;
+  private readonly tokenProvider?: GitHubTokenProvider;
+  private readonly apiBaseUrl?: string;
+  private readonly octokit?: GitHubRequestClient;
+
+  constructor(config: GitHubAppInstallationRepositoryClientConfig) {
+    this.installationId = config.installationId;
+    this.tokenProvider = config.tokenProvider ?? (config.token ? new StaticGitHubTokenProvider(config.token) : undefined);
+    this.apiBaseUrl = config.apiBaseUrl;
+    this.octokit = config.octokit;
+  }
+
+  async listRepositories(): Promise<GitHubAppRepository[]> {
+    const octokit = await this.getOctokit();
+    const response = await octokit.request<GitHubInstallationRepositoriesResponse>(
+      "GET /installation/repositories",
+      { per_page: 100 }
+    );
+    return response.data.repositories.map((repository) => mapGitHubAppRepository(repository, this.installationId));
+  }
+
+  private async getOctokit() {
+    if (this.octokit) return this.octokit;
+    if (!this.tokenProvider) {
+      throw new Error("GitHub App repository client requires a token, token provider, or injected Octokit client.");
+    }
+    return createRequestOctokit(await this.tokenProvider.getToken(), this.apiBaseUrl);
   }
 }
 
@@ -280,13 +416,60 @@ export function parseGitHubPullNumber(
   return undefined;
 }
 
-function createOctokit(config: GitHubPullRequestAdapterConfig): GitHubOctokitClient {
-  if (!config.token) {
-    throw new Error("GitHub PR adapter requires a token or an injected Octokit client.");
-  }
-  const options: ConstructorParameters<typeof Octokit>[0] = { auth: config.token };
-  if (config.apiBaseUrl) options.baseUrl = config.apiBaseUrl;
-  return new Octokit(options) as GitHubOctokitClient;
+export function createGitHubAppJwt(input: {
+  appId: string | number;
+  privateKey: string;
+  now?: Date;
+}) {
+  const nowSeconds = Math.floor((input.now?.getTime() ?? Date.now()) / 1000);
+  const header = base64UrlJson({ alg: "RS256", typ: "JWT" });
+  const payload = base64UrlJson({
+    iat: nowSeconds - 60,
+    exp: nowSeconds + 9 * 60,
+    iss: String(input.appId)
+  });
+  const unsigned = `${header}.${payload}`;
+  const signature = createSign("RSA-SHA256")
+    .update(unsigned)
+    .end()
+    .sign(normalizePrivateKey(input.privateKey), "base64url");
+  return `${unsigned}.${signature}`;
+}
+
+export function verifyGitHubWebhookSignature(input: {
+  payload: string | Buffer;
+  signature: string | undefined;
+  secret: string;
+}) {
+  const signature = input.signature?.trim() ?? "";
+  if (!signature.startsWith("sha256=")) return false;
+  const expected = `sha256=${createHmac("sha256", input.secret).update(input.payload).digest("hex")}`;
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const actualBuffer = Buffer.from(signature, "utf8");
+  return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+function createOctokitForToken(token: string, apiBaseUrl?: string): GitHubOctokitClient {
+  return createRequestOctokit(token, apiBaseUrl) as unknown as GitHubOctokitClient;
+}
+
+function createRequestOctokit(token: string, apiBaseUrl?: string): GitHubRequestClient {
+  const options: ConstructorParameters<typeof Octokit>[0] = { auth: token };
+  if (apiBaseUrl) options.baseUrl = apiBaseUrl;
+  return new Octokit(options) as unknown as GitHubRequestClient;
+}
+
+function createAppOctokit(
+  appId: string,
+  privateKey: string,
+  apiBaseUrl: string | undefined,
+  now: () => Date
+): GitHubRequestClient {
+  const options: ConstructorParameters<typeof Octokit>[0] = {
+    auth: createGitHubAppJwt({ appId, privateKey, now: now() })
+  };
+  if (apiBaseUrl) options.baseUrl = apiBaseUrl;
+  return new Octokit(options) as unknown as GitHubRequestClient;
 }
 
 function parseGitHubPullNumberFromText(text: string, owner?: string, repo?: string) {
@@ -361,6 +544,39 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function normalizePrivateKey(value: string) {
+  return value.replace(/\\n/gu, "\n");
+}
+
+function base64UrlJson(value: unknown) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
+function mapGitHubAppRepository(repository: GitHubRepositoryResponse, installationId: number): GitHubAppRepository {
+  const [owner, name] = repository.full_name.split("/");
+  return {
+    id: githubRepositoryRecordId(installationId, owner ?? repository.owner.login, name ?? repository.name),
+    githubRepositoryId: String(repository.id),
+    installationId,
+    owner: owner ?? repository.owner.login,
+    name: name ?? repository.name,
+    fullName: repository.full_name,
+    private: repository.private,
+    htmlUrl: repository.html_url,
+    cloneUrl: repository.clone_url,
+    defaultBranch: repository.default_branch,
+    permissions: repository.permissions ?? {}
+  };
+}
+
+export function githubRepositoryRecordId(installationId: number, owner: string, repo: string) {
+  return `repo_github_${installationId}_${slug(owner)}_${slug(repo)}`;
+}
+
+function slug(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/gu, "_").replace(/^_+|_+$/gu, "") || "repo";
+}
+
 interface GitHubPullRequest {
   number: number;
   html_url: string;
@@ -376,6 +592,33 @@ interface GitHubCheckRun {
   html_url?: string;
   started_at?: string | null;
   completed_at?: string | null;
+}
+
+interface GitHubInstallationAccessTokenResponse {
+  token: string;
+  expires_at: string;
+}
+
+interface GitHubInstallationRepositoriesResponse {
+  repositories: GitHubRepositoryResponse[];
+}
+
+interface GitHubRepositoryResponse {
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  html_url: string;
+  clone_url: string;
+  default_branch: string;
+  owner: {
+    login: string;
+  };
+  permissions?: Record<string, boolean>;
+}
+
+export interface GitHubRequestClient {
+  request<T>(route: string, parameters?: Record<string, unknown>): Promise<{ data: T }>;
 }
 
 export interface GitHubOctokitClient {

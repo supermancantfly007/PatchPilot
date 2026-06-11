@@ -1,13 +1,19 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { createHmac, generateKeyPairSync } from "node:crypto";
 import { join } from "node:path";
 import { Octokit } from "@octokit/rest";
 import { describe, expect, it } from "vitest";
 import {
+  GitHubAppInstallationRepositoryClient,
+  GitHubAppInstallationTokenProvider,
   GitHubPullRequestAdapter,
   LocalPullRequestAdapter,
+  createGitHubAppJwt,
   githubPullRequestId,
+  verifyGitHubWebhookSignature,
   type GitCommandRunner,
   type GitHubOctokitClient,
+  type GitHubRequestClient,
   type PullRequestDraft
 } from ".";
 
@@ -188,6 +194,108 @@ describe("GitHubPullRequestAdapter", () => {
   });
 });
 
+describe("GitHub App helpers", () => {
+  it("creates GitHub App JWTs with stable issuer and bounded lifetime claims", () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const jwt = createGitHubAppJwt({
+      appId: 12345,
+      privateKey: privateKey.export({ type: "pkcs1", format: "pem" }).toString(),
+      now: new Date("2026-06-11T00:00:00.000Z")
+    });
+    const [header, payload, signature] = jwt.split(".");
+
+    expect(JSON.parse(Buffer.from(header ?? "", "base64url").toString("utf8"))).toEqual({
+      alg: "RS256",
+      typ: "JWT"
+    });
+    expect(JSON.parse(Buffer.from(payload ?? "", "base64url").toString("utf8"))).toEqual({
+      iat: 1781135940,
+      exp: 1781136540,
+      iss: "12345"
+    });
+    expect(signature?.length).toBeGreaterThan(20);
+  });
+
+  it("mints and caches installation access tokens through the GitHub App endpoint", async () => {
+    const requestClient = new FakeRequestClient();
+    const provider = new GitHubAppInstallationTokenProvider({
+      appId: "12345",
+      privateKey: "-----BEGIN RSA PRIVATE KEY-----\\nfixture\\n-----END RSA PRIVATE KEY-----",
+      installationId: 98765,
+      permissions: {
+        contents: "write",
+        pull_requests: "write",
+        checks: "read"
+      },
+      repositories: ["delivery"],
+      octokit: requestClient,
+      now: () => new Date("2026-06-11T00:00:00.000Z")
+    });
+
+    await expect(provider.getToken()).resolves.toBe("installation-token-1");
+    await expect(provider.getToken()).resolves.toBe("installation-token-1");
+    expect(requestClient.calls).toHaveLength(1);
+    expect(requestClient.calls[0]).toMatchObject({
+      route: "POST /app/installations/{installation_id}/access_tokens",
+      parameters: {
+        installation_id: 98765,
+        repositories: ["delivery"],
+        permissions: {
+          contents: "write",
+          pull_requests: "write",
+          checks: "read"
+        }
+      }
+    });
+  });
+
+  it("lists repositories accessible to a GitHub App installation", async () => {
+    const requestClient = new FakeRequestClient();
+    const client = new GitHubAppInstallationRepositoryClient({
+      installationId: 98765,
+      token: "installation-token",
+      octokit: requestClient
+    });
+
+    const repositories = await client.listRepositories();
+
+    expect(requestClient.calls[0]).toMatchObject({
+      route: "GET /installation/repositories",
+      parameters: { per_page: 100 }
+    });
+    expect(repositories).toEqual([
+      {
+        id: "repo_github_98765_patchpilot_fixtures_delivery",
+        githubRepositoryId: "123",
+        installationId: 98765,
+        owner: "patchpilot-fixtures",
+        name: "delivery",
+        fullName: "patchpilot-fixtures/delivery",
+        private: true,
+        htmlUrl: "https://github.com/patchpilot-fixtures/delivery",
+        cloneUrl: "https://github.com/patchpilot-fixtures/delivery.git",
+        defaultBranch: "main",
+        permissions: {
+          admin: false,
+          maintain: true,
+          push: true,
+          pull: true
+        }
+      }
+    ]);
+  });
+
+  it("verifies GitHub webhook HMAC signatures without accepting mismatches", () => {
+    const payload = JSON.stringify({ action: "created", installation: { id: 98765 } });
+    const secret = "webhook-secret";
+    const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+    expect(verifyGitHubWebhookSignature({ payload, signature, secret })).toBe(true);
+    expect(verifyGitHubWebhookSignature({ payload, signature: "sha256=bad", secret })).toBe(false);
+    expect(verifyGitHubWebhookSignature({ payload, signature: undefined, secret })).toBe(false);
+  });
+});
+
 const runFixtureIntegration = process.env.PATCHPILOT_GITHUB_FIXTURE === "1";
 
 describe.skipIf(!runFixtureIntegration)("GitHub fixture integration", () => {
@@ -352,6 +460,47 @@ class FakeOctokit implements GitHubOctokitClient {
         }
       }
     };
+  }
+}
+
+class FakeRequestClient implements GitHubRequestClient {
+  readonly calls: Array<{ route: string; parameters?: Record<string, unknown> }> = [];
+
+  async request<T>(route: string, parameters?: Record<string, unknown>) {
+    this.calls.push({ route, parameters });
+    if (route === "POST /app/installations/{installation_id}/access_tokens") {
+      return {
+        data: {
+          token: "installation-token-1",
+          expires_at: "2026-06-11T01:00:00.000Z"
+        } as T
+      };
+    }
+    if (route === "GET /installation/repositories") {
+      return {
+        data: {
+          repositories: [
+            {
+              id: 123,
+              name: "delivery",
+              full_name: "patchpilot-fixtures/delivery",
+              private: true,
+              html_url: "https://github.com/patchpilot-fixtures/delivery",
+              clone_url: "https://github.com/patchpilot-fixtures/delivery.git",
+              default_branch: "main",
+              owner: { login: "patchpilot-fixtures" },
+              permissions: {
+                admin: false,
+                maintain: true,
+                push: true,
+                pull: true
+              }
+            }
+          ]
+        } as T
+      };
+    }
+    throw new Error(`Unexpected route ${route}`);
   }
 }
 

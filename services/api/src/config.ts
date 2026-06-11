@@ -14,6 +14,7 @@ import { z } from "zod";
 type ConfiguredRunner = "auto" | AgentRunnerKind;
 type ConfigSource = "defaults" | "file";
 type PullRequestProvider = "local" | "github";
+type GitHubPullRequestAuthMode = "token" | "app";
 
 export interface PatchPilotConfigEnv extends NodeJS.ProcessEnv {
   INIT_CWD?: string;
@@ -66,6 +67,12 @@ export interface PatchPilotConfigEnv extends NodeJS.ProcessEnv {
   PATCHPILOT_GITHUB_REMOTE?: string;
   PATCHPILOT_GITHUB_HEAD_OWNER?: string;
   PATCHPILOT_GITHUB_TOKEN_ENV?: string;
+  PATCHPILOT_GITHUB_AUTH_MODE?: string;
+  PATCHPILOT_GITHUB_APP_ID?: string;
+  PATCHPILOT_GITHUB_APP_PRIVATE_KEY_ENV?: string;
+  PATCHPILOT_GITHUB_APP_PRIVATE_KEY_PATH?: string;
+  PATCHPILOT_GITHUB_INSTALLATION_ID?: string;
+  PATCHPILOT_GITHUB_WEBHOOK_SECRET_ENV?: string;
   PATCHPILOT_GITHUB_API_BASE_URL?: string;
   PATCHPILOT_GITHUB_PUSH_TIMEOUT_MS?: string;
 }
@@ -157,6 +164,12 @@ export interface ResolvedPatchPilotConfig {
       remote: string;
       headOwner: string;
       tokenEnv: string;
+      authMode: GitHubPullRequestAuthMode;
+      appId: string;
+      appPrivateKeyEnv: string;
+      appPrivateKeyPath: string;
+      installationId?: number;
+      webhookSecretEnv: string;
       apiBaseUrl?: string;
       pushTimeoutMs: number;
     };
@@ -173,6 +186,7 @@ const configuredRunnerSchema = z.enum(["auto", "simulated", "codex"]);
 const artifactProviderSchema = z.enum(["local_fs", "s3"]);
 const containerRuntimeSchema = z.enum(["auto", "docker", "podman"]);
 const pullRequestProviderSchema = z.enum(["local", "github"]);
+const githubPullRequestAuthModeSchema = z.enum(["token", "app"]);
 const secretTokenEnvironmentSchema = z.enum(["dev", "ci"]);
 const envVarNameSchema = z.string().regex(/^[A-Z_][A-Z0-9_]*$/u);
 const secretIdSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u);
@@ -298,6 +312,12 @@ const rawConfigSchema = z.object({
       remote: z.string().optional(),
       headOwner: z.string().optional(),
       tokenEnv: envVarNameSchema.optional(),
+      authMode: githubPullRequestAuthModeSchema.optional(),
+      appId: z.string().optional(),
+      appPrivateKeyEnv: envVarNameSchema.optional(),
+      appPrivateKeyPath: z.string().optional(),
+      installationId: z.number().int().positive().optional(),
+      webhookSecretEnv: envVarNameSchema.optional(),
       apiBaseUrl: z.string().optional(),
       pushTimeoutMs: z.number().positive().optional()
     }).optional()
@@ -484,6 +504,37 @@ export function readPatchPilotConfig(options: ReadConfigOptions = {}): ResolvedP
         remote: pickString(env.PATCHPILOT_GITHUB_REMOTE, raw.pullRequest?.github?.remote, "origin"),
         headOwner: pickString(env.PATCHPILOT_GITHUB_HEAD_OWNER, raw.pullRequest?.github?.headOwner, ""),
         tokenEnv: pickString(env.PATCHPILOT_GITHUB_TOKEN_ENV, raw.pullRequest?.github?.tokenEnv, "PATCHPILOT_GITHUB_TOKEN"),
+        authMode: pickGitHubPullRequestAuthMode(
+          env.PATCHPILOT_GITHUB_AUTH_MODE,
+          raw.pullRequest?.github?.authMode,
+          "token"
+        ),
+        appId: pickString(env.PATCHPILOT_GITHUB_APP_ID, raw.pullRequest?.github?.appId, ""),
+        appPrivateKeyEnv: pickString(
+          env.PATCHPILOT_GITHUB_APP_PRIVATE_KEY_ENV,
+          raw.pullRequest?.github?.appPrivateKeyEnv,
+          "PATCHPILOT_GITHUB_APP_PRIVATE_KEY"
+        ),
+        appPrivateKeyPath: pickString(
+          env.PATCHPILOT_GITHUB_APP_PRIVATE_KEY_PATH,
+          raw.pullRequest?.github?.appPrivateKeyPath
+            ? resolveRelativePath(configRoot, raw.pullRequest.github.appPrivateKeyPath)
+            : undefined,
+          ""
+        ),
+        ...(pickOptionalInteger(env.PATCHPILOT_GITHUB_INSTALLATION_ID, raw.pullRequest?.github?.installationId) !== undefined
+          ? {
+              installationId: pickOptionalInteger(
+                env.PATCHPILOT_GITHUB_INSTALLATION_ID,
+                raw.pullRequest?.github?.installationId
+              )
+            }
+          : {}),
+        webhookSecretEnv: pickString(
+          env.PATCHPILOT_GITHUB_WEBHOOK_SECRET_ENV,
+          raw.pullRequest?.github?.webhookSecretEnv,
+          "PATCHPILOT_GITHUB_WEBHOOK_SECRET"
+        ),
         ...(pickString(env.PATCHPILOT_GITHUB_API_BASE_URL, raw.pullRequest?.github?.apiBaseUrl, "")
           ? { apiBaseUrl: pickString(env.PATCHPILOT_GITHUB_API_BASE_URL, raw.pullRequest?.github?.apiBaseUrl, "") }
           : {}),
@@ -636,6 +687,15 @@ function pickInteger(envValue: string | undefined, configValue: number | undefin
   return Math.max(1, Math.floor(pickNumber(envValue, configValue, defaultValue)));
 }
 
+function pickOptionalInteger(envValue: string | undefined, configValue: number | undefined) {
+  const normalizedEnv = envValue?.trim();
+  if (normalizedEnv) {
+    const parsed = Number(normalizedEnv);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  return configValue;
+}
+
 function pickBoolean(envValue: string | undefined, configValue: boolean | undefined, defaultValue: boolean) {
   if (envValue !== undefined) return ["1", "true", "yes"].includes(envValue.toLowerCase());
   if (configValue !== undefined) return configValue;
@@ -675,5 +735,14 @@ function pickPullRequestProvider(
   defaultValue: PullRequestProvider
 ): PullRequestProvider {
   if (envValue === "local" || envValue === "github") return envValue;
+  return configValue ?? defaultValue;
+}
+
+function pickGitHubPullRequestAuthMode(
+  envValue: string | undefined,
+  configValue: GitHubPullRequestAuthMode | undefined,
+  defaultValue: GitHubPullRequestAuthMode
+): GitHubPullRequestAuthMode {
+  if (envValue === "token" || envValue === "app") return envValue;
   return configValue ?? defaultValue;
 }

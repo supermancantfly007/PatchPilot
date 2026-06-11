@@ -35,12 +35,14 @@ import {
   type ExternalIssueSyncAction,
   type ExternalIssueSyncEvidence,
   type FailureType,
+  type GitHubAppInstallationRecord,
   type IntakeArtifactReference,
   type InterfaceContract,
   type PatchPilotSnapshot,
   type Prd,
   type PullRequestRecord,
   type Requirement,
+  type RepositoryRecord,
   type ReviewRecord,
   type SecretBrokerEvidence,
   type TestCase,
@@ -87,7 +89,13 @@ import {
   type CodexRunner,
   type CodexRunnerEvent
 } from "@patchpilot/codex-runner";
-import type { PullRequestAdapter, PullRequestCheckSummary, PullRequestDraft } from "@patchpilot/pull-request-adapter";
+import {
+  verifyGitHubWebhookSignature,
+  type GitHubAppRepository,
+  type PullRequestAdapter,
+  type PullRequestCheckSummary,
+  type PullRequestDraft
+} from "@patchpilot/pull-request-adapter";
 import {
   asCommandAuditEvidenceList,
   type CommandAuditEvidence
@@ -115,7 +123,10 @@ import {
   buildPrdAuditExportPackage
 } from "./auditExport";
 import { readPatchPilotConfig } from "./config";
-import { createConfiguredPullRequestAdapter } from "./pullRequestAdapter";
+import {
+  createConfiguredGitHubAppRepositoryClient,
+  createConfiguredPullRequestAdapter
+} from "./pullRequestAdapter";
 
 const defaultDataFile = join(process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"), "patchpilot-store.json");
 const defaultPgliteDataDir = join(
@@ -210,6 +221,10 @@ type ExternalIssueStatusUpdateInput = {
   idempotencyKey?: string;
 };
 
+interface GitHubAppRepositoryClient {
+  listRepositories(): Promise<GitHubAppRepository[]>;
+}
+
 export class PatchPilotStore {
   private snapshot: PatchPilotSnapshot = emptySnapshot();
   private loaded = false;
@@ -217,6 +232,7 @@ export class PatchPilotStore {
   private readonly artifactStore?: ArtifactStore;
   private readonly telemetry: PatchPilotTelemetry;
   private readonly pullRequestAdapter?: PullRequestAdapter;
+  private readonly githubAppRepositoryClient?: GitHubAppRepositoryClient;
   private readonly issueTrackerAdapters: Record<ExternalIssueProvider, ExternalIssueTrackerAdapter>;
   private readonly dataFilePath: string | undefined;
   private readonly repositoryPromise: Promise<PatchPilotRepository> | undefined;
@@ -230,6 +246,7 @@ export class PatchPilotStore {
       artifactStore?: ArtifactStore;
       telemetry?: PatchPilotTelemetry;
       pullRequestAdapter?: PullRequestAdapter;
+      githubAppRepositoryClient?: GitHubAppRepositoryClient;
       issueTrackerAdapters?: ExternalIssueAdapterRegistry;
       repository?: PatchPilotRepository | Promise<PatchPilotRepository> | false;
     } = {}
@@ -238,6 +255,7 @@ export class PatchPilotStore {
     this.artifactStore = options.artifactStore;
     this.telemetry = options.telemetry ?? getTelemetry({ serviceName: "patchpilot-api" });
     this.pullRequestAdapter = options.pullRequestAdapter;
+    this.githubAppRepositoryClient = options.githubAppRepositoryClient;
     this.issueTrackerAdapters = {
       ...createMemoryIssueTrackerAdapters(),
       ...options.issueTrackerAdapters
@@ -934,6 +952,160 @@ export class PatchPilotStore {
       });
       await this.save();
       return this.externalIssueSyncResponse(target.entityType, target.link, evidence, entity);
+    });
+  }
+
+  async listGitHubAppRepositories() {
+    return this.withMutation(async () => {
+      await this.load();
+      const client = this.githubAppRepositoryClient ??
+        createConfiguredGitHubAppRepositoryClient(undefined, undefined, this.githubInstallationIdForRepositoryListing());
+      const githubRepositories = await client.listRepositories();
+      const now = new Date().toISOString();
+      const repositories = this.syncGitHubAppRepositories(githubRepositories, now);
+      const installation = this.installationForGitHubRepositories(githubRepositories, now);
+      const selectedRepository = this.selectedGitHubRepository();
+      const permissionReady = selectedRepository
+        ? this.githubRepositoryHasPrPermissions(selectedRepository, installation)
+        : repositories.some((repository) => this.githubRepositoryHasPrPermissions(repository, installation));
+      this.addAuditEvent({
+        actor: "github-app",
+        action: "github_app.repositories_synced",
+        targetType: "repository",
+        targetId: selectedRepository?.id ?? installation?.id ?? "github_app",
+        message: `GitHub App repositories synced (${repositories.length}).`,
+        beforeJson: null,
+        afterJson: {
+          installation: installation ? auditGitHubInstallation(installation) : null,
+          repositoryIds: repositories.map((repository) => repository.id),
+          selectedRepositoryId: selectedRepository?.id ?? null,
+          permissionReady
+        },
+        metadataJson: {
+          provider: "github",
+          repositoryCount: repositories.length,
+          permissionReady
+        }
+      });
+      await this.save();
+      return {
+        ...(installation ? { installation } : {}),
+        repositories,
+        ...(selectedRepository ? { selectedRepositoryId: selectedRepository.id } : {}),
+        permissionReady
+      };
+    });
+  }
+
+  async selectGitHubAppRepository(repositoryId: string, options: { actor?: string } = {}) {
+    return this.withMutation(async () => {
+      await this.load();
+      const repository = this.snapshot.repositories.find((item) => item.id === repositoryId && item.provider === "github");
+      if (!repository) throw new DomainError("NOT_FOUND", `GitHub repository not found: ${repositoryId}`);
+      const now = new Date().toISOString();
+      const installation = this.githubInstallationForRepository(repository) ??
+        this.createGitHubInstallationFromRepository(repository, now);
+      if (!this.githubRepositoryHasPrPermissions(repository, installation)) {
+        throw new DomainError("INVALID_STATE", "GitHub App installation does not have repository PR permissions.");
+      }
+      const beforeJson = {
+        selectedRepositoryId: installation.selectedRepositoryId ?? null,
+        repositories: this.snapshot.repositories
+          .filter((item) => item.provider === "github" && item.githubInstallationId === repository.githubInstallationId)
+          .map((item) => ({ id: item.id, selected: item.selected ?? false }))
+      };
+      this.snapshot.repositories.forEach((item) => {
+        if (item.provider === "github" && item.githubInstallationId === repository.githubInstallationId) {
+          item.selected = item.id === repository.id;
+          item.updatedAt = now;
+        }
+      });
+      repository.selected = true;
+      repository.updatedAt = now;
+      installation.selectedRepositoryId = repository.id;
+      installation.updatedAt = now;
+      this.addAuditEvent({
+        actor: options.actor ?? "github-app",
+        action: "github_app.repository_selected",
+        targetType: "repository",
+        targetId: repository.id,
+        message: `GitHub repository selected for PatchPilot PR creation: ${repository.fullName}.`,
+        beforeJson,
+        afterJson: {
+          installation: auditGitHubInstallation(installation),
+          repository: auditRepository(repository),
+          permissionReady: true
+        },
+        metadataJson: {
+          provider: "github",
+          installationId: installation.installationId,
+          repositoryId: repository.githubRepositoryId ?? repository.id,
+          fullName: repository.fullName
+        }
+      });
+      await this.save();
+      return {
+        installation,
+        repository,
+        permissionReady: true
+      };
+    });
+  }
+
+  async ingestGitHubAppWebhook(input: {
+    event: string;
+    payload: Record<string, unknown>;
+    payloadText: string;
+    signature?: string;
+    secret: string;
+    deliveryId?: string;
+  }) {
+    return this.withMutation(async () => {
+      await this.load();
+      if (!verifyGitHubWebhookSignature({
+        payload: input.payloadText,
+        signature: input.signature,
+        secret: input.secret
+      })) {
+        throw new DomainError("INVALID_STATE", "GitHub webhook signature verification failed.");
+      }
+      const now = new Date().toISOString();
+      const payload = input.payload;
+      const action = stringFromUnknown(payload.action) ?? "";
+      const installation = this.upsertGitHubInstallationFromWebhook(payload, now);
+      const repositories = this.upsertGitHubRepositoriesFromWebhook(payload, installation, now);
+      this.addAuditEvent({
+        actor: "github-webhook",
+        action: "github_app.webhook_ingested",
+        targetType: "repository",
+        targetId: repositories[0]?.id ?? installation?.id ?? "github_app",
+        message: `GitHub webhook ingested: ${input.event}${action ? `/${action}` : ""}.`,
+        beforeJson: null,
+        afterJson: {
+          event: input.event,
+          action: action || null,
+          installation: installation ? auditGitHubInstallation(installation) : null,
+          repositoryIds: repositories.map((repository) => repository.id),
+          selectedRepositoryId: installation?.selectedRepositoryId ?? null
+        },
+        metadataJson: {
+          provider: "github",
+          event: input.event,
+          action: action || null,
+          deliveryId: input.deliveryId ?? null,
+          installationId: installation?.installationId ?? null,
+          repositoryCount: repositories.length
+        }
+      });
+      await this.save();
+      return {
+        accepted: true,
+        event: input.event,
+        ...(action ? { action } : {}),
+        ...(installation ? { installationId: installation.installationId } : {}),
+        repositoryCount: repositories.length,
+        ...(installation?.selectedRepositoryId ? { selectedRepositoryId: installation.selectedRepositoryId } : {})
+      };
     });
   }
 
@@ -2226,6 +2398,8 @@ export class PatchPilotStore {
 
   private normalizeSnapshot() {
     const now = new Date().toISOString();
+    this.snapshot.repositories ||= [];
+    this.snapshot.githubInstallations ||= [];
     this.snapshot.requirements ||= [];
     this.snapshot.prds ||= [];
     this.snapshot.workItems ||= [];
@@ -2242,6 +2416,21 @@ export class PatchPilotStore {
     this.snapshot.approvals ||= [];
     this.snapshot.bugs ||= [];
     this.snapshot.agents = this.mergeDefaultAgents(this.snapshot.agents || [], now);
+    this.snapshot.repositories = this.snapshot.repositories.map((repository) => ({
+      ...repository,
+      fullName: repository.fullName || `${repository.owner}/${repository.name}`,
+      selected: repository.selected ?? false,
+      permissions: repository.permissions ?? {},
+      createdAt: repository.createdAt || now,
+      updatedAt: repository.updatedAt || repository.createdAt || now
+    }));
+    this.snapshot.githubInstallations = this.snapshot.githubInstallations.map((installation) => ({
+      ...installation,
+      repositorySelection: installation.repositorySelection || "selected",
+      permissions: installation.permissions ?? {},
+      createdAt: installation.createdAt || now,
+      updatedAt: installation.updatedAt || installation.createdAt || now
+    }));
     this.snapshot.approvals = this.snapshot.approvals.map((item) => ({
       ...item,
       status: item.status || "pending",
@@ -3834,7 +4023,191 @@ export class PatchPilotStore {
   }
 
   private resolvePullRequestAdapter() {
-    return this.pullRequestAdapter ?? createConfiguredPullRequestAdapter();
+    return this.pullRequestAdapter ?? createConfiguredPullRequestAdapter(
+      readPatchPilotConfig(),
+      process.env,
+      this.selectedGitHubRepository()
+    );
+  }
+
+  private selectedGitHubRepository() {
+    return this.snapshot.repositories.find((repository) => repository.provider === "github" && repository.selected);
+  }
+
+  private githubInstallationIdForRepositoryListing() {
+    const selectedRepositoryInstallationId = Number(this.selectedGitHubRepository()?.githubInstallationId);
+    if (Number.isFinite(selectedRepositoryInstallationId) && selectedRepositoryInstallationId > 0) return selectedRepositoryInstallationId;
+    return this.snapshot.githubInstallations[0]?.installationId;
+  }
+
+  private syncGitHubAppRepositories(repositories: GitHubAppRepository[], now: string) {
+    const installation = this.installationForGitHubRepositories(repositories, now);
+    return repositories.map((repository) => this.upsertGitHubRepository(repository, installation, now));
+  }
+
+  private installationForGitHubRepositories(
+    repositories: GitHubAppRepository[],
+    now: string
+  ): GitHubAppInstallationRecord | undefined {
+    const firstRepository = repositories[0];
+    if (!firstRepository) return undefined;
+    return this.upsertGitHubInstallation({
+      installationId: firstRepository.installationId,
+      accountLogin: firstRepository.owner,
+      repositorySelection: "selected",
+      permissions: {},
+      now
+    });
+  }
+
+  private upsertGitHubRepository(
+    githubRepository: GitHubAppRepository,
+    installation: GitHubAppInstallationRecord | undefined,
+    now: string
+  ) {
+    const existing = this.snapshot.repositories.find((repository) => repository.id === githubRepository.id);
+    const repository: RepositoryRecord = {
+      id: githubRepository.id,
+      provider: "github",
+      owner: githubRepository.owner,
+      name: githubRepository.name,
+      fullName: githubRepository.fullName,
+      remoteUrl: githubRepository.cloneUrl,
+      htmlUrl: githubRepository.htmlUrl,
+      defaultBranch: githubRepository.defaultBranch,
+      githubInstallationId: String(githubRepository.installationId),
+      githubRepositoryId: githubRepository.githubRepositoryId,
+      private: githubRepository.private,
+      selected: existing?.selected ?? false,
+      permissions: githubRepository.permissions,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now
+    };
+    if (existing) Object.assign(existing, repository);
+    else this.snapshot.repositories.unshift(repository);
+    if (installation?.selectedRepositoryId === repository.id) repository.selected = true;
+    return existing ?? repository;
+  }
+
+  private upsertGitHubInstallation(input: {
+    installationId: number;
+    accountLogin: string;
+    accountType?: string;
+    repositorySelection: GitHubAppInstallationRecord["repositorySelection"];
+    permissions: GitHubAppInstallationRecord["permissions"];
+    selectedRepositoryId?: string;
+    suspendedAt?: string;
+    now: string;
+  }) {
+    const id = githubInstallationRecordId(input.installationId);
+    const existing = this.snapshot.githubInstallations.find((installation) => installation.id === id);
+    const permissions = Object.keys(input.permissions).length > 0
+      ? input.permissions
+      : existing?.permissions ?? input.permissions;
+    const installation: GitHubAppInstallationRecord = {
+      id,
+      installationId: input.installationId,
+      accountLogin: input.accountLogin,
+      ...(input.accountType ? { accountType: input.accountType } : existing?.accountType ? { accountType: existing.accountType } : {}),
+      repositorySelection: input.repositorySelection,
+      permissions,
+      ...(input.selectedRepositoryId
+        ? { selectedRepositoryId: input.selectedRepositoryId }
+        : existing?.selectedRepositoryId
+          ? { selectedRepositoryId: existing.selectedRepositoryId }
+          : {}),
+      ...(input.suspendedAt ? { suspendedAt: input.suspendedAt } : existing?.suspendedAt ? { suspendedAt: existing.suspendedAt } : {}),
+      createdAt: existing?.createdAt ?? input.now,
+      updatedAt: input.now
+    };
+    if (existing) Object.assign(existing, installation);
+    else this.snapshot.githubInstallations.unshift(installation);
+    return existing ?? installation;
+  }
+
+  private githubInstallationForRepository(repository: RepositoryRecord) {
+    const installationId = Number(repository.githubInstallationId);
+    if (!Number.isFinite(installationId)) return undefined;
+    return this.snapshot.githubInstallations.find((installation) => installation.installationId === installationId);
+  }
+
+  private createGitHubInstallationFromRepository(repository: RepositoryRecord, now: string) {
+    const installationId = Number(repository.githubInstallationId);
+    if (!Number.isFinite(installationId)) {
+      throw new DomainError("INVALID_STATE", "GitHub repository is missing installation metadata.");
+    }
+    return this.upsertGitHubInstallation({
+      installationId,
+      accountLogin: repository.owner,
+      repositorySelection: "selected",
+      permissions: {},
+      now
+    });
+  }
+
+  private githubRepositoryHasPrPermissions(
+    repository: RepositoryRecord,
+    installation: GitHubAppInstallationRecord | undefined
+  ) {
+    const repositoryAllowsPush =
+      repository.permissions?.admin ||
+      repository.permissions?.maintain ||
+      repository.permissions?.push;
+    const permissions = installation?.permissions ?? {};
+    const installationPermissionsKnown = Object.keys(permissions).length > 0;
+    const appAllowsPr = !installationPermissionsKnown ||
+      permissions.contents === "write" &&
+      (permissions.pull_requests === "write" || permissions.pullRequests === "write");
+    return Boolean(repositoryAllowsPush && appAllowsPr);
+  }
+
+  private upsertGitHubInstallationFromWebhook(
+    payload: Record<string, unknown>,
+    now: string
+  ): GitHubAppInstallationRecord | undefined {
+    const installationPayload = objectFromUnknown(payload.installation);
+    const installationId = numberFromUnknown(installationPayload?.id);
+    if (!installationId) return undefined;
+    const account = objectFromUnknown(installationPayload?.account);
+    const action = stringFromUnknown(payload.action);
+    return this.upsertGitHubInstallation({
+      installationId,
+      accountLogin: stringFromUnknown(account?.login) ?? `installation-${installationId}`,
+      accountType: stringFromUnknown(account?.type),
+      repositorySelection: repositorySelectionFromUnknown(installationPayload?.repository_selection),
+      permissions: githubInstallationPermissionsFromUnknown(installationPayload?.permissions),
+      suspendedAt: action === "suspended" ? now : stringFromUnknown(installationPayload?.suspended_at),
+      now
+    });
+  }
+
+  private upsertGitHubRepositoriesFromWebhook(
+    payload: Record<string, unknown>,
+    installation: GitHubAppInstallationRecord | undefined,
+    now: string
+  ) {
+    if (!installation) return [];
+    const repositoryPayloads = [
+      ...arrayFromUnknown(payload.repositories),
+      ...arrayFromUnknown(payload.repositories_added),
+      ...(payload.repository ? [payload.repository] : [])
+    ];
+    const removedRepositoryPayloads = arrayFromUnknown(payload.repositories_removed);
+    const repositories = repositoryPayloads
+      .map((repositoryPayload) => githubRepositoryFromWebhook(repositoryPayload, installation.installationId))
+      .filter((repository): repository is GitHubAppRepository => Boolean(repository))
+      .map((repository) => this.upsertGitHubRepository(repository, installation, now));
+
+    for (const removedPayload of removedRepositoryPayloads) {
+      const removed = githubRepositoryFromWebhook(removedPayload, installation.installationId);
+      if (!removed) continue;
+      const existing = this.snapshot.repositories.find((repository) => repository.id === removed.id);
+      if (!existing) continue;
+      existing.selected = false;
+      existing.updatedAt = now;
+      if (installation.selectedRepositoryId === existing.id) delete installation.selectedRepositoryId;
+    }
+    return repositories;
   }
 
   private contractEvidenceForWorkItem(prdId: string, workItemId: string) {
@@ -4746,6 +5119,102 @@ function normalizeIntakeArtifactKind(kind: string): IntakeArtifactReference["kin
   return "file";
 }
 
+function githubInstallationRecordId(installationId: number) {
+  return `github_installation_${installationId}`;
+}
+
+function auditGitHubInstallation(installation: GitHubAppInstallationRecord): Record<string, AuditJsonValue> {
+  return {
+    id: installation.id,
+    installationId: installation.installationId,
+    accountLogin: installation.accountLogin,
+    accountType: installation.accountType ?? null,
+    repositorySelection: installation.repositorySelection,
+    selectedRepositoryId: installation.selectedRepositoryId ?? null,
+    permissions: installation.permissions,
+    suspendedAt: installation.suspendedAt ?? null
+  };
+}
+
+function auditRepository(repository: RepositoryRecord): Record<string, AuditJsonValue> {
+  return {
+    id: repository.id,
+    provider: repository.provider,
+    owner: repository.owner,
+    name: repository.name,
+    fullName: repository.fullName,
+    remoteUrl: repository.remoteUrl,
+    defaultBranch: repository.defaultBranch,
+    githubInstallationId: repository.githubInstallationId ?? null,
+    githubRepositoryId: repository.githubRepositoryId ?? null,
+    selected: repository.selected ?? false,
+    permissions: repository.permissions ?? {}
+  };
+}
+
+function objectFromUnknown(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function arrayFromUnknown(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function stringFromUnknown(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberFromUnknown(value: unknown) {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : undefined;
+  return parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function repositorySelectionFromUnknown(value: unknown): GitHubAppInstallationRecord["repositorySelection"] {
+  return value === "all" ? "all" : "selected";
+}
+
+function githubInstallationPermissionsFromUnknown(value: unknown): GitHubAppInstallationRecord["permissions"] {
+  const input = objectFromUnknown(value) ?? {};
+  const permissionLevels = new Set(["none", "read", "write", "admin"]);
+  return Object.fromEntries(Object.entries(input).flatMap(([key, permission]) => {
+    const level = String(permission);
+    return permissionLevels.has(level) ? [[key, level]] : [];
+  }));
+}
+
+function githubRepositoryFromWebhook(value: unknown, installationId: number): GitHubAppRepository | undefined {
+  const repository = objectFromUnknown(value);
+  if (!repository) return undefined;
+  const fullName = stringFromUnknown(repository.full_name) ??
+    [objectFromUnknown(repository.owner)?.login, repository.name].map(stringFromUnknown).filter(Boolean).join("/");
+  const fullNameParts = fullName.split("/");
+  const owner = fullNameParts[0];
+  const name = fullNameParts[1];
+  if (!owner || !name) return undefined;
+  const permissions = objectFromUnknown(repository.permissions) ?? {};
+  return {
+    id: `repo_github_${installationId}_${safeRepositorySegment(owner)}_${safeRepositorySegment(name)}`,
+    githubRepositoryId: String(numberFromUnknown(repository.id) ?? stringFromUnknown(repository.id) ?? fullName),
+    installationId,
+    owner,
+    name,
+    fullName,
+    private: Boolean(repository.private),
+    htmlUrl: stringFromUnknown(repository.html_url) ?? `https://github.com/${fullName}`,
+    cloneUrl: stringFromUnknown(repository.clone_url) ?? `https://github.com/${fullName}.git`,
+    defaultBranch: stringFromUnknown(repository.default_branch) ?? "main",
+    permissions: Object.fromEntries(
+      Object.entries(permissions).map(([key, permission]) => [key, Boolean(permission)])
+    )
+  };
+}
+
+function safeRepositorySegment(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/gu, "_").replace(/^_+|_+$/gu, "") || "repo";
+}
+
 function buildRunDiffSummary(
   changedFiles: string[],
   git: {
@@ -5032,6 +5501,8 @@ function createDefaultRepository() {
 
 function isProductSnapshotEmpty(snapshot: PatchPilotSnapshot) {
   return (
+    snapshot.repositories.length === 0 &&
+    snapshot.githubInstallations.length === 0 &&
     snapshot.requirements.length === 0 &&
     snapshot.prds.length === 0 &&
     snapshot.workItems.length === 0 &&

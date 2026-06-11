@@ -17,6 +17,7 @@ const expectedTableNames = [
   "budgets",
   "capability_manifests",
   "defects",
+  "github_app_installations",
   "interface_contracts",
   "organizations",
   "prd_versions",
@@ -126,8 +127,19 @@ describe("PatchPilot Drizzle schema", () => {
     await db.exec(`
       insert into organizations (id, slug, name) values ('org_1', 'patchpilot', 'PatchPilot');
       insert into projects (id, organization_id, slug, name) values ('proj_1', 'org_1', 'platform', 'Agent Platform');
-      insert into repositories (id, project_id, provider, owner, name, remote_url)
-        values ('repo_1', 'proj_1', 'github', 'patchpilot', 'patchpilot', 'https://example.test/patchpilot.git');
+      insert into github_app_installations (
+        id, project_id, installation_id, account_login, account_type, repository_selection, permissions, selected_repository_id
+      ) values (
+        'github_installation_4242', 'proj_1', '4242', 'patchpilot', 'Organization', 'selected',
+        '{"contents":"write","pull_requests":"write"}'::jsonb, 'repo_1'
+      );
+      insert into repositories (
+        id, project_id, provider, owner, name, remote_url, html_url, github_installation_id,
+        github_repository_id, private, selected, permissions
+      ) values (
+        'repo_1', 'proj_1', 'github', 'patchpilot', 'patchpilot', 'https://example.test/patchpilot.git',
+        'https://github.com/patchpilot/patchpilot', '4242', '987654321', false, true, '{"push":true}'::jsonb
+      );
       insert into requirements (id, project_id, title, raw_input, input_type, status, simple_summary, created_by)
         values ('req_1', 'proj_1', 'Ship database schema', 'Create schema', 'feature', 'submitted', 'DB schema', 'user_1');
       insert into prd_versions (id, project_id, requirement_id, version, status, title, body_markdown)

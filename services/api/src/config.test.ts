@@ -105,6 +105,12 @@ pullRequest:
     remote: upstream
     headOwner: patchpilot-fork
     tokenEnv: PATCHPILOT_FIXTURE_GITHUB_TOKEN
+    authMode: app
+    appId: "12345"
+    appPrivateKeyEnv: PATCHPILOT_FIXTURE_GITHUB_APP_PRIVATE_KEY
+    appPrivateKeyPath: .patchpilot/github-app.pem
+    installationId: 98765
+    webhookSecretEnv: PATCHPILOT_FIXTURE_GITHUB_WEBHOOK_SECRET
     apiBaseUrl: https://github.fixture/api/v3
     pushTimeoutMs: 45000
 `);
@@ -227,6 +233,12 @@ pullRequest:
           remote: "upstream",
           headOwner: "patchpilot-fork",
           tokenEnv: "PATCHPILOT_FIXTURE_GITHUB_TOKEN",
+          authMode: "app",
+          appId: "12345",
+          appPrivateKeyEnv: "PATCHPILOT_FIXTURE_GITHUB_APP_PRIVATE_KEY",
+          appPrivateKeyPath: join(fixture.root, ".patchpilot", "github-app.pem"),
+          installationId: 98765,
+          webhookSecretEnv: "PATCHPILOT_FIXTURE_GITHUB_WEBHOOK_SECRET",
           apiBaseUrl: "https://github.fixture/api/v3",
           pushTimeoutMs: 45000
         }
@@ -322,6 +334,12 @@ security:
           PATCHPILOT_GITHUB_REMOTE: "env-remote",
           PATCHPILOT_GITHUB_HEAD_OWNER: "env-head-owner",
           PATCHPILOT_GITHUB_TOKEN_ENV: "PATCHPILOT_ENV_GITHUB_TOKEN",
+          PATCHPILOT_GITHUB_AUTH_MODE: "app",
+          PATCHPILOT_GITHUB_APP_ID: "24680",
+          PATCHPILOT_GITHUB_APP_PRIVATE_KEY_ENV: "PATCHPILOT_ENV_GITHUB_APP_PRIVATE_KEY",
+          PATCHPILOT_GITHUB_APP_PRIVATE_KEY_PATH: ".patchpilot/env-github-app.pem",
+          PATCHPILOT_GITHUB_INSTALLATION_ID: "13579",
+          PATCHPILOT_GITHUB_WEBHOOK_SECRET_ENV: "PATCHPILOT_ENV_GITHUB_WEBHOOK_SECRET",
           PATCHPILOT_GITHUB_API_BASE_URL: "https://github.env/api/v3",
           PATCHPILOT_GITHUB_PUSH_TIMEOUT_MS: "65000"
         }
@@ -397,6 +415,12 @@ security:
           remote: "env-remote",
           headOwner: "env-head-owner",
           tokenEnv: "PATCHPILOT_ENV_GITHUB_TOKEN",
+          authMode: "app",
+          appId: "24680",
+          appPrivateKeyEnv: "PATCHPILOT_ENV_GITHUB_APP_PRIVATE_KEY",
+          appPrivateKeyPath: ".patchpilot/env-github-app.pem",
+          installationId: 13579,
+          webhookSecretEnv: "PATCHPILOT_ENV_GITHUB_WEBHOOK_SECRET",
           apiBaseUrl: "https://github.env/api/v3",
           pushTimeoutMs: 65000
         }

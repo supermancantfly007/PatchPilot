@@ -835,6 +835,89 @@
         }
       }
     },
+    "/api/integrations/github/repositories": {
+      "get": {
+        "operationId": "listGitHubAppRepositories",
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "GET /api/integrations/github/repositories",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubAppRepositoryListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/integrations/github/repositories/select": {
+      "post": {
+        "operationId": "selectGitHubAppRepository",
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "POST /api/integrations/github/repositories/select",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectGitHubRepositoryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubAppRepositorySelectionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/integrations/github/webhook": {
+      "post": {
+        "operationId": "ingestGitHubAppWebhook",
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "POST /api/integrations/github/webhook",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitHubWebhookRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubWebhookResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/runs/:id": {
       "get": {
         "operationId": "getRun",
@@ -1809,6 +1892,44 @@
           "idempotencyKey": {
             "type": "string",
             "minLength": 1
+          }
+        }
+      },
+      "SelectGitHubRepositoryRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repositoryId"
+        ],
+        "properties": {
+          "repositoryId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "GitHubWebhookRequest": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "installation": {
+            "type": "object"
+          },
+          "repository": {
+            "type": "object"
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "sender": {
+            "type": "object"
           }
         }
       },
@@ -4585,6 +4706,216 @@
           }
         }
       },
+      "RepositoryRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "provider",
+          "owner",
+          "name",
+          "fullName",
+          "remoteUrl",
+          "defaultBranch",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "git",
+              "github"
+            ]
+          },
+          "owner": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "fullName": {
+            "type": "string"
+          },
+          "remoteUrl": {
+            "type": "string"
+          },
+          "htmlUrl": {
+            "type": "string"
+          },
+          "defaultBranch": {
+            "type": "string"
+          },
+          "githubInstallationId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "githubRepositoryId": {
+            "type": "string"
+          },
+          "private": {
+            "type": "boolean"
+          },
+          "selected": {
+            "type": "boolean"
+          },
+          "permissions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "GitHubAppInstallationRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "installationId",
+          "accountLogin",
+          "repositorySelection",
+          "permissions",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "installationId": {
+            "type": "number"
+          },
+          "accountLogin": {
+            "type": "string"
+          },
+          "accountType": {
+            "type": "string"
+          },
+          "repositorySelection": {
+            "type": "string",
+            "enum": [
+              "all",
+              "selected"
+            ]
+          },
+          "permissions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "none",
+                "read",
+                "write",
+                "admin"
+              ]
+            }
+          },
+          "selectedRepositoryId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "suspendedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "GitHubAppRepositoryListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repositories",
+          "permissionReady"
+        ],
+        "properties": {
+          "installation": {
+            "$ref": "#/components/schemas/GitHubAppInstallationRecord"
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepositoryRecord"
+            }
+          },
+          "selectedRepositoryId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "permissionReady": {
+            "type": "boolean"
+          }
+        }
+      },
+      "GitHubAppRepositorySelectionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repository",
+          "permissionReady"
+        ],
+        "properties": {
+          "installation": {
+            "$ref": "#/components/schemas/GitHubAppInstallationRecord"
+          },
+          "repository": {
+            "$ref": "#/components/schemas/RepositoryRecord"
+          },
+          "permissionReady": {
+            "type": "boolean"
+          }
+        }
+      },
+      "GitHubWebhookResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "accepted",
+          "event"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "event": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "installationId": {
+            "type": "number"
+          },
+          "repositoryCount": {
+            "type": "number"
+          },
+          "selectedRepositoryId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
       "PullRequestRecord": {
         "type": "object",
         "additionalProperties": true,
@@ -5405,6 +5736,8 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "repositories",
+          "githubInstallations",
           "requirements",
           "prds",
           "workItems",
@@ -5423,6 +5756,18 @@
           "agents"
         ],
         "properties": {
+          "repositories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepositoryRecord"
+            }
+          },
+          "githubInstallations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitHubAppInstallationRecord"
+            }
+          },
           "requirements": {
             "type": "array",
             "items": {

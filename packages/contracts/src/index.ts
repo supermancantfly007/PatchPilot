@@ -10,9 +10,11 @@ import type {
   ExternalIssueProvider,
   ExternalIssueStatusCategory,
   FailureType,
+  GitHubAppRepositorySelection,
   InterfaceContract,
   InterfaceContractStatus,
   PatchPilotSnapshot,
+  RepositoryProvider,
   Prd
 } from "@patchpilot/domain";
 import { z } from "zod";
@@ -72,6 +74,9 @@ export const externalIssueStatusCategories = [
   "done",
   "cancelled"
 ] as const satisfies readonly ExternalIssueStatusCategory[];
+export const repositoryProviders = ["git", "github"] as const satisfies readonly RepositoryProvider[];
+export const githubAppRepositorySelections = ["all", "selected"] as const satisfies readonly GitHubAppRepositorySelection[];
+export const githubAppPermissionLevels = ["none", "read", "write", "admin"] as const;
 
 export const intakeArtifactReferenceSchema = z.object({
   id: z.string().trim().min(1).optional(),
@@ -192,6 +197,12 @@ export const externalIssueStatusUpdateSchema = z.object({
     path: ["externalIssueId"]
   });
 });
+
+export const selectGitHubRepositorySchema = z.object({
+  repositoryId: z.string().trim().min(1)
+});
+
+export const githubWebhookSchema = z.record(z.string(), z.unknown()).default({});
 
 export const createApprovalSchema = z.object({
   kind: z.enum(approvalKinds),
@@ -355,6 +366,23 @@ export const httpApiContract = {
       request: "ExternalIssueStatusUpdateRequest",
       response: "ExternalIssueSyncResponse"
     },
+    listGitHubAppRepositories: {
+      method: "GET",
+      path: "/api/integrations/github/repositories",
+      response: "GitHubAppRepositoryListResponse"
+    },
+    selectGitHubAppRepository: {
+      method: "POST",
+      path: "/api/integrations/github/repositories/select",
+      request: "SelectGitHubRepositoryRequest",
+      response: "GitHubAppRepositorySelectionResponse"
+    },
+    ingestGitHubAppWebhook: {
+      method: "POST",
+      path: "/api/integrations/github/webhook",
+      request: "GitHubWebhookRequest",
+      response: "GitHubWebhookResponse"
+    },
     getRun: {
       method: "GET",
       path: "/api/runs/:id",
@@ -444,6 +472,8 @@ export const sharedStateContract = {
     "ExternalIssueLink",
     "ExternalIssueBlocker",
     "ExternalIssueSyncEvidence",
+    "RepositoryRecord",
+    "GitHubAppInstallationRecord",
     "PullRequestRecord",
     "ReviewRecord",
     "ApprovalRecord",
@@ -1671,6 +1701,9 @@ const runStatus = enumSchema(["queued", "running", "needs_approval", "succeeded"
 const workItemStatus = enumSchema(["proposed", "ready", "claimed", "running", "review", "blocked", "done", "cancelled"]);
 const externalIssueProvider = enumSchema(externalIssueProviders);
 const externalIssueStatusCategory = enumSchema(externalIssueStatusCategories);
+const repositoryProvider = enumSchema(repositoryProviders);
+const githubAppRepositorySelection = enumSchema(githubAppRepositorySelections);
+const githubAppPermissionLevel = enumSchema(githubAppPermissionLevels);
 const approvalKind = enumSchema(approvalKinds);
 const approvalStatus = enumSchema(["pending", "approved", "denied", "expired"]);
 const approvalTargetType = enumSchema(approvalTargetTypes);
@@ -1921,6 +1954,16 @@ export const openApiSchemas = {
     observedAt: isoDate,
     idempotencyKey: { type: "string", minLength: 1 }
   }, ["provider", "statusName"]),
+  SelectGitHubRepositoryRequest: objectSchema({
+    repositoryId: id
+  }, ["repositoryId"]),
+  GitHubWebhookRequest: looseObjectSchema({
+    action: { type: "string" },
+    installation: { type: "object" },
+    repository: { type: "object" },
+    repositories: arrayOf({ type: "object" }),
+    sender: { type: "object" }
+  }, []),
   CreateApprovalRequest: objectSchema({
     kind: approvalKind,
     targetType: approvalTargetType,
@@ -2521,6 +2564,60 @@ export const openApiSchemas = {
     "observedAt",
     "recordedAt"
   ]),
+  RepositoryRecord: objectSchema({
+    id,
+    provider: repositoryProvider,
+    owner: { type: "string" },
+    name: { type: "string" },
+    fullName: { type: "string" },
+    remoteUrl: { type: "string" },
+    htmlUrl: { type: "string" },
+    defaultBranch: { type: "string" },
+    githubInstallationId: id,
+    githubRepositoryId: { type: "string" },
+    private: { type: "boolean" },
+    selected: { type: "boolean" },
+    permissions: {
+      type: "object",
+      additionalProperties: { type: "boolean" }
+    },
+    createdAt: isoDate,
+    updatedAt: isoDate
+  }, ["id", "provider", "owner", "name", "fullName", "remoteUrl", "defaultBranch", "createdAt", "updatedAt"]),
+  GitHubAppInstallationRecord: objectSchema({
+    id,
+    installationId: { type: "number" },
+    accountLogin: { type: "string" },
+    accountType: { type: "string" },
+    repositorySelection: githubAppRepositorySelection,
+    permissions: {
+      type: "object",
+      additionalProperties: githubAppPermissionLevel
+    },
+    selectedRepositoryId: id,
+    suspendedAt: isoDate,
+    createdAt: isoDate,
+    updatedAt: isoDate
+  }, ["id", "installationId", "accountLogin", "repositorySelection", "permissions", "createdAt", "updatedAt"]),
+  GitHubAppRepositoryListResponse: objectSchema({
+    installation: schemaRef("GitHubAppInstallationRecord"),
+    repositories: arrayOf(schemaRef("RepositoryRecord")),
+    selectedRepositoryId: id,
+    permissionReady: { type: "boolean" }
+  }, ["repositories", "permissionReady"]),
+  GitHubAppRepositorySelectionResponse: objectSchema({
+    installation: schemaRef("GitHubAppInstallationRecord"),
+    repository: schemaRef("RepositoryRecord"),
+    permissionReady: { type: "boolean" }
+  }, ["repository", "permissionReady"]),
+  GitHubWebhookResponse: objectSchema({
+    accepted: { type: "boolean" },
+    event: { type: "string" },
+    action: { type: "string" },
+    installationId: { type: "number" },
+    repositoryCount: { type: "number" },
+    selectedRepositoryId: id
+  }, ["accepted", "event"]),
   PullRequestRecord: looseObjectSchema({
     id,
     provider: enumSchema(["local", "github"]),
@@ -2708,6 +2805,8 @@ export const openApiSchemas = {
     bug: schemaRef("BugReport")
   }, ["link", "evidence"]),
   PatchPilotSnapshot: objectSchema({
+    repositories: arrayOf(schemaRef("RepositoryRecord")),
+    githubInstallations: arrayOf(schemaRef("GitHubAppInstallationRecord")),
     requirements: arrayOf(schemaRef("Requirement")),
     prds: arrayOf(schemaRef("Prd")),
     workItems: arrayOf(schemaRef("WorkItem")),

@@ -203,7 +203,13 @@ export const repositories = pgTable(
     owner: text("owner").notNull(),
     name: text("name").notNull(),
     remoteUrl: text("remote_url").notNull(),
+    htmlUrl: text("html_url"),
     defaultBranch: text("default_branch").notNull().default("main"),
+    githubInstallationId: text("github_installation_id"),
+    githubRepositoryId: text("github_repository_id"),
+    private: boolean("private").notNull().default(false),
+    selected: boolean("selected").notNull().default(false),
+    permissions: jsonb("permissions").$type<Record<string, boolean>>().notNull().default(emptyJsonObject),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
@@ -215,11 +221,39 @@ export const repositories = pgTable(
       table.name
     ),
     index("repositories_project_id_idx").on(table.projectId),
+    index("repositories_github_installation_id_idx").on(table.githubInstallationId),
+    index("repositories_selected_idx").on(table.projectId, table.selected),
     check("repositories_provider_not_empty", sql`length(${table.provider}) > 0`),
     check("repositories_owner_not_empty", sql`length(${table.owner}) > 0`),
     check("repositories_name_not_empty", sql`length(${table.name}) > 0`),
     check("repositories_remote_url_not_empty", sql`length(${table.remoteUrl}) > 0`),
     check("repositories_default_branch_not_empty", sql`length(${table.defaultBranch}) > 0`)
+  ]
+);
+
+export const githubAppInstallations = pgTable(
+  "github_app_installations",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    installationId: text("installation_id").notNull(),
+    accountLogin: text("account_login").notNull(),
+    accountType: text("account_type"),
+    repositorySelection: text("repository_selection").notNull().default("selected"),
+    permissions: jsonb("permissions").$type<Record<string, string>>().notNull().default(emptyJsonObject),
+    selectedRepositoryId: text("selected_repository_id"),
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("github_app_installations_project_installation_unique").on(table.projectId, table.installationId),
+    index("github_app_installations_project_id_idx").on(table.projectId),
+    check("github_app_installations_installation_id_not_empty", sql`length(${table.installationId}) > 0`),
+    check("github_app_installations_account_login_not_empty", sql`length(${table.accountLogin}) > 0`),
+    check("github_app_installations_repository_selection_valid", sql`${table.repositorySelection} in ('all', 'selected')`)
   ]
 );
 

@@ -73,6 +73,10 @@ export function assertCanExportAuditPackage(auth: PatchPilotAuthContext | undefi
   assertRole(auth, adminRoles, "Exporting an audit package requires an admin role.");
 }
 
+export function assertCanManageRepositoryIntegration(auth: PatchPilotAuthContext | undefined) {
+  assertRole(auth, maintainerRoles, "Managing repository integrations requires a maintainer, reviewer, or admin role.");
+}
+
 export function assertCanRequestApproval(
   auth: PatchPilotAuthContext | undefined,
   _approval: ApprovalAuthorizationInput

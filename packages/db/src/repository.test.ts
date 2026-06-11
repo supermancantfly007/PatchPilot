@@ -40,6 +40,43 @@ describe("PatchPilot Postgres repository", () => {
       ]
     });
     expect(loaded.agentRuns.map((run) => run.id).sort()).toEqual(["run_1", "run_2"]);
+    expect(loaded.githubInstallations).toEqual([
+      {
+        id: "github_installation_4242",
+        installationId: 4242,
+        accountLogin: "patchpilot-fixtures",
+        accountType: "Organization",
+        repositorySelection: "selected",
+        permissions: {
+          contents: "write",
+          pull_requests: "write"
+        },
+        selectedRepositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+        createdAt: now,
+        updatedAt: now
+      }
+    ]);
+    expect(loaded.repositories).toEqual([
+      {
+        id: "repo_github_4242_patchpilot_fixtures_delivery",
+        provider: "github",
+        owner: "patchpilot-fixtures",
+        name: "delivery",
+        fullName: "patchpilot-fixtures/delivery",
+        remoteUrl: "https://github.com/patchpilot-fixtures/delivery.git",
+        htmlUrl: "https://github.com/patchpilot-fixtures/delivery",
+        defaultBranch: "main",
+        githubInstallationId: "4242",
+        githubRepositoryId: "987654321",
+        private: false,
+        selected: true,
+        permissions: {
+          push: true
+        },
+        createdAt: now,
+        updatedAt: now
+      }
+    ]);
     expect(loaded.pullRequests.map((pullRequest) => pullRequest.workItemId)).toEqual(["wi_1", "wi_1"]);
     expect(loaded.reviewRecords.map((review) => review.linkedPullRequestId).sort()).toEqual(["pr_1", "pr_2"]);
     expect(loaded.acceptances).toEqual([
@@ -56,6 +93,43 @@ describe("PatchPilot Postgres repository", () => {
 
 function snapshotFixture(): PatchPilotSnapshot {
   return {
+    repositories: [
+      {
+        id: "repo_github_4242_patchpilot_fixtures_delivery",
+        provider: "github",
+        owner: "patchpilot-fixtures",
+        name: "delivery",
+        fullName: "patchpilot-fixtures/delivery",
+        remoteUrl: "https://github.com/patchpilot-fixtures/delivery.git",
+        htmlUrl: "https://github.com/patchpilot-fixtures/delivery",
+        defaultBranch: "main",
+        githubInstallationId: "4242",
+        githubRepositoryId: "987654321",
+        private: false,
+        selected: true,
+        permissions: {
+          push: true
+        },
+        createdAt: now,
+        updatedAt: now
+      }
+    ],
+    githubInstallations: [
+      {
+        id: "github_installation_4242",
+        installationId: 4242,
+        accountLogin: "patchpilot-fixtures",
+        accountType: "Organization",
+        repositorySelection: "selected",
+        permissions: {
+          contents: "write",
+          pull_requests: "write"
+        },
+        selectedRepositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+        createdAt: now,
+        updatedAt: now
+      }
+    ],
     requirements: [
       {
         id: "req_1",

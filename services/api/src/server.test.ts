@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -7,7 +8,12 @@ import { describe, expect, it } from "vitest";
 import { CodexRunError, type CodexRunner } from "@patchpilot/codex-runner";
 import { executeCommand } from "@patchpilot/command-executor";
 import { contractVersion, hashNormalizedContent } from "@patchpilot/contracts";
-import type { PullRequestAdapter, UpsertPullRequestInput, WriteReviewerCommentInput } from "@patchpilot/pull-request-adapter";
+import type {
+  GitHubAppRepository,
+  PullRequestAdapter,
+  UpsertPullRequestInput,
+  WriteReviewerCommentInput
+} from "@patchpilot/pull-request-adapter";
 import { createInMemoryTelemetry, prometheusMetricNames } from "@patchpilot/telemetry";
 import {
   emptySnapshot,
@@ -1282,6 +1288,213 @@ describe("PatchPilot API", () => {
         }
       });
     } finally {
+      await app.close();
+    }
+  });
+
+  it("syncs and selects GitHub App repositories with maintainer RBAC", async () => {
+    const repositories = [
+      fakeGitHubAppRepository({
+        id: "repo_github_4242_patchpilot_fixtures_delivery",
+        githubRepositoryId: "987654321",
+        name: "delivery",
+        permissions: { admin: false, maintain: false, push: true }
+      }),
+      fakeGitHubAppRepository({
+        id: "repo_github_4242_patchpilot_fixtures_docs",
+        githubRepositoryId: "987654322",
+        name: "docs",
+        permissions: { admin: false, maintain: false, push: false }
+      })
+    ];
+    const store = new PatchPilotStore({
+      githubAppRepositoryClient: {
+        listRepositories: async () => repositories
+      }
+    });
+    const app = await buildServer({ store });
+
+    try {
+      const anonymousList = await app.inject({
+        method: "GET",
+        url: "/api/integrations/github/repositories"
+      });
+      expect(anonymousList.statusCode).toBe(401);
+
+      const list = await app.inject({
+        method: "GET",
+        url: "/api/integrations/github/repositories",
+        headers: authHeaders("maintainer", "repo-maintainer")
+      });
+      expect(list.statusCode).toBe(200);
+      expect(list.json()).toMatchObject({
+        installation: {
+          installationId: 4242,
+          accountLogin: "patchpilot-fixtures",
+          repositorySelection: "selected"
+        },
+        repositories: [
+          {
+            id: "repo_github_4242_patchpilot_fixtures_delivery",
+            selected: false
+          },
+          {
+            id: "repo_github_4242_patchpilot_fixtures_docs",
+            selected: false
+          }
+        ],
+        permissionReady: true
+      });
+
+      const select = await app.inject({
+        method: "POST",
+        url: "/api/integrations/github/repositories/select",
+        headers: authHeaders("maintainer", "repo-maintainer"),
+        payload: { repositoryId: "repo_github_4242_patchpilot_fixtures_delivery" }
+      });
+      expect(select.statusCode).toBe(200);
+      expect(select.json()).toMatchObject({
+        repository: {
+          id: "repo_github_4242_patchpilot_fixtures_delivery",
+          fullName: "patchpilot-fixtures/delivery",
+          selected: true
+        },
+        installation: {
+          installationId: 4242,
+          selectedRepositoryId: "repo_github_4242_patchpilot_fixtures_delivery"
+        },
+        permissionReady: true
+      });
+
+      const snapshot = (await app.inject({ method: "GET", url: "/api/snapshot" })).json();
+      expect(snapshot.githubInstallations[0]).toMatchObject({
+        installationId: 4242,
+        selectedRepositoryId: "repo_github_4242_patchpilot_fixtures_delivery"
+      });
+      expect(snapshot.repositories.find((item: { id: string }) => item.id === "repo_github_4242_patchpilot_fixtures_delivery"))
+        .toMatchObject({ provider: "github", selected: true });
+      expect(snapshot.repositories.find((item: { id: string }) => item.id === "repo_github_4242_patchpilot_fixtures_docs"))
+        .toMatchObject({ provider: "github", selected: false });
+      expect(snapshot.auditEvents.map((event: { action: string }) => event.action)).toEqual(
+        expect.arrayContaining(["github_app.repositories_synced", "github_app.repository_selected"])
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects GitHub App repository selection without PR-capable repository permissions", async () => {
+    const store = new PatchPilotStore({
+      githubAppRepositoryClient: {
+        listRepositories: async () => [
+          fakeGitHubAppRepository({
+            id: "repo_github_4242_patchpilot_fixtures_readonly",
+            githubRepositoryId: "987654323",
+            name: "readonly",
+            permissions: { admin: false, maintain: false, push: false }
+          })
+        ]
+      }
+    });
+    const app = await buildServer({ store });
+
+    try {
+      const list = await app.inject({
+        method: "GET",
+        url: "/api/integrations/github/repositories",
+        headers: authHeaders("maintainer")
+      });
+      expect(list.statusCode).toBe(200);
+      expect(list.json().permissionReady).toBe(false);
+
+      const select = await app.inject({
+        method: "POST",
+        url: "/api/integrations/github/repositories/select",
+        headers: authHeaders("maintainer"),
+        payload: { repositoryId: "repo_github_4242_patchpilot_fixtures_readonly" }
+      });
+      expect(select.statusCode).toBe(409);
+      expect(select.json().message).toContain("does not have repository PR permissions");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("ingests signed GitHub App webhooks into installation and repository state", async () => {
+    const previousSecret = process.env.PATCHPILOT_GITHUB_WEBHOOK_SECRET;
+    process.env.PATCHPILOT_GITHUB_WEBHOOK_SECRET = "fixture-github-webhook-secret";
+    const payload = {
+      action: "added",
+      installation: {
+        id: 4242,
+        account: { login: "patchpilot-fixtures", type: "Organization" },
+        repository_selection: "selected",
+        permissions: { contents: "write", pull_requests: "write" }
+      },
+      repositories_added: [
+        {
+          id: 987654321,
+          full_name: "patchpilot-fixtures/delivery",
+          private: false,
+          html_url: "https://github.com/patchpilot-fixtures/delivery",
+          clone_url: "https://github.com/patchpilot-fixtures/delivery.git",
+          default_branch: "main",
+          permissions: { admin: false, maintain: false, push: true }
+        }
+      ],
+      sender: { login: "patchpilot-fixtures" }
+    };
+    const app = await buildServer({ store: new PatchPilotStore() });
+
+    try {
+      const rejected = await app.inject({
+        method: "POST",
+        url: "/api/integrations/github/webhook",
+        headers: {
+          "x-github-event": "installation_repositories",
+          "x-hub-signature-256": "sha256=bad"
+        },
+        payload
+      });
+      expect(rejected.statusCode).toBe(409);
+
+      const accepted = await app.inject({
+        method: "POST",
+        url: "/api/integrations/github/webhook",
+        headers: {
+          "x-github-event": "installation_repositories",
+          "x-github-delivery": "delivery-fixture-1",
+          "x-hub-signature-256": signGitHubWebhook(payload, "fixture-github-webhook-secret")
+        },
+        payload
+      });
+      expect(accepted.statusCode).toBe(200);
+      expect(accepted.json()).toMatchObject({
+        accepted: true,
+        event: "installation_repositories",
+        action: "added",
+        installationId: 4242,
+        repositoryCount: 1
+      });
+
+      const snapshot = (await app.inject({ method: "GET", url: "/api/snapshot" })).json();
+      expect(snapshot.githubInstallations[0]).toMatchObject({
+        installationId: 4242,
+        accountLogin: "patchpilot-fixtures",
+        accountType: "Organization",
+        repositorySelection: "selected",
+        permissions: { contents: "write", pull_requests: "write" }
+      });
+      expect(snapshot.repositories[0]).toMatchObject({
+        id: "repo_github_4242_patchpilot_fixtures_delivery",
+        provider: "github",
+        fullName: "patchpilot-fixtures/delivery",
+        permissions: { push: true }
+      });
+      expect(snapshot.auditEvents.map((event: { action: string }) => event.action)).toContain("github_app.webhook_ingested");
+    } finally {
+      if (previousSecret === undefined) delete process.env.PATCHPILOT_GITHUB_WEBHOOK_SECRET;
+      else process.env.PATCHPILOT_GITHUB_WEBHOOK_SECRET = previousSecret;
       await app.close();
     }
   });
@@ -3190,6 +3403,28 @@ function fakeCodexRunResult(testId = "test_secret_broker"): AgentRunResult {
     reviewerSummary: "Fake reviewer approved the secret broker result.",
     runner: "codex"
   };
+}
+
+function fakeGitHubAppRepository(
+  overrides: Pick<GitHubAppRepository, "id" | "githubRepositoryId" | "name" | "permissions"> &
+    Partial<Omit<GitHubAppRepository, "id" | "githubRepositoryId" | "name" | "permissions">>
+): GitHubAppRepository {
+  const owner = overrides.owner ?? "patchpilot-fixtures";
+  const fullName = `${owner}/${overrides.name}`;
+  return {
+    installationId: overrides.installationId ?? 4242,
+    owner,
+    private: overrides.private ?? false,
+    htmlUrl: overrides.htmlUrl ?? `https://github.com/${fullName}`,
+    cloneUrl: overrides.cloneUrl ?? `https://github.com/${fullName}.git`,
+    defaultBranch: overrides.defaultBranch ?? "main",
+    fullName,
+    ...overrides
+  };
+}
+
+function signGitHubWebhook(payload: unknown, secret: string) {
+  return `sha256=${createHmac("sha256", secret).update(JSON.stringify(payload)).digest("hex")}`;
 }
 
 async function pollPrdRuns(app: Awaited<ReturnType<typeof buildServer>>, prdId: string, expectedCount: number) {

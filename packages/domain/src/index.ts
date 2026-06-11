@@ -71,6 +71,10 @@ export type ExternalIssueSyncAction =
   | "observed"
   | "ignored";
 
+export type RepositoryProvider = "git" | "github";
+export type GitHubAppRepositorySelection = "all" | "selected";
+export type GitHubAppPermissionLevel = "none" | "read" | "write" | "admin";
+
 export type BugStatus =
   | "reported"
   | "needs_repro"
@@ -378,6 +382,37 @@ export interface Requirement {
   artifactReferences?: IntakeArtifactReference[];
   clarificationQuestions: ClarificationQuestion[];
   clarificationTurns: ClarificationTurn[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RepositoryRecord {
+  id: string;
+  provider: RepositoryProvider;
+  owner: string;
+  name: string;
+  fullName: string;
+  remoteUrl: string;
+  htmlUrl?: string;
+  defaultBranch: string;
+  githubInstallationId?: string;
+  githubRepositoryId?: string;
+  private?: boolean;
+  selected?: boolean;
+  permissions?: Record<string, boolean>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GitHubAppInstallationRecord {
+  id: string;
+  installationId: number;
+  accountLogin: string;
+  accountType?: string;
+  repositorySelection: GitHubAppRepositorySelection;
+  permissions: Record<string, GitHubAppPermissionLevel | string>;
+  selectedRepositoryId?: string;
+  suspendedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -799,6 +834,7 @@ export interface AuditEvent {
     | "interface_contract"
     | "pull_request"
     | "review_record"
+    | "repository"
     | "bug"
     | "acceptance"
     | "approval";
@@ -937,6 +973,8 @@ export interface AcceptanceQualityGateInput {
 }
 
 export interface PatchPilotSnapshot {
+  repositories: RepositoryRecord[];
+  githubInstallations: GitHubAppInstallationRecord[];
   requirements: Requirement[];
   prds: Prd[];
   workItems: WorkItem[];
@@ -956,6 +994,8 @@ export interface PatchPilotSnapshot {
 }
 
 export const emptySnapshot = (): PatchPilotSnapshot => ({
+  repositories: [],
+  githubInstallations: [],
   requirements: [],
   prds: [],
   workItems: [],

@@ -11,11 +11,13 @@ import type {
   ArtifactRecord,
   AuditEvent,
   BugReport,
+  GitHubAppInstallationRecord,
   InterfaceContract,
   PatchPilotSnapshot,
   Prd,
   PullRequestRecord,
   Requirement,
+  RepositoryRecord,
   ReviewRecord,
   TestCase,
   TestRun,
@@ -130,6 +132,14 @@ class DrizzlePatchPilotRepository implements PatchPilotRepository {
     const projectRows = await this.db.select().from(schema.projects).limit(1);
     if (projectRows.length === 0) return emptySnapshot();
 
+    const repositoryRows = await this.db
+      .select()
+      .from(schema.repositories)
+      .orderBy(desc(schema.repositories.updatedAt), asc(schema.repositories.id));
+    const githubInstallationRows = await this.db
+      .select()
+      .from(schema.githubAppInstallations)
+      .orderBy(desc(schema.githubAppInstallations.updatedAt), asc(schema.githubAppInstallations.id));
     const requirementRows = await this.db
       .select()
       .from(schema.requirements)
@@ -197,6 +207,8 @@ class DrizzlePatchPilotRepository implements PatchPilotRepository {
 
     const auditEvents = orderAuditEvents(auditEventRows.map(mapAuditEventRow));
     return {
+      repositories: repositoryRows.map(mapRepositoryRow),
+      githubInstallations: githubInstallationRows.map(mapGitHubAppInstallationRow),
       requirements: requirementRows.map(mapRequirementRow),
       prds: prdRows.map(mapPrdRow),
       workItems: workItemRows.map(mapWorkItemRow),
@@ -223,6 +235,7 @@ class DrizzlePatchPilotRepository implements PatchPilotRepository {
       await clearProductState(tx);
       await insertRows(tx, schema.organizations, rows.organizations);
       await insertRows(tx, schema.projects, rows.projects);
+      await insertRows(tx, schema.githubAppInstallations, rows.githubAppInstallations);
       await insertRows(tx, schema.repositories, rows.repositories);
       await insertRows(tx, schema.agents, rows.agents);
       await insertRows(tx, schema.requirements, rows.requirements);
@@ -264,6 +277,7 @@ async function clearProductState(tx: any) {
   await tx.delete(schema.prdVersions);
   await tx.delete(schema.requirements);
   await tx.delete(schema.repositories);
+  await tx.delete(schema.githubAppInstallations);
   await tx.delete(schema.projects);
   await tx.delete(schema.organizations);
 }
@@ -307,19 +321,37 @@ function prepareRows(snapshot: PatchPilotSnapshot) {
         updatedAt: now
       }
     ],
-    repositories: [
-      {
-        id: defaultRepositoryId,
+    githubAppInstallations: (snapshot.githubInstallations ?? []).map((installation) => ({
+      id: installation.id,
+      projectId: defaultProjectId,
+      installationId: String(installation.installationId),
+      accountLogin: installation.accountLogin,
+      accountType: installation.accountType ?? null,
+      repositorySelection: installation.repositorySelection,
+      permissions: installation.permissions,
+      selectedRepositoryId: installation.selectedRepositoryId ?? null,
+      suspendedAt: toDate(installation.suspendedAt),
+      createdAt: toDate(installation.createdAt) ?? now,
+      updatedAt: toDate(installation.updatedAt) ?? now
+    })),
+    repositories: (snapshot.repositories && snapshot.repositories.length > 0 ? snapshot.repositories : [defaultRepository(now)])
+      .map((repository) => ({
+        id: repository.id,
         projectId: defaultProjectId,
-        provider: "git",
-        owner: "local",
-        name: "patchpilot",
-        remoteUrl: "local://patchpilot",
-        defaultBranch: "main",
-        createdAt: now,
-        updatedAt: now
-      }
-    ],
+        provider: repository.provider,
+        owner: repository.owner,
+        name: repository.name,
+        remoteUrl: repository.remoteUrl,
+        htmlUrl: repository.htmlUrl ?? null,
+        defaultBranch: repository.defaultBranch,
+        githubInstallationId: repository.githubInstallationId ?? null,
+        githubRepositoryId: repository.githubRepositoryId ?? null,
+        private: repository.private ?? false,
+        selected: repository.selected ?? false,
+        permissions: repository.permissions ?? {},
+        createdAt: toDate(repository.createdAt) ?? now,
+        updatedAt: toDate(repository.updatedAt) ?? now
+      })),
     requirements: snapshot.requirements.map((requirement) => ({
       id: requirement.id,
       projectId: defaultProjectId,
@@ -651,6 +683,20 @@ function prepareRows(snapshot: PatchPilotSnapshot) {
   };
 }
 
+function defaultRepository(now: Date): RepositoryRecord {
+  return {
+    id: defaultRepositoryId,
+    provider: "git",
+    owner: "local",
+    name: "patchpilot",
+    fullName: "local/patchpilot",
+    remoteUrl: "local://patchpilot",
+    defaultBranch: "main",
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString()
+  };
+}
+
 async function applyMigrations(executor: MigrationExecutor) {
   await executor.execute(
     "create table if not exists __patchpilot_migrations (name text primary key, applied_at timestamptz not null default now())"
@@ -691,6 +737,41 @@ function postgresExecutor(sql: postgres.Sql): MigrationExecutor {
       await sql.end({ timeout: 5 });
     }
   };
+}
+
+function mapRepositoryRow(row: any): RepositoryRecord {
+  return removeUndefined({
+    id: row.id,
+    provider: row.provider,
+    owner: row.owner,
+    name: row.name,
+    fullName: `${row.owner}/${row.name}`,
+    remoteUrl: row.remoteUrl,
+    htmlUrl: row.htmlUrl ?? undefined,
+    defaultBranch: row.defaultBranch,
+    githubInstallationId: row.githubInstallationId ?? undefined,
+    githubRepositoryId: row.githubRepositoryId ?? undefined,
+    private: row.private,
+    selected: row.selected,
+    permissions: jsonObject<Record<string, boolean>>(row.permissions),
+    createdAt: iso(row.createdAt),
+    updatedAt: iso(row.updatedAt)
+  });
+}
+
+function mapGitHubAppInstallationRow(row: any): GitHubAppInstallationRecord {
+  return removeUndefined({
+    id: row.id,
+    installationId: Number(row.installationId),
+    accountLogin: row.accountLogin,
+    accountType: row.accountType ?? undefined,
+    repositorySelection: row.repositorySelection,
+    permissions: jsonObject<Record<string, GitHubAppInstallationRecord["permissions"][string]>>(row.permissions),
+    selectedRepositoryId: row.selectedRepositoryId ?? undefined,
+    suspendedAt: optionalIso(row.suspendedAt),
+    createdAt: iso(row.createdAt),
+    updatedAt: iso(row.updatedAt)
+  });
 }
 
 function mapRequirementRow(row: any): Requirement {

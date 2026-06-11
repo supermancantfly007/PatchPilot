@@ -77,6 +77,8 @@ function jsonResponse(body: unknown, status = 200) {
 
 function snapshot(): PatchPilotSnapshot {
   return {
+    repositories: [],
+    githubInstallations: [],
     requirements: [],
     prds: [],
     workItems: [workItem()],

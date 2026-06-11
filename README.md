@@ -110,6 +110,12 @@ pullRequest:
     remote: origin
     headOwner: "" # optional fork owner for source branches; blank uses owner
     tokenEnv: PATCHPILOT_GITHUB_TOKEN
+    authMode: token # token or app
+    appId: ""
+    appPrivateKeyEnv: PATCHPILOT_GITHUB_APP_PRIVATE_KEY
+    appPrivateKeyPath: ""
+    webhookSecretEnv: PATCHPILOT_GITHUB_WEBHOOK_SECRET
+    # installationId: 123456 # optional; webhook-ingested installation state can also provide this
     apiBaseUrl: "" # optional GitHub Enterprise REST API base URL
     pushTimeoutMs: 30000
 ```
@@ -336,11 +342,25 @@ PATCHPILOT_GITHUB_REMOTE=origin
 PATCHPILOT_GITHUB_HEAD_OWNER=
 PATCHPILOT_GITHUB_TOKEN_ENV=PATCHPILOT_GITHUB_TOKEN
 PATCHPILOT_GITHUB_TOKEN=ghp_or_fine_grained_token
+PATCHPILOT_GITHUB_AUTH_MODE=token
 PATCHPILOT_GITHUB_API_BASE_URL=
 PATCHPILOT_GITHUB_PUSH_TIMEOUT_MS=30000
 ```
 
 `PATCHPILOT_GITHUB_HEAD_OWNER` is only needed when PR source branches live in a fork. `PATCHPILOT_GITHUB_API_BASE_URL` is only needed for GitHub Enterprise, for example `https://github.example.com/api/v3`.
+
+For GitHub App mode, set `PATCHPILOT_GITHUB_AUTH_MODE=app` and provide the App ID plus a private key through `PATCHPILOT_GITHUB_APP_PRIVATE_KEY` or `PATCHPILOT_GITHUB_APP_PRIVATE_KEY_PATH`. `PATCHPILOT_GITHUB_INSTALLATION_ID` can seed repository listing before webhooks arrive; after a signed install webhook, PatchPilot can use the stored installation ID. Webhook verification reads the secret from the env var named by `PATCHPILOT_GITHUB_WEBHOOK_SECRET_ENV`, defaulting to `PATCHPILOT_GITHUB_WEBHOOK_SECRET`.
+
+```bash
+PATCHPILOT_PR_PROVIDER=github
+PATCHPILOT_GITHUB_AUTH_MODE=app
+PATCHPILOT_GITHUB_APP_ID=123456
+PATCHPILOT_GITHUB_APP_PRIVATE_KEY_PATH=.patchpilot/github-app.pem
+PATCHPILOT_GITHUB_INSTALLATION_ID=987654
+PATCHPILOT_GITHUB_WEBHOOK_SECRET=github_webhook_secret
+```
+
+Maintainers, reviewers, and admins can list and select installation repositories through `GET /api/integrations/github/repositories` and `POST /api/integrations/github/repositories/select`. GitHub App webhooks post to `POST /api/integrations/github/webhook`; repository selections and webhook syncs are recorded in audit events.
 
 The adapter unit suite includes a real fixture integration that is skipped by default. It creates a branch in the fixture workspace, pushes it, opens a PR, writes a reviewer comment, reads checks, then closes the PR and deletes the fixture branch:
 
