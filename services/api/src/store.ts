@@ -93,6 +93,11 @@ import {
 } from "@patchpilot/policy";
 import { redactJsonValue, redactRecordValues, redactSecrets, type SecretRedactionOptions } from "@patchpilot/security";
 import { getTelemetry, type PatchPilotTelemetry } from "@patchpilot/telemetry";
+import {
+  auditExportFormatVersion,
+  auditRetentionPolicyVersion,
+  buildPrdAuditExportPackage
+} from "./auditExport";
 import { readPatchPilotConfig } from "./config";
 import { createConfiguredPullRequestAdapter } from "./pullRequestAdapter";
 
@@ -287,6 +292,58 @@ export class PatchPilotStore {
   async verifyAuditChain() {
     await this.load();
     return verifyAuditHashChain(this.snapshot.auditEvents);
+  }
+
+  async exportPrdAuditPackage(prdId: string, options: { actorId?: string } = {}) {
+    return this.withMutation(async () => {
+      await this.load();
+      const prd = this.findPrd(prdId);
+      const actor = { actorType: "admin", actorId: options.actorId?.trim() || "admin" };
+      const now = new Date().toISOString();
+      const existingVerification = verifyAuditHashChain(this.snapshot.auditEvents);
+      const exportEvent = this.addAuditEvent({
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        actor: options.actorId || actor.actorId,
+        action: "audit.exported",
+        targetType: "prd",
+        targetId: prd.id,
+        message: "管理员导出 PRD 全链路审计包。",
+        requirementId: prd.requirementId,
+        prdId: prd.id,
+        createdAt: now,
+        beforeJson: null,
+        afterJson: {
+          export: {
+            formatVersion: auditExportFormatVersion,
+            scope: "prd",
+            prdId: prd.id,
+            redacted: true,
+            retentionPolicyVersion: auditRetentionPolicyVersion
+          }
+        },
+        metadataJson: {
+          adminIntent: true,
+          authEnforcement: "pending_td_222_rbac",
+          worm: {
+            mode: "metadata_only",
+            semantics: "audit hash chain plus export payload checksums"
+          },
+          chainHeadBeforeExport: existingVerification.headHash,
+          checkedEventsBeforeExport: existingVerification.checkedEvents
+        }
+      });
+      const auditPackage = buildPrdAuditExportPackage({
+        snapshot: this.snapshot,
+        prdId: prd.id,
+        createdAt: now,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        exportAuditEventId: exportEvent.id
+      });
+      await this.save();
+      return auditPackage;
+    });
   }
 
   async createApproval(
@@ -3705,6 +3762,7 @@ export class PatchPilotStore {
     };
     this.snapshot.auditEvents.unshift(auditEvent);
     this.telemetry.recordAuditEvent(auditEvent);
+    return auditEvent;
   }
 
   private latestRunForWorkItem(workItemId: string) {

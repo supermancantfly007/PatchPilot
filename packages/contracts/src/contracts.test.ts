@@ -26,6 +26,7 @@ describe("contract artifacts", () => {
     expect(contractArtifacts.map((artifact) => artifact.kind)).toEqual(["http", "event", "schema"]);
     expect(httpApiContract.operations.createRequirement.path).toBe("/api/requirements");
     expect(httpApiContract.operations.createApproval.path).toBe("/api/approvals");
+    expect(httpApiContract.operations.exportPrdAuditPackage.path).toBe("/api/prds/:id/audit-export");
     expect(httpApiContract.operations.metrics.path).toBe("/metrics");
     expect(runEventStreamContract.stream.payload).toBe("AgentRun");
     expect(sharedStateContract.rootSchema).toBe("PatchPilotSnapshot");
@@ -39,6 +40,7 @@ describe("contract artifacts", () => {
     const schema: SharedStateSchemaName = "ApprovalRecord";
 
     expect(apiRoute(operation)).toBe("/api/approvals/:id/approve");
+    expect(apiRoute("exportPrdAuditPackage")).toBe("/api/prds/:id/audit-export");
     expect(terminalStatus).toBe("succeeded");
     expect(schema).toBe("ApprovalRecord");
   });
@@ -46,6 +48,7 @@ describe("contract artifacts", () => {
   it("builds concrete API paths from route artifacts", () => {
     expect(apiPath("claimWorkItem", { id: "wi backend/1" })).toBe("/api/work-items/wi%20backend%2F1/claim");
     expect(apiPath("denyApproval", { id: "approval budget/1" })).toBe("/api/approvals/approval%20budget%2F1/deny");
+    expect(apiPath("exportPrdAuditPackage", { id: "prd audit/1" })).toBe("/api/prds/prd%20audit%2F1/audit-export");
     expect(() => apiPath("claimWorkItem")).toThrow('Missing API path parameter "id"');
   });
 
@@ -63,6 +66,7 @@ describe("contract artifacts", () => {
 
   it("renders markdown directly from each artifact", () => {
     expect(renderContractMarkdown(httpApiContract)).toContain("GET /api/snapshot");
+    expect(renderContractMarkdown(httpApiContract)).toContain("GET /api/prds/:id/audit-export");
     expect(renderContractMarkdown(httpApiContract)).toContain("GET /metrics");
     expect(renderContractMarkdown(runEventStreamContract)).toContain("data: AgentRun");
     expect(renderContractMarkdown(sharedStateContract)).toContain("PatchPilotSnapshot");

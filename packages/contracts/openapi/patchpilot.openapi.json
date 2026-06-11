@@ -111,6 +111,27 @@
         }
       }
     },
+    "/api/prds/:id/audit-export": {
+      "get": {
+        "operationId": "exportPrdAuditPackage",
+        "tags": [
+          "Control Plane"
+        ],
+        "summary": "GET /api/prds/:id/audit-export",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditExportPackage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agents": {
       "get": {
         "operationId": "agents",
@@ -705,6 +726,567 @@
             "type": "array",
             "items": {
               "type": "string"
+            }
+          }
+        }
+      },
+      "AuditExportPackage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "manifest",
+          "verification",
+          "records",
+          "artifactManifest",
+          "auditEvents",
+          "auditEventsJsonl",
+          "readme"
+        ],
+        "properties": {
+          "manifest": {
+            "$ref": "#/components/schemas/AuditExportManifest"
+          },
+          "verification": {
+            "$ref": "#/components/schemas/AuditExportVerification"
+          },
+          "records": {
+            "$ref": "#/components/schemas/AuditExportRecords"
+          },
+          "artifactManifest": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditExportArtifactManifestEntry"
+            }
+          },
+          "auditEvents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEvent"
+            }
+          },
+          "auditEventsJsonl": {
+            "type": "string"
+          },
+          "readme": {
+            "type": "string"
+          }
+        }
+      },
+      "AuditExportManifest": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "formatVersion",
+          "contractVersion",
+          "createdAt",
+          "createdBy",
+          "scope",
+          "exportAuditEventId",
+          "counts",
+          "redaction",
+          "retention",
+          "integrity"
+        ],
+        "properties": {
+          "formatVersion": {
+            "type": "string",
+            "enum": [
+              "patchpilot.audit.prd.v1"
+            ]
+          },
+          "contractVersion": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "actorType",
+              "actorId",
+              "adminIntent",
+              "authEnforcement"
+            ],
+            "properties": {
+              "actorType": {
+                "type": "string"
+              },
+              "actorId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "adminIntent": {
+                "type": "boolean"
+              },
+              "authEnforcement": {
+                "type": "string",
+                "enum": [
+                  "pending_td_222_rbac"
+                ]
+              }
+            }
+          },
+          "scope": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "type",
+              "prdId",
+              "requirementId",
+              "filters"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "prd"
+                ]
+              },
+              "prdId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "requirementId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "filters": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "exportAuditEventId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "redaction": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "redacted",
+              "finalPass",
+              "policyVersion",
+              "piiMarkers"
+            ],
+            "properties": {
+              "redacted": {
+                "type": "boolean"
+              },
+              "finalPass": {
+                "type": "boolean"
+              },
+              "policyVersion": {
+                "type": "string"
+              },
+              "piiMarkers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "retention": {
+            "$ref": "#/components/schemas/AuditExportRetentionPolicy"
+          },
+          "integrity": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "payloadSha256",
+              "auditEventJsonlSha256",
+              "artifactManifestSha256"
+            ],
+            "properties": {
+              "payloadSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "auditEventJsonlSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "artifactManifestSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        }
+      },
+      "AuditExportVerification": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "chainOrder",
+          "ledgerScope",
+          "valid",
+          "checkedEvents",
+          "firstHash",
+          "headHash",
+          "errors",
+          "scopeEventIds",
+          "interleavedEventCount"
+        ],
+        "properties": {
+          "chainOrder": {
+            "type": "string",
+            "enum": [
+              "oldest_to_newest"
+            ]
+          },
+          "ledgerScope": {
+            "type": "string",
+            "enum": [
+              "project_ledger_full"
+            ]
+          },
+          "valid": {
+            "type": "boolean"
+          },
+          "checkedEvents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "firstHash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "headHash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopeEventIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "interleavedEventCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "AuditExportRetentionPolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "policyVersion",
+          "legalHold",
+          "worm",
+          "tiers"
+        ],
+        "properties": {
+          "policyVersion": {
+            "type": "string"
+          },
+          "legalHold": {
+            "type": "boolean"
+          },
+          "worm": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "enabled",
+              "mode",
+              "semantics",
+              "futureStorage"
+            ],
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "metadata_only"
+                ]
+              },
+              "semantics": {
+                "type": "string"
+              },
+              "futureStorage": {
+                "type": "string",
+                "enum": [
+                  "s3_object_lock_or_equivalent"
+                ]
+              }
+            }
+          },
+          "tiers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "tier",
+                "defaultRetention",
+                "appliesTo"
+              ],
+              "properties": {
+                "tier": {
+                  "type": "string",
+                  "enum": [
+                    "tier_0_audit_ledger",
+                    "tier_1_product_evidence",
+                    "tier_2_decision_artifacts",
+                    "tier_3_raw_run_artifacts"
+                  ]
+                },
+                "defaultRetention": {
+                  "type": "string"
+                },
+                "appliesTo": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "AuditExportArtifactManifestEntry": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "artifactId",
+          "kind",
+          "checksumSha256",
+          "sizeBytes",
+          "contentType",
+          "storage",
+          "uri",
+          "retentionTier",
+          "redactionStatus",
+          "includedBytes",
+          "tombstone",
+          "createdAt"
+        ],
+        "properties": {
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "log",
+              "trace",
+              "diff",
+              "test_report",
+              "screenshot",
+              "preview_metadata",
+              "intake_attachment"
+            ]
+          },
+          "checksumSha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "sizeBytes": {
+            "type": "number"
+          },
+          "contentType": {
+            "type": "string"
+          },
+          "storage": {
+            "type": "string",
+            "enum": [
+              "local_fs",
+              "s3"
+            ]
+          },
+          "uri": {
+            "type": "string"
+          },
+          "retentionTier": {
+            "type": "string",
+            "enum": [
+              "tier_0_audit_ledger",
+              "tier_1_product_evidence",
+              "tier_2_decision_artifacts",
+              "tier_3_raw_run_artifacts"
+            ]
+          },
+          "redactionStatus": {
+            "type": "string",
+            "enum": [
+              "redacted",
+              "not_marked",
+              "metadata_only"
+            ]
+          },
+          "includedBytes": {
+            "type": "boolean"
+          },
+          "tombstone": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "requirementId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prdId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "testRunId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "AuditExportRecords": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requirement",
+          "prd",
+          "workItems",
+          "interfaceContracts",
+          "agentRuns",
+          "workspaceRuns",
+          "testCases",
+          "testRuns",
+          "artifacts",
+          "pullRequests",
+          "reviewRecords",
+          "approvals",
+          "bugs",
+          "acceptances"
+        ],
+        "properties": {
+          "requirement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Requirement"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prd": {
+            "$ref": "#/components/schemas/Prd"
+          },
+          "workItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkItem"
+            }
+          },
+          "interfaceContracts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterfaceContract"
+            }
+          },
+          "agentRuns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentRun"
+            }
+          },
+          "workspaceRuns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRun"
+            }
+          },
+          "testCases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TestCase"
+            }
+          },
+          "testRuns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TestRun"
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ArtifactRecord"
+            }
+          },
+          "pullRequests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PullRequestRecord"
+            }
+          },
+          "reviewRecords": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewRecord"
+            }
+          },
+          "approvals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApprovalRecord"
+            }
+          },
+          "bugs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BugReport"
+            }
+          },
+          "acceptances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AcceptanceDecision"
             }
           }
         }
