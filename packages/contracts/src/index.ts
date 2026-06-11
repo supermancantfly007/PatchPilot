@@ -1814,7 +1814,7 @@ export const openApiSchemas = {
   }),
   AuditExportArtifactManifestEntry: looseObjectSchema({
     artifactId: id,
-    kind: enumSchema(["log", "trace", "diff", "test_report", "screenshot", "preview_metadata", "intake_attachment"]),
+    kind: enumSchema(["log", "trace", "diff", "test_report", "screenshot", "preview_metadata", "retrospective", "intake_attachment"]),
     checksumSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
     sizeBytes: { type: "number" },
     contentType: { type: "string" },
@@ -2457,7 +2457,7 @@ export const openApiSchemas = {
   }, ["id", "status", "command", "summary", "durationMs"]),
   ArtifactRecord: objectSchema({
     id,
-    kind: enumSchema(["log", "trace", "diff", "test_report", "screenshot", "preview_metadata", "intake_attachment"]),
+    kind: enumSchema(["log", "trace", "diff", "test_report", "screenshot", "preview_metadata", "retrospective", "intake_attachment"]),
     storage: enumSchema(["local_fs", "s3"]),
     uri: { type: "string" },
     contentType: { type: "string" },

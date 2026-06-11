@@ -21,6 +21,8 @@ import {
   expireApprovalSignal,
   requirementIntakeProgressQuery,
   requirementIntakeWorkflow,
+  retrospectiveProgressQuery,
+  retrospectiveWorkflow,
   temporalCanaryProgressQuery,
   temporalCanaryWorkflow,
   workItemExecutionProgressQuery,
@@ -41,6 +43,9 @@ import {
   type RequirementIntakeWorkflowInput,
   type RequirementIntakeWorkflowResult,
   type RequirementPrdConfirmationSignalInput,
+  type RetrospectiveProgress,
+  type RetrospectiveWorkflowInput,
+  type RetrospectiveWorkflowResult,
   defaultTemporalAddress,
   defaultTemporalNamespace,
   defaultTemporalTaskQueue,
@@ -64,6 +69,7 @@ export type RequirementIntakeWorkflowHandle = WorkflowHandle<typeof requirementI
 export type WorkItemPlanningWorkflowHandle = WorkflowHandle<typeof workItemPlanningWorkflow>;
 export type WorkItemExecutionWorkflowHandle = WorkflowHandle<typeof workItemExecutionWorkflow>;
 export type DefectReproductionWorkflowHandle = WorkflowHandle<typeof defectReproductionWorkflow>;
+export type RetrospectiveWorkflowHandle = WorkflowHandle<typeof retrospectiveWorkflow>;
 
 export function readTemporalConfig(env: TemporalEnv = process.env): TemporalConnectionConfig {
   return {
@@ -100,6 +106,10 @@ export function workItemExecutionWorkflowId(idempotencyKey: string): string {
 
 export function defectReproductionWorkflowId(idempotencyKey: string): string {
   return temporalWorkflowId("patchpilot-defect-reproduction", idempotencyKey);
+}
+
+export function retrospectiveWorkflowId(idempotencyKey: string): string {
+  return temporalWorkflowId("patchpilot-retrospective", idempotencyKey);
 }
 
 export function temporalCanaryWorkflowStartOptions(
@@ -174,6 +184,19 @@ export function defectReproductionWorkflowStartOptions(
   return {
     taskQueue: config.taskQueue,
     workflowId: defectReproductionWorkflowId(input.idempotencyKey),
+    workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
+    workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
+    args: [input]
+  };
+}
+
+export function retrospectiveWorkflowStartOptions(
+  input: RetrospectiveWorkflowInput,
+  config = readTemporalConfig()
+): WorkflowStartOptions<typeof retrospectiveWorkflow> {
+  return {
+    taskQueue: config.taskQueue,
+    workflowId: retrospectiveWorkflowId(input.idempotencyKey),
     workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
     workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
     args: [input]
@@ -282,6 +305,23 @@ export async function startDefectReproductionWorkflow(
   }
 }
 
+export async function startRetrospectiveWorkflow(
+  client: Client,
+  input: RetrospectiveWorkflowInput,
+  config = readTemporalConfig()
+): Promise<RetrospectiveWorkflowHandle> {
+  const startOptions = retrospectiveWorkflowStartOptions(input, config);
+
+  try {
+    return await client.workflow.start(retrospectiveWorkflow, startOptions);
+  } catch (error) {
+    if (error instanceof WorkflowExecutionAlreadyStartedError) {
+      return client.workflow.getHandle(startOptions.workflowId) as RetrospectiveWorkflowHandle;
+    }
+    throw error;
+  }
+}
+
 export function queryTemporalCanaryProgress(handle: TemporalCanaryWorkflowHandle): Promise<TemporalCanaryProgress> {
   return handle.query(temporalCanaryProgressQuery);
 }
@@ -331,6 +371,10 @@ export function queryDefectReproductionProgress(
   handle: DefectReproductionWorkflowHandle
 ): Promise<DefectReproductionProgress> {
   return handle.query(defectReproductionProgressQuery);
+}
+
+export function queryRetrospectiveProgress(handle: RetrospectiveWorkflowHandle): Promise<RetrospectiveProgress> {
+  return handle.query(retrospectiveProgressQuery);
 }
 
 export function signalRequirementClarificationAnswer(
@@ -406,6 +450,15 @@ export async function runDefectReproductionWorkflow(
   config = readTemporalConfig()
 ): Promise<DefectReproductionWorkflowResult> {
   const handle = await startDefectReproductionWorkflow(client, input, config);
+  return handle.result();
+}
+
+export async function runRetrospectiveWorkflow(
+  client: Client,
+  input: RetrospectiveWorkflowInput,
+  config = readTemporalConfig()
+): Promise<RetrospectiveWorkflowResult> {
+  const handle = await startRetrospectiveWorkflow(client, input, config);
   return handle.result();
 }
 

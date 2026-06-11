@@ -10,6 +10,7 @@ import {
   createTestCasesForWorkItems,
   makeSimpleSummary,
   testCaseStatusFromTestRunStatus,
+  type AcceptanceDecision,
   type AgentRun,
   type AgentRunResult,
   type AgentRole,
@@ -38,6 +39,8 @@ import type {
   ClaimDefectReproductionActivityResult,
   CompleteWorkItemExecutionActivityInput,
   CompleteWorkItemExecutionActivityResult,
+  CreateRetrospectiveActivityInput,
+  CreateRetrospectiveActivityResult,
   CreateWorkItemPullRequestActivityInput,
   CreateWorkItemPullRequestActivityResult,
   DefectReproductionEvidence,
@@ -61,6 +64,12 @@ import type {
   RequirementIntakeArtifactReferenceInput,
   ReviewWorkItemExecutionActivityInput,
   ReviewWorkItemExecutionActivityResult,
+  RetrospectiveArtifactSummary,
+  RetrospectiveAuditSummary,
+  RetrospectiveCostSummary,
+  RetrospectiveRiskSummary,
+  RetrospectiveSummary,
+  RetrospectiveTestSummary,
   RunDefectDiagnoseActivityInput,
   RunDefectDiagnoseActivityResult,
   RunWorkItemCodexActivityInput,
@@ -2103,6 +2112,184 @@ export function createDefectReproductionActivities(
 
 export type DefectReproductionActivities = ReturnType<typeof createDefectReproductionActivities>;
 
+export interface RetrospectiveActivityStore {
+  createRetrospective(input: CreateRetrospectiveActivityInput): Promise<CreateRetrospectiveActivityResult>;
+}
+
+export class InMemoryRetrospectiveActivityStore implements RetrospectiveActivityStore {
+  readonly retrospectives = new Map<string, CreateRetrospectiveActivityResult>();
+  readonly retrospectivesByPrdId = new Map<string, CreateRetrospectiveActivityResult>();
+  readonly auditEventsByWorkflowId = new Map<string, AuditEvent[]>();
+
+  async createRetrospective(input: CreateRetrospectiveActivityInput): Promise<CreateRetrospectiveActivityResult> {
+    const existing = this.retrospectives.get(input.idempotencyKey);
+    if (existing) return clone(existing);
+
+    const existingForPrd = this.retrospectivesByPrdId.get(input.prd.id);
+    if (existingForPrd) {
+      this.retrospectives.set(input.idempotencyKey, clone(existingForPrd));
+      return clone(existingForPrd);
+    }
+
+    const now = new Date().toISOString();
+    const prdWorkItems = input.workItems.filter((workItem) => workItem.prdId === input.prd.id);
+    const prdRuns = input.agentRuns.filter((run) => run.prdId === input.prd.id);
+    const prdRunIds = new Set(prdRuns.map((run) => run.id));
+    const prdTestRuns = input.testRuns.filter((testRun) =>
+      testRun.prdId === input.prd.id || (testRun.runId ? prdRunIds.has(testRun.runId) : false)
+    );
+    const prdAuditEvents = input.auditEvents.filter((event) =>
+      event.prdId === input.prd.id || (event.runId ? prdRunIds.has(event.runId) : false)
+    );
+    const prdArtifacts = (input.artifacts ?? []).filter((artifact) =>
+      artifact.prdId === input.prd.id || (artifact.runId ? prdRunIds.has(artifact.runId) : false)
+    );
+    const prdAcceptances = (input.acceptances ?? []).filter((acceptance) => prdRunIds.has(acceptance.runId));
+    const prdBugs = (input.bugs ?? []).filter((bug) => bug.prdId === input.prd.id);
+    const summary: RetrospectiveSummary = {
+      prdId: input.prd.id,
+      requirementId: input.prd.requirementId,
+      title: input.prd.title,
+      workItemCount: prdWorkItems.length,
+      completedWorkItemCount: prdWorkItems.filter((workItem) => ["review", "done"].includes(workItem.status)).length,
+      cost: summarizeRetrospectiveCost(prdRuns, prdAcceptances),
+      tests: summarizeRetrospectiveTests(prdTestRuns),
+      risk: summarizeRetrospectiveRisk(prdRuns, prdBugs),
+      audit: summarizeRetrospectiveAudit(prdAuditEvents),
+      artifacts: summarizeRetrospectiveArtifacts(prdArtifacts),
+      acceptance: summarizeRetrospectiveAcceptance(prdRuns, prdAcceptances),
+      createdAt: now
+    };
+    const body = JSON.stringify({ formatVersion: "patchpilot.retrospective.prd.v1", summary }, null, 2);
+    const artifact = makeArtifact({
+      id: stableId("artifact", `${input.prd.id}:retrospective`),
+      kind: "retrospective",
+      uri: `file://.patchpilot/retrospectives/${input.prd.id}.json`,
+      contentType: "application/json",
+      body,
+      prdId: input.prd.id,
+      createdAt: now
+    });
+    const auditEvents = [
+      this.addAuditEvent({
+        workflowId: input.workflowId,
+        actor: "workflow",
+        action: "retrospective.created",
+        targetType: "prd",
+        targetId: input.prd.id,
+        message: "RetrospectiveWorkflow created a PRD retrospective artifact.",
+        requirementId: input.prd.requirementId,
+        prdId: input.prd.id,
+        beforeJson: null,
+        afterJson: {
+          retrospective: {
+            artifactId: artifact.id,
+            cost: {
+              estimatedUsd: summary.cost.estimatedUsd,
+              actualUsd: summary.cost.actualUsd,
+              runCount: summary.cost.runCount,
+              acceptedRunCount: summary.cost.acceptedRunCount,
+              costPerAcceptedRunUsd: summary.cost.costPerAcceptedRunUsd
+            },
+            tests: {
+              total: summary.tests.total,
+              passed: summary.tests.passed,
+              failed: summary.tests.failed,
+              blocked: summary.tests.blocked,
+              skipped: summary.tests.skipped,
+              flaky: summary.tests.flaky,
+              passRate: summary.tests.passRate
+            },
+            risk: {
+              highestRisk: summary.risk.highestRisk,
+              low: summary.risk.low,
+              medium: summary.risk.medium,
+              high: summary.risk.high,
+              failedRunIds: summary.risk.failedRunIds,
+              failureTypes: summary.risk.failureTypes,
+              unresolvedBugIds: summary.risk.unresolvedBugIds
+            },
+            audit: {
+              eventCount: summary.audit.eventCount,
+              chainValid: summary.audit.chainValid,
+              headHash: summary.audit.headHash,
+              auditEventIds: summary.audit.auditEventIds
+            },
+            acceptance: {
+              accepted: summary.acceptance.accepted,
+              rejected: summary.acceptance.rejected,
+              pending: summary.acceptance.pending,
+              terminal: summary.acceptance.terminal
+            }
+          }
+        },
+        metadataJson: {
+          artifact: {
+            id: artifact.id,
+            kind: artifact.kind,
+            checksumSha256: artifact.checksumSha256,
+            sizeBytes: artifact.sizeBytes
+          }
+        }
+      })
+    ];
+    const result: CreateRetrospectiveActivityResult = {
+      summary,
+      artifact,
+      auditEvents,
+      completedAt: now
+    };
+    this.retrospectives.set(input.idempotencyKey, clone(result));
+    this.retrospectivesByPrdId.set(input.prd.id, clone(result));
+    return clone(result);
+  }
+
+  private addAuditEvent(input: AuditEventInput): AuditEvent {
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    const chain = this.auditEventsByWorkflowId.get(input.workflowId) ?? [];
+    const previousHash = chain.at(-1)?.hash ?? null;
+    const eventWithoutHash: Omit<AuditEvent, "hash"> = {
+      id: stableId("audit", `${input.workflowId}:${chain.length}:${input.action}:${input.targetId}`),
+      traceId: input.workflowId,
+      actorType: auditActorType(input.actor),
+      actorId: input.actor,
+      actor: input.actor,
+      action: input.action,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      message: input.message,
+      beforeJson: input.beforeJson ?? null,
+      afterJson: input.afterJson ?? null,
+      metadataJson: input.metadataJson ?? {},
+      previousHash,
+      ...(input.requirementId ? { requirementId: input.requirementId } : {}),
+      ...(input.prdId ? { prdId: input.prdId } : {}),
+      ...(input.workItemId ? { workItemId: input.workItemId } : {}),
+      ...(input.runId ? { runId: input.runId } : {}),
+      createdAt
+    };
+    const auditEvent: AuditEvent = {
+      ...eventWithoutHash,
+      hash: stableId("hash", JSON.stringify(eventWithoutHash))
+    };
+    chain.push(auditEvent);
+    this.auditEventsByWorkflowId.set(input.workflowId, chain);
+    return clone(auditEvent);
+  }
+}
+
+export function createRetrospectiveActivities(
+  store: RetrospectiveActivityStore = new InMemoryRetrospectiveActivityStore()
+) {
+  return {
+    createRetrospectiveActivity(input: CreateRetrospectiveActivityInput) {
+      return store.createRetrospective(input);
+    }
+  };
+}
+
+export type RetrospectiveActivities = ReturnType<typeof createRetrospectiveActivities>;
+
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
@@ -2238,6 +2425,143 @@ function priorityForBugSeverity(severity: BugReport["severity"]): TestCase["prio
   return "low";
 }
 
+function summarizeRetrospectiveCost(
+  runs: AgentRun[],
+  acceptances: AcceptanceDecision[]
+): RetrospectiveCostSummary {
+  const acceptedRunIds = new Set(
+    acceptances.filter((acceptance) => acceptance.status === "accepted").map((acceptance) => acceptance.runId)
+  );
+  const acceptedRunCount = acceptedRunIds.size;
+  const estimatedUsd = roundUsd(runs.reduce((sum, run) => sum + (run.costEstimateUsd ?? 0), 0));
+  const actualUsd = roundUsd(runs.reduce((sum, run) => sum + (run.costActualUsd ?? 0), 0));
+
+  return {
+    estimatedUsd,
+    actualUsd,
+    runCount: runs.length,
+    acceptedRunCount,
+    costPerAcceptedRunUsd: acceptedRunCount > 0 ? roundUsd(actualUsd / acceptedRunCount) : null
+  };
+}
+
+function summarizeRetrospectiveTests(testRuns: TestRun[]): RetrospectiveTestSummary {
+  const passed = testRuns.filter((testRun) => testRun.status === "passed").length;
+  const failed = testRuns.filter((testRun) => testRun.status === "failed").length;
+  const blocked = testRuns.filter((testRun) => testRun.status === "blocked").length;
+  const skipped = testRuns.filter((testRun) => testRun.status === "skipped").length;
+  const flaky = testRuns.filter((testRun) => testRun.flakySignal).length;
+
+  return {
+    total: testRuns.length,
+    passed,
+    failed,
+    blocked,
+    skipped,
+    flaky,
+    passRate: testRuns.length > 0 ? Math.round((passed / testRuns.length) * 100) : 0
+  };
+}
+
+function summarizeRetrospectiveRisk(runs: AgentRun[], bugs: BugReport[]): RetrospectiveRiskSummary {
+  const riskLevels = runs.map((run) => run.result?.riskLevel).filter((risk): risk is "low" | "medium" | "high" =>
+    risk === "low" || risk === "medium" || risk === "high"
+  );
+  const failureTypes: Record<string, number> = {};
+  runs.forEach((run) => {
+    if (!run.failureType) return;
+    failureTypes[run.failureType] = (failureTypes[run.failureType] ?? 0) + 1;
+  });
+
+  return {
+    highestRisk: highestRiskLevel(riskLevels),
+    low: riskLevels.filter((risk) => risk === "low").length,
+    medium: riskLevels.filter((risk) => risk === "medium").length,
+    high: riskLevels.filter((risk) => risk === "high").length,
+    failedRunIds: runs.filter((run) => run.status === "failed").map((run) => run.id),
+    failureTypes,
+    unresolvedBugIds: bugs
+      .filter((bug) => !["closed", "unreproducible"].includes(bug.status))
+      .map((bug) => bug.id)
+  };
+}
+
+function summarizeRetrospectiveAudit(auditEvents: AuditEvent[]): RetrospectiveAuditSummary {
+  const orderedEvents = orderAuditEventsByHashChain(auditEvents);
+  const chainValid = orderedEvents.every((event, index, events) =>
+    index === 0
+      ? event.previousHash === null
+      : event.previousHash === events[index - 1]?.hash
+  );
+
+  return {
+    eventCount: orderedEvents.length,
+    chainValid,
+    headHash: orderedEvents.at(-1)?.hash ?? null,
+    auditEventIds: orderedEvents.map((event) => event.id)
+  };
+}
+
+function summarizeRetrospectiveArtifacts(artifacts: ArtifactRecord[]): RetrospectiveArtifactSummary {
+  const byKind: Record<string, number> = {};
+  artifacts.forEach((artifact) => {
+    byKind[artifact.kind] = (byKind[artifact.kind] ?? 0) + 1;
+  });
+
+  return {
+    total: artifacts.length,
+    byKind,
+    artifactIds: artifacts.map((artifact) => artifact.id)
+  };
+}
+
+function summarizeRetrospectiveAcceptance(
+  runs: AgentRun[],
+  acceptances: AcceptanceDecision[]
+): RetrospectiveSummary["acceptance"] {
+  const accepted = acceptances.filter((acceptance) => acceptance.status === "accepted").length;
+  const rejected = acceptances.filter((acceptance) => acceptance.status === "rejected").length;
+  const pending = Math.max(0, runs.length - accepted - rejected);
+
+  return {
+    accepted,
+    rejected,
+    pending,
+    terminal: runs.length > 0 && pending === 0 && rejected === 0
+  };
+}
+
+function orderAuditEventsByHashChain(auditEvents: AuditEvent[]): AuditEvent[] {
+  if (auditEvents.length <= 1) return auditEvents.map(clone);
+  const byPreviousHash = new Map<string | null, AuditEvent[]>();
+  auditEvents.forEach((event) => {
+    const bucket = byPreviousHash.get(event.previousHash) ?? [];
+    bucket.push(event);
+    byPreviousHash.set(event.previousHash, bucket);
+  });
+
+  const ordered: AuditEvent[] = [];
+  let next = byPreviousHash.get(null)?.[0];
+  while (next && ordered.length < auditEvents.length) {
+    ordered.push(next);
+    const candidates = byPreviousHash.get(next.hash) ?? [];
+    next = candidates.find((candidate) => !ordered.some((event) => event.id === candidate.id));
+  }
+
+  return ordered.length === auditEvents.length ? ordered.map(clone) : auditEvents.map(clone);
+}
+
+function highestRiskLevel(risks: Array<"low" | "medium" | "high">): RetrospectiveRiskSummary["highestRisk"] {
+  if (risks.includes("high")) return "high";
+  if (risks.includes("medium")) return "medium";
+  if (risks.includes("low")) return "low";
+  return "unknown";
+}
+
+function roundUsd(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
 function makeArtifact(input: {
   id: string;
   kind: ArtifactKind;
@@ -2245,8 +2569,8 @@ function makeArtifact(input: {
   contentType: string;
   body: string;
   prdId: string;
-  workItemId: string;
-  runId: string;
+  workItemId?: string;
+  runId?: string;
   testRunId?: string;
   createdAt: string;
 }): ArtifactRecord {
@@ -2259,8 +2583,8 @@ function makeArtifact(input: {
     sizeBytes: Buffer.byteLength(input.body, "utf8"),
     checksumSha256: createHash("sha256").update(input.body).digest("hex"),
     prdId: input.prdId,
-    workItemId: input.workItemId,
-    runId: input.runId,
+    ...(input.workItemId ? { workItemId: input.workItemId } : {}),
+    ...(input.runId ? { runId: input.runId } : {}),
     ...(input.testRunId ? { testRunId: input.testRunId } : {}),
     createdAt: input.createdAt
   };

@@ -6,6 +6,7 @@ import {
   InMemoryWorkItemExecutionActivityStore,
   queryApprovalProgress,
   queryDefectReproductionProgress,
+  queryRetrospectiveProgress,
   queryWorkItemExecutionProgress,
   queryRequirementIntakeProgress,
   queryTemporalCanaryProgress,
@@ -16,6 +17,7 @@ import {
   signalTemporalCanary,
   startApprovalWorkflow,
   startDefectReproductionWorkflow,
+  startRetrospectiveWorkflow,
   startWorkItemExecutionWorkflow,
   startRequirementIntakeWorkflow,
   startTemporalCanaryWorkflow,
@@ -29,6 +31,7 @@ const planningIdempotencyKey = `td-206-${randomUUID()}`;
 const executionIdempotencyKey = `td-207-${randomUUID()}`;
 const approvalIdempotencyKey = `td-208-${randomUUID()}`;
 const defectReproductionIdempotencyKey = `td-209-${randomUUID()}`;
+const retrospectiveIdempotencyKey = `td-210-${randomUUID()}`;
 
 const workItemExecutionStore = new InMemoryWorkItemExecutionActivityStore();
 workItemExecutionStore.failNext("runCodex");
@@ -514,6 +517,88 @@ await worker.runUntil(async () => {
       2
     )
   );
+
+  const retrospectiveHandle = await startRetrospectiveWorkflow(
+    client,
+    {
+      idempotencyKey: retrospectiveIdempotencyKey,
+      prd: intakeResult.prd,
+      workItems: [executionResult.workItem],
+      agentRuns: [executionResult.agentRun],
+      workspaceRuns: [executionResult.workspaceRun],
+      testRuns: executionResult.testRuns,
+      pullRequests: [executionResult.pullRequest],
+      reviewRecords: [executionResult.reviewRecord],
+      auditEvents: executionResult.auditEvents,
+      artifacts: executionResult.artifacts,
+      acceptances: [
+        {
+          runId: executionResult.agentRun.id,
+          status: "accepted",
+          decidedAt: new Date().toISOString()
+        }
+      ]
+    },
+    config
+  );
+  const retrospectiveProgress = await waitForRetrospectiveProgress(retrospectiveHandle, "completed");
+  assertEqual(retrospectiveProgress.status, "completed", "retrospective query should reach completed");
+  assertEqual(retrospectiveProgress.artifact?.kind, "retrospective", "retrospective query should expose artifact");
+  assertEqual(retrospectiveProgress.summary?.acceptance.terminal, true, "retrospective should summarize terminal acceptance");
+
+  const retrospectiveResult = await retrospectiveHandle.result();
+  assertEqual(retrospectiveResult.status, "completed", "retrospective workflow should complete");
+  assertEqual(retrospectiveResult.artifact.kind, "retrospective", "retrospective workflow should create retrospective artifact");
+  assertEqual(retrospectiveResult.artifact.prdId, intakeResult.prd.id, "retrospective artifact should be scoped to the PRD");
+  assertEqual(retrospectiveResult.summary.cost.actualUsd, executionResult.agentRun.costActualUsd, "retrospective should summarize actual cost");
+  assertEqual(retrospectiveResult.summary.tests.passRate, 100, "retrospective should summarize passing tests");
+  assertEqual(retrospectiveResult.summary.risk.highestRisk, executionResult.agentRun.result.riskLevel, "retrospective should summarize risk");
+  assertEqual(retrospectiveResult.summary.audit.eventCount, executionResult.auditEvents.length, "retrospective should summarize audit events");
+  assertEqual(retrospectiveResult.summary.audit.chainValid, true, "retrospective should validate the provided audit chain order");
+  assertEqual(retrospectiveResult.summary.acceptance.terminal, true, "retrospective should record terminal PRD acceptance");
+
+  const retrospectiveDescription = await retrospectiveHandle.describe();
+  const duplicateRetrospectiveHandle = await startRetrospectiveWorkflow(
+    client,
+    {
+      idempotencyKey: retrospectiveIdempotencyKey,
+      prd: intakeResult.prd,
+      workItems: [],
+      agentRuns: [],
+      testRuns: [],
+      auditEvents: []
+    },
+    config
+  );
+  const duplicateRetrospectiveDescription = await duplicateRetrospectiveHandle.describe();
+  assertEqual(
+    duplicateRetrospectiveDescription.runId,
+    retrospectiveDescription.runId,
+    "duplicate retrospective idempotency key should not create a second Temporal run"
+  );
+
+  console.log(
+    JSON.stringify(
+      {
+        workflowId: retrospectiveHandle.workflowId,
+        runId: retrospectiveDescription.runId,
+        duplicateRunId: duplicateRetrospectiveDescription.runId,
+        status: retrospectiveResult.status,
+        idempotencyKey: retrospectiveResult.idempotencyKey,
+        prdId: retrospectiveResult.prdId,
+        artifactId: retrospectiveResult.artifact.id,
+        artifactKind: retrospectiveResult.artifact.kind,
+        actualCostUsd: retrospectiveResult.summary.cost.actualUsd,
+        testPassRate: retrospectiveResult.summary.tests.passRate,
+        highestRisk: retrospectiveResult.summary.risk.highestRisk,
+        auditEventCount: retrospectiveResult.summary.audit.eventCount,
+        auditChainValid: retrospectiveResult.summary.audit.chainValid,
+        acceptanceTerminal: retrospectiveResult.summary.acceptance.terminal
+      },
+      null,
+      2
+    )
+  );
 });
 
 function assertEqual(actual, expected, message) {
@@ -611,4 +696,21 @@ async function waitForDefectReproductionProgress(handle, expectedStatus) {
   }
 
   throw lastError ?? new Error(`defect reproduction workflow did not reach query status ${expectedStatus}`);
+}
+
+async function waitForRetrospectiveProgress(handle, expectedStatus) {
+  const deadline = Date.now() + 10_000;
+  let lastError;
+
+  while (Date.now() < deadline) {
+    try {
+      const progress = await queryRetrospectiveProgress(handle);
+      if (progress.status === expectedStatus) return progress;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  throw lastError ?? new Error(`retrospective workflow did not reach query status ${expectedStatus}`);
 }

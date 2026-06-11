@@ -8,6 +8,8 @@ import {
   readTemporalConfig,
   requirementIntakeWorkflowId,
   requirementIntakeWorkflowStartOptions,
+  retrospectiveWorkflowId,
+  retrospectiveWorkflowStartOptions,
   temporalCanaryWorkflowId,
   temporalCanaryWorkflowStartOptions,
   workItemExecutionWorkflowId,
@@ -240,6 +242,42 @@ describe("Temporal client helpers", () => {
     ).toEqual({
       taskQueue: "patchpilot-test",
       workflowId: defectReproductionWorkflowId(input.idempotencyKey),
+      workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
+      workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
+      args: [input]
+    });
+  });
+
+  it("derives idempotent start options for retrospective workflows", () => {
+    const input = {
+      idempotencyKey: "TD-210 / Retrospective Workflow!",
+      prd: {
+        id: "prd_req_td_210",
+        requirementId: "req_td_210",
+        version: 1,
+        status: "approved" as const,
+        title: "Retrospective workflow",
+        bodyMarkdown: "# Retrospective workflow",
+        acceptanceCriteria: ["Every terminal PRD has a retrospective artifact"]
+      },
+      workItems: [],
+      agentRuns: [],
+      testRuns: [],
+      auditEvents: []
+    };
+
+    expect(retrospectiveWorkflowId(input.idempotencyKey)).toMatch(
+      /^patchpilot-retrospective-td-210-retrospective-workflow-[a-f0-9]{12}$/
+    );
+    expect(
+      retrospectiveWorkflowStartOptions(input, {
+        address: "temporal.test:7233",
+        namespace: "default",
+        taskQueue: "patchpilot-test"
+      })
+    ).toEqual({
+      taskQueue: "patchpilot-test",
+      workflowId: retrospectiveWorkflowId(input.idempotencyKey),
       workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
       workflowIdConflictPolicy: WorkflowIdConflictPolicy.USE_EXISTING,
       args: [input]

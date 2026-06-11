@@ -1,6 +1,7 @@
 import type {
   AgentRun,
   AgentRunnerKind,
+  AcceptanceDecision,
   ApprovalKind,
   ApprovalRecord,
   ApprovalRiskLevel,
@@ -690,5 +691,114 @@ export interface RecordDefectReproductionActivityResult {
   artifacts: ArtifactRecord[];
   auditEvents: AuditEvent[];
   evidenceChain: DefectReproductionEvidenceChain;
+  completedAt: string;
+}
+
+export type RetrospectiveWorkflowStatus = "summarizing" | "completed";
+
+export interface RetrospectiveWorkflowInput {
+  idempotencyKey: string;
+  prd: Prd;
+  workItems: WorkItem[];
+  agentRuns: AgentRun[];
+  workspaceRuns?: WorkspaceRun[];
+  testRuns: TestRun[];
+  pullRequests?: PullRequestRecord[];
+  reviewRecords?: ReviewRecord[];
+  auditEvents: AuditEvent[];
+  artifacts?: ArtifactRecord[];
+  acceptances?: AcceptanceDecision[];
+  bugs?: BugReport[];
+}
+
+export interface RetrospectiveCostSummary {
+  estimatedUsd: number;
+  actualUsd: number;
+  runCount: number;
+  acceptedRunCount: number;
+  costPerAcceptedRunUsd: number | null;
+}
+
+export interface RetrospectiveTestSummary {
+  total: number;
+  passed: number;
+  failed: number;
+  blocked: number;
+  skipped: number;
+  flaky: number;
+  passRate: number;
+}
+
+export interface RetrospectiveRiskSummary {
+  highestRisk: "low" | "medium" | "high" | "unknown";
+  low: number;
+  medium: number;
+  high: number;
+  failedRunIds: string[];
+  failureTypes: Record<string, number>;
+  unresolvedBugIds: string[];
+}
+
+export interface RetrospectiveAuditSummary {
+  eventCount: number;
+  chainValid: boolean;
+  headHash: string | null;
+  auditEventIds: string[];
+}
+
+export interface RetrospectiveArtifactSummary {
+  total: number;
+  byKind: Record<string, number>;
+  artifactIds: string[];
+}
+
+export interface RetrospectiveAcceptanceSummary {
+  accepted: number;
+  rejected: number;
+  pending: number;
+  terminal: boolean;
+}
+
+export interface RetrospectiveSummary {
+  prdId: string;
+  requirementId: string;
+  title: string;
+  workItemCount: number;
+  completedWorkItemCount: number;
+  cost: RetrospectiveCostSummary;
+  tests: RetrospectiveTestSummary;
+  risk: RetrospectiveRiskSummary;
+  audit: RetrospectiveAuditSummary;
+  artifacts: RetrospectiveArtifactSummary;
+  acceptance: RetrospectiveAcceptanceSummary;
+  createdAt: string;
+}
+
+export interface RetrospectiveProgress {
+  workflowId: string;
+  idempotencyKey: string;
+  prdId: string;
+  status: RetrospectiveWorkflowStatus;
+  summary?: RetrospectiveSummary;
+  artifact?: ArtifactRecord;
+  auditEventCount: number;
+}
+
+export interface RetrospectiveWorkflowResult extends RetrospectiveProgress {
+  status: "completed";
+  summary: RetrospectiveSummary;
+  artifact: ArtifactRecord;
+  auditEvents: AuditEvent[];
+  completedAt: string;
+}
+
+export interface CreateRetrospectiveActivityInput extends RetrospectiveWorkflowInput {
+  workflowId: string;
+}
+
+export interface CreateRetrospectiveActivityResult {
+  summary: RetrospectiveSummary;
+  artifact: ArtifactRecord;
+  auditEvents: AuditEvent[];
   completedAt: string;
 }

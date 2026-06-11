@@ -3,6 +3,7 @@ import type {
   ApprovalActivities,
   DefectReproductionActivities,
   RequirementIntakeActivities,
+  RetrospectiveActivities,
   TemporalCanaryActivities,
   WorkItemExecutionActivities,
   WorkItemPlanningActivities
@@ -24,6 +25,9 @@ import type {
   RequirementIntakeWorkflowResult,
   RequirementPrdConfirmationSignalInput,
   RecordRequirementClarificationAnswerActivityResult,
+  RetrospectiveProgress,
+  RetrospectiveWorkflowInput,
+  RetrospectiveWorkflowResult,
   TemporalCanaryProgress,
   TemporalCanarySignalInput,
   TemporalCanaryWorkflowInput,
@@ -39,6 +43,7 @@ import {
   approvalActivityOptions,
   defectReproductionActivityOptions,
   requirementIntakeActivityOptions,
+  retrospectiveActivityOptions,
   temporalCanaryActivityOptions,
   workItemExecutionActivityOptions,
   workItemPlanningActivityOptions
@@ -60,6 +65,7 @@ export const requirementIntakeProgressQuery = defineQuery<RequirementIntakeProgr
 export const workItemPlanningProgressQuery = defineQuery<WorkItemPlanningProgress>("workItemPlanningProgress");
 export const workItemExecutionProgressQuery = defineQuery<WorkItemExecutionProgress>("workItemExecutionProgress");
 export const defectReproductionProgressQuery = defineQuery<DefectReproductionProgress>("defectReproductionProgress");
+export const retrospectiveProgressQuery = defineQuery<RetrospectiveProgress>("retrospectiveProgress");
 
 const activities = proxyActivities<TemporalCanaryActivities>(temporalCanaryActivityOptions);
 const approvalActivities = proxyActivities<ApprovalActivities>(approvalActivityOptions);
@@ -67,6 +73,7 @@ const requirementActivities = proxyActivities<RequirementIntakeActivities>(requi
 const workItemPlanningActivities = proxyActivities<WorkItemPlanningActivities>(workItemPlanningActivityOptions);
 const workItemExecutionActivities = proxyActivities<WorkItemExecutionActivities>(workItemExecutionActivityOptions);
 const defectReproductionActivities = proxyActivities<DefectReproductionActivities>(defectReproductionActivityOptions);
+const retrospectiveActivities = proxyActivities<RetrospectiveActivities>(retrospectiveActivityOptions);
 
 export async function temporalCanaryWorkflow(
   input: TemporalCanaryWorkflowInput
@@ -636,5 +643,57 @@ export async function defectReproductionWorkflow(
     evidenceChain: recorded.evidenceChain,
     auditEventCount,
     completedAt: recorded.completedAt
+  };
+}
+
+export async function retrospectiveWorkflow(input: RetrospectiveWorkflowInput): Promise<RetrospectiveWorkflowResult> {
+  const workflowId = workflowInfo().workflowId;
+  let status: RetrospectiveProgress["status"] = "summarizing";
+  let auditEventCount = 0;
+  const retrospectiveState: {
+    summary?: RetrospectiveProgress["summary"];
+    artifact?: RetrospectiveProgress["artifact"];
+  } = {};
+
+  setHandler(retrospectiveProgressQuery, () => ({
+    workflowId,
+    idempotencyKey: input.idempotencyKey,
+    prdId: input.prd.id,
+    status,
+    auditEventCount,
+    ...(retrospectiveState.summary ? { summary: retrospectiveState.summary } : {}),
+    ...(retrospectiveState.artifact ? { artifact: retrospectiveState.artifact } : {})
+  }));
+
+  const created = await retrospectiveActivities.createRetrospectiveActivity({
+    workflowId,
+    idempotencyKey: `${input.idempotencyKey}:retrospective:${input.prd.id}`,
+    prd: input.prd,
+    workItems: input.workItems,
+    agentRuns: input.agentRuns,
+    ...(input.workspaceRuns ? { workspaceRuns: input.workspaceRuns } : {}),
+    testRuns: input.testRuns,
+    ...(input.pullRequests ? { pullRequests: input.pullRequests } : {}),
+    ...(input.reviewRecords ? { reviewRecords: input.reviewRecords } : {}),
+    auditEvents: input.auditEvents,
+    ...(input.artifacts ? { artifacts: input.artifacts } : {}),
+    ...(input.acceptances ? { acceptances: input.acceptances } : {}),
+    ...(input.bugs ? { bugs: input.bugs } : {})
+  });
+  retrospectiveState.summary = created.summary;
+  retrospectiveState.artifact = created.artifact;
+  auditEventCount = created.auditEvents.length;
+  status = "completed";
+
+  return {
+    workflowId,
+    idempotencyKey: input.idempotencyKey,
+    prdId: input.prd.id,
+    status,
+    summary: created.summary,
+    artifact: created.artifact,
+    auditEvents: created.auditEvents,
+    auditEventCount,
+    completedAt: created.completedAt
   };
 }

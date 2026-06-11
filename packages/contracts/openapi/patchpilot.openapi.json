@@ -1395,6 +1395,7 @@
               "test_report",
               "screenshot",
               "preview_metadata",
+              "retrospective",
               "intake_attachment"
             ]
           },
@@ -4331,6 +4332,7 @@
               "test_report",
               "screenshot",
               "preview_metadata",
+              "retrospective",
               "intake_attachment"
             ]
           },

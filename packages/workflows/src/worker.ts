@@ -4,12 +4,14 @@ import {
   createApprovalActivities,
   createDefectReproductionActivities,
   createRequirementIntakeActivities,
+  createRetrospectiveActivities,
   createTemporalCanaryActivities,
   createWorkItemExecutionActivities,
   createWorkItemPlanningActivities,
   type ApprovalActivityStore,
   type DefectReproductionActivityStore,
   type RequirementIntakeActivityStore,
+  type RetrospectiveActivityStore,
   type TemporalCanaryActivityStore,
   type WorkItemExecutionActivityStore,
   type WorkItemPlanningActivityStore
@@ -34,6 +36,7 @@ export interface CreatePatchPilotTemporalWorkerOptions {
   workItemPlanningActivityStore?: WorkItemPlanningActivityStore;
   workItemExecutionActivityStore?: WorkItemExecutionActivityStore;
   defectReproductionActivityStore?: DefectReproductionActivityStore;
+  retrospectiveActivityStore?: RetrospectiveActivityStore;
   workerOptions?: Partial<WorkerOptions>;
 }
 
@@ -62,7 +65,8 @@ export async function createPatchPilotTemporalWorker(
       ...createRequirementIntakeActivities(options.requirementIntakeActivityStore),
       ...createWorkItemPlanningActivities(options.workItemPlanningActivityStore),
       ...createWorkItemExecutionActivities(options.workItemExecutionActivityStore),
-      ...createDefectReproductionActivities(options.defectReproductionActivityStore)
+      ...createDefectReproductionActivities(options.defectReproductionActivityStore),
+      ...createRetrospectiveActivities(options.retrospectiveActivityStore)
     },
     reuseV8Context: config.reuseV8Context ?? true,
     ...options.workerOptions

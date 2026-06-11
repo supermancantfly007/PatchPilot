@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   approvalActivityOptions,
   defectReproductionActivityOptions,
+  retrospectiveActivityOptions,
   temporalCanaryActivityOptions,
   workItemExecutionActivityOptions,
   workItemPlanningActivityOptions
@@ -63,6 +64,18 @@ describe("Temporal workflow policies", () => {
         initialInterval: "500 milliseconds",
         backoffCoefficient: 2,
         maximumInterval: "10 seconds",
+        maximumAttempts: 5
+      }
+    });
+  });
+
+  it("keeps a bounded retry policy on retrospective activities", () => {
+    expect(retrospectiveActivityOptions).toEqual({
+      startToCloseTimeout: "15 seconds",
+      retry: {
+        initialInterval: "500 milliseconds",
+        backoffCoefficient: 2,
+        maximumInterval: "5 seconds",
         maximumAttempts: 5
       }
     });

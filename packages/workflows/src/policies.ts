@@ -69,3 +69,15 @@ export const defectReproductionActivityOptions = {
   startToCloseTimeout: "30 seconds",
   retry: defectReproductionActivityRetryPolicy
 } as const;
+
+export const retrospectiveActivityRetryPolicy = {
+  initialInterval: "500 milliseconds",
+  backoffCoefficient: 2,
+  maximumInterval: "5 seconds",
+  maximumAttempts: 5
+} as const;
+
+export const retrospectiveActivityOptions = {
+  startToCloseTimeout: "15 seconds",
+  retry: retrospectiveActivityRetryPolicy
+} as const;

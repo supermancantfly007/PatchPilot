@@ -138,6 +138,7 @@ export const artifactKind = pgEnum("artifact_kind", [
   "test_report",
   "screenshot",
   "preview_metadata",
+  "retrospective",
   "intake_attachment"
 ]);
 export const artifactStorageProvider = pgEnum("artifact_storage_provider", ["local_fs", "s3"]);

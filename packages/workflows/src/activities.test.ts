@@ -2,16 +2,28 @@ import { describe, expect, it } from "vitest";
 import {
   createApprovalActivities,
   createDefectReproductionActivities,
+  createRetrospectiveActivities,
   createWorkItemExecutionActivities,
   InMemoryApprovalActivityStore,
   InMemoryDefectReproductionActivityStore,
   createRequirementIntakeActivities,
   InMemoryRequirementIntakeActivityStore,
+  InMemoryRetrospectiveActivityStore,
   InMemoryTemporalCanaryActivityStore,
   InMemoryWorkItemExecutionActivityStore,
   InMemoryWorkItemPlanningActivityStore
 } from "./activities";
-import { createTimeline, type AgentRun, type BugReport, type Prd, type TestCase, type WorkItem } from "@patchpilot/domain";
+import {
+  createTimeline,
+  type AgentRun,
+  type ArtifactRecord,
+  type AuditEvent,
+  type BugReport,
+  type Prd,
+  type TestCase,
+  type TestRun,
+  type WorkItem
+} from "@patchpilot/domain";
 
 describe("Temporal canary activities", () => {
   it("deduplicates activity completion by idempotency key", async () => {
@@ -613,6 +625,155 @@ describe("Defect reproduction activities", () => {
   });
 });
 
+describe("Retrospective activities", () => {
+  it("creates a PRD retrospective artifact from terminal delivery evidence", async () => {
+    const store = new InMemoryRetrospectiveActivityStore();
+    const activities = createRetrospectiveActivities(store);
+    const prd = executionPrd();
+    const workItem = { ...executionWorkItem(prd), status: "review" as const };
+    const run = retrospectiveRun(prd, workItem);
+    const testRun = retrospectiveTestRun(prd, workItem, run);
+    const artifacts = retrospectiveArtifacts(prd, workItem, run, testRun);
+    const auditEvents = retrospectiveAuditEvents(prd, workItem, run);
+
+    const result = await activities.createRetrospectiveActivity({
+      workflowId: "workflow-td-210",
+      idempotencyKey: "td-210:retrospective",
+      prd,
+      workItems: [workItem],
+      agentRuns: [run],
+      workspaceRuns: [
+        {
+          id: `ws_${run.id}`,
+          runId: run.id,
+          requirementId: prd.requirementId,
+          prdId: prd.id,
+          workItemId: workItem.id,
+          runner: run.runner,
+          status: "archived",
+          isolation: "git_worktree",
+          path: "/tmp/patchpilot-workflows/run_td_210",
+          createdAt: "2026-06-10T00:00:00.000Z",
+          updatedAt: "2026-06-10T00:01:00.000Z",
+          archivedAt: "2026-06-10T00:01:00.000Z"
+        }
+      ],
+      testRuns: [testRun],
+      pullRequests: [
+        {
+          id: "pr_run_td_210",
+          provider: "local",
+          status: "ready_for_review",
+          title: "[PatchPilot] Retrospective",
+          requirementId: prd.requirementId,
+          prdId: prd.id,
+          workItemId: workItem.id,
+          runId: run.id,
+          branchName: "patchpilot/retrospective",
+          baseBranch: "main",
+          baseCommit: "base-td210",
+          headCommit: "head-td210",
+          url: "local://pull-requests/run_td_210",
+          bodyMarkdown: "PR body",
+          reviewerSummary: "Low risk",
+          testSummary: "passed",
+          createdAt: "2026-06-10T00:01:00.000Z",
+          updatedAt: "2026-06-10T00:01:00.000Z"
+        }
+      ],
+      reviewRecords: [
+        {
+          id: "review_run_td_210",
+          status: "approved",
+          requirementId: prd.requirementId,
+          prdId: prd.id,
+          workItemId: workItem.id,
+          runId: run.id,
+          linkedPullRequestId: "pr_run_td_210",
+          reviewerAgentId: "agent_reviewer",
+          summary: "Approved",
+          testSummary: "passed",
+          riskLevel: "medium",
+          findings: ["Retrospective evidence is complete"],
+          createdAt: "2026-06-10T00:01:00.000Z",
+          updatedAt: "2026-06-10T00:01:00.000Z"
+        }
+      ],
+      auditEvents,
+      artifacts,
+      acceptances: [{ runId: run.id, status: "accepted", decidedAt: "2026-06-10T00:02:00.000Z" }],
+      bugs: []
+    });
+    const duplicate = await activities.createRetrospectiveActivity({
+      workflowId: "workflow-td-210",
+      idempotencyKey: "td-210:retrospective",
+      prd,
+      workItems: [],
+      agentRuns: [],
+      testRuns: [],
+      auditEvents: []
+    });
+    const duplicatePrd = await activities.createRetrospectiveActivity({
+      workflowId: "workflow-td-210-duplicate",
+      idempotencyKey: "td-210:retrospective:duplicate-prd",
+      prd,
+      workItems: [],
+      agentRuns: [],
+      testRuns: [],
+      auditEvents: []
+    });
+
+    expect(duplicate).toEqual(result);
+    expect(duplicatePrd).toEqual(result);
+    expect(result.artifact.kind).toBe("retrospective");
+    expect(result.artifact.prdId).toBe(prd.id);
+    expect(result.summary).toMatchObject({
+      prdId: prd.id,
+      workItemCount: 1,
+      completedWorkItemCount: 1,
+      cost: {
+        estimatedUsd: 0.4,
+        actualUsd: 0.31,
+        runCount: 1,
+        acceptedRunCount: 1,
+        costPerAcceptedRunUsd: 0.31
+      },
+      tests: {
+        total: 1,
+        passed: 1,
+        passRate: 100
+      },
+      risk: {
+        highestRisk: "medium",
+        medium: 1,
+        failedRunIds: []
+      },
+      audit: {
+        eventCount: 2,
+        chainValid: true,
+        headHash: "hash_td_210_2"
+      },
+      artifacts: {
+        total: 2,
+        byKind: { log: 1, test_report: 1 }
+      },
+      acceptance: {
+        accepted: 1,
+        rejected: 0,
+        pending: 0,
+        terminal: true
+      }
+    });
+    expect(result.auditEvents.map((event) => event.action)).toEqual(["retrospective.created"]);
+    expect(result.auditEvents[0]?.afterJson).toMatchObject({
+      retrospective: {
+        artifactId: result.artifact.id,
+        acceptance: { terminal: true }
+      }
+    });
+  });
+});
+
 function approvalPausedRun(): AgentRun {
   return {
     id: "run_td_208",
@@ -731,4 +892,139 @@ function defectReproductionWorkItem(bug: BugReport): WorkItem {
     createdAt: "2026-06-10T00:00:00.000Z",
     updatedAt: "2026-06-10T00:00:00.000Z"
   };
+}
+
+function retrospectiveRun(prd: Prd, workItem: WorkItem): AgentRun {
+  return {
+    id: "run_td_210",
+    requirementId: prd.requirementId,
+    prdId: prd.id,
+    workItemId: workItem.id,
+    runner: "codex",
+    status: "succeeded",
+    currentStep: "confirming",
+    timeline: createTimeline(),
+    events: [],
+    result: {
+      summary: "Retrospective run completed.",
+      previewUrl: "http://localhost:3000",
+      riskLevel: "medium",
+      changedFiles: ["packages/workflows/src/workflows.ts"],
+      tests: [],
+      reviewerSummary: "Medium risk due to workflow evidence aggregation.",
+      runner: "codex"
+    },
+    costEstimateUsd: 0.4,
+    costActualUsd: 0.31,
+    startedAt: "2026-06-10T00:00:00.000Z",
+    endedAt: "2026-06-10T00:01:00.000Z"
+  };
+}
+
+function retrospectiveTestRun(prd: Prd, workItem: WorkItem, run: AgentRun): TestRun {
+  return {
+    id: "test_td_210",
+    testCaseId: `tc_${workItem.id}`,
+    runId: run.id,
+    prdId: prd.id,
+    workItemId: workItem.id,
+    status: "passed",
+    command: "pnpm --filter @patchpilot/workflows test",
+    summary: "Retrospective tests passed.",
+    durationMs: 420,
+    startedAt: "2026-06-10T00:00:30.000Z",
+    endedAt: "2026-06-10T00:00:31.000Z",
+    commit: "head-td210",
+    branch: "patchpilot/retrospective",
+    artifactIds: ["artifact_td_210_log", "artifact_td_210_report"],
+    retryCount: 0,
+    attempt: 1,
+    maxAttempts: 1,
+    flakySignal: false
+  };
+}
+
+function retrospectiveArtifacts(
+  prd: Prd,
+  workItem: WorkItem,
+  run: AgentRun,
+  testRun: TestRun
+): ArtifactRecord[] {
+  return [
+    {
+      id: "artifact_td_210_log",
+      kind: "log",
+      storage: "local_fs",
+      uri: "file:///tmp/td-210.log",
+      contentType: "text/plain",
+      sizeBytes: 10,
+      checksumSha256: "0".repeat(64),
+      prdId: prd.id,
+      workItemId: workItem.id,
+      runId: run.id,
+      testRunId: testRun.id,
+      createdAt: "2026-06-10T00:00:31.000Z"
+    },
+    {
+      id: "artifact_td_210_report",
+      kind: "test_report",
+      storage: "local_fs",
+      uri: "file:///tmp/td-210.json",
+      contentType: "application/json",
+      sizeBytes: 20,
+      checksumSha256: "1".repeat(64),
+      prdId: prd.id,
+      workItemId: workItem.id,
+      runId: run.id,
+      testRunId: testRun.id,
+      createdAt: "2026-06-10T00:00:31.000Z"
+    }
+  ];
+}
+
+function retrospectiveAuditEvents(prd: Prd, workItem: WorkItem, run: AgentRun): AuditEvent[] {
+  return [
+    {
+      id: "audit_td_210_1",
+      traceId: "workflow-td-210-source",
+      actorType: "agent",
+      actorId: "agent_backend",
+      actor: "agent_backend",
+      action: "agent_run.succeeded",
+      targetType: "agent_run",
+      targetId: run.id,
+      message: "Run succeeded.",
+      beforeJson: null,
+      afterJson: { run: { id: run.id, status: run.status } },
+      metadataJson: {},
+      hash: "hash_td_210_1",
+      previousHash: null,
+      requirementId: prd.requirementId,
+      prdId: prd.id,
+      workItemId: workItem.id,
+      runId: run.id,
+      createdAt: "2026-06-10T00:01:00.000Z"
+    },
+    {
+      id: "audit_td_210_2",
+      traceId: "workflow-td-210-source",
+      actorType: "human",
+      actorId: "human",
+      actor: "human",
+      action: "acceptance.accepted",
+      targetType: "acceptance",
+      targetId: run.id,
+      message: "Run accepted.",
+      beforeJson: null,
+      afterJson: { acceptance: { runId: run.id, status: "accepted" } },
+      metadataJson: {},
+      hash: "hash_td_210_2",
+      previousHash: "hash_td_210_1",
+      requirementId: prd.requirementId,
+      prdId: prd.id,
+      workItemId: workItem.id,
+      runId: run.id,
+      createdAt: "2026-06-10T00:02:00.000Z"
+    }
+  ];
 }

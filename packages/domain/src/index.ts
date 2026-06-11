@@ -95,6 +95,7 @@ export type ArtifactKind =
   | "test_report"
   | "screenshot"
   | "preview_metadata"
+  | "retrospective"
   | "intake_attachment";
 
 export type IntakeArtifactKind = "file" | "screenshot" | "recording" | "link";

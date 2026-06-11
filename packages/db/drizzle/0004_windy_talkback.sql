@@ -1,0 +1,1 @@
+ALTER TYPE "public"."artifact_kind" ADD VALUE 'retrospective' BEFORE 'intake_attachment';
