@@ -130,12 +130,15 @@ Status: ready-for-agent
 - [x] `ADR-0009` 凭证、MCP 工具、网络访问和审批门安全模型。Status: done. Role: architecture. Owner: agent/adr-0009-security-model. Evidence: `docs/adr/0009-credential-mcp-network-approval-security-model.md` records the Capability Manifest as the run-scoped security authority for credentials, MCP tools, network access, command capabilities, repository scope, runtime selection, budgets, and approval-linked exceptions; defines Secret Broker-only credential grants, manifest-approved MCP server/tool access, deny-by-default network egress, PatchPilot Approval records instead of interactive Codex approvals, evidence/audit requirements, alternatives, consequences, and production enforcement exit criteria. Verification: code review/self-review completed; `git diff --check` passed; targeted Node ADR/TODO path, link, and content sanity check passed; `pnpm install --frozen-lockfile`; `pnpm lint` passed; `pnpm test` passed; runtime E2E not run because ADR-0009 is docs-only and changes no Web/API/worker behavior.
 - [x] `ADR-0010` 测试与契约验证策略，包括目标测试、全量测试、失败沉淀为 Defect 的规则。Status: done. Role: architecture. Owner: agent/adr-0010-test-contract-strategy. Evidence: `docs/adr/0010-test-and-contract-validation-strategy.md` records staged targeted/full/smoke/E2E validation policy, contract validation triggers and evidence, failure-to-Defect rules, skipped/blocked/flaky exception rules, gate behavior, and TD-216/TD-217 implementation boundaries. Verification: code review/self-review completed; `pnpm install --frozen-lockfile`; `git diff --check`; targeted Node ADR/TODO path and content sanity check; `pnpm openapi:check`; `pnpm events:check`; `pnpm lint`; `pnpm test`; runtime E2E not run because ADR-0010 is docs-only and changes no Web/API/worker behavior.
 
-## F. 当前不应标记完成的事项
+## F. 完成审计
 
-- Postgres/Drizzle 只是有 compose 和 env，占位不等于完成。
-- Temporal 尚未接入；当前 worker 是 polling worker，不是 durable workflow。
-- 当前 PR 是 `local://` 记录，不是真实 GitHub PR。
-- 当前 worktree runner 没有 container sandbox、egress policy 或 secret broker。
-- 当前 contract 是 Markdown draft/approved 记录，不是 OpenAPI/AsyncAPI registry。
-- 当前 claim 是基础状态写入，不具备 lease、heartbeat、claim token fencing 或文件锁原子性。
-- 当前成本是静态估算，不具备预算审批和真实用量归集。
+以下原“不应标记完成”的生产化缺口已经由已完成任务覆盖；本 TODO 当前没有待领取复选项。
+
+- Postgres/Drizzle 和生产事实源：`TD-201`、`TD-202`、`TD-203`、`ADR-0002`。
+- Temporal durable workflow：`TD-204` 至 `TD-210`、`ADR-0001`。
+- 真实 GitHub PR 和 GitHub App：`TD-215`、`TD-304`。
+- worktree、container sandbox、egress policy、secret broker 和 capability manifest：`TD-211`、`TD-212`、`TD-213`、`TD-218`、`TD-219`、`TD-303`、`ADR-0004`、`ADR-0009`。
+- OpenAPI、事件 schema 和 InterfaceContract Registry：`TD-103`、`TD-104`、`TD-105`、`TD-216`、`TD-217`、`ADR-0006`。
+- claim lease、heartbeat、claim token fencing 和 Markdown 文件锁：`TD-112`、`TD-113`、`TD-203`、`ADR-0005`。
+- 成本、预算审批和真实指标归集：`TD-116`、`TD-221`、`TD-309`。
+- 发布和回滚审批门：`TD-307`。
