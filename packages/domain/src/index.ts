@@ -459,6 +459,9 @@ export interface Prd {
 export interface WorkItem {
   id: string;
   prdId: string;
+  repositoryId?: string;
+  repositoryFullName?: string;
+  repositoryProvider?: RepositoryProvider;
   title: string;
   status: WorkItemStatus;
   role: AgentRole;
@@ -490,6 +493,8 @@ export interface WorkItem {
 export interface InterfaceContract {
   id: string;
   prdId: string;
+  repositoryId?: string;
+  repositoryFullName?: string;
   name: string;
   kind: InterfaceContractKind;
   status: InterfaceContractStatus;
@@ -741,6 +746,8 @@ export interface TestRun {
   runId?: string;
   prdId?: string;
   workItemId?: string;
+  repositoryId?: string;
+  repositoryFullName?: string;
   status: TestRunStatus;
   command: string;
   summary: string;
@@ -769,6 +776,8 @@ export interface TestCase {
   requirementId: string;
   prdId: string;
   workItemId: string;
+  repositoryId?: string;
+  repositoryFullName?: string;
   sourceBugId?: string;
   title: string;
   kind: TestCaseKind;
@@ -790,6 +799,8 @@ export interface WorkspaceRun {
   requirementId: string;
   prdId: string;
   workItemId: string;
+  repositoryId?: string;
+  repositoryFullName?: string;
   runner: AgentRunnerKind;
   status: WorkspaceRunStatus;
   isolation: "simulated" | "git_worktree";
@@ -883,6 +894,8 @@ export interface PullRequestRecord {
   prdId: string;
   workItemId: string;
   runId: string;
+  repositoryId?: string;
+  repositoryFullName?: string;
   branchName: string;
   baseBranch: string;
   baseCommit?: string;
@@ -1303,11 +1316,47 @@ export function createPrd(requirement: Requirement): Prd {
   };
 }
 
-export function createWorkItems(prd: Prd): WorkItem[] {
+export interface WorkItemRepositoryTarget {
+  id: string;
+  fullName: string;
+  provider: RepositoryProvider;
+}
+
+export function createWorkItems(
+  prd: Prd,
+  options: { repositories?: WorkItemRepositoryTarget[] } = {}
+): WorkItem[] {
   const now = new Date().toISOString();
+  const repositories = uniqueRepositoryTargets(options.repositories ?? []);
+  const baseItems = createBaseWorkItems(prd, now);
+  if (repositories.length === 0) return baseItems;
+  if (repositories.length === 1) {
+    return baseItems.map((workItem) => assignRepositoryToWorkItem(workItem, repositories[0]!));
+  }
+
+  return repositories.flatMap((repository) => {
+    const repositorySlug = slugForWorkItemId(repository.id || repository.fullName);
+    return createBaseWorkItems(prd, now, repositorySlug).map((workItem) =>
+      assignRepositoryToWorkItem(
+        {
+          ...workItem,
+          title: `${workItem.title} - ${repository.fullName}`,
+          scope: `${repository.fullName}: ${workItem.scope}`,
+          concurrencyKey: `repo:${repository.id}:${workItem.role}`,
+          maxConcurrent: 1
+        },
+        repository
+      )
+    );
+  });
+}
+
+function createBaseWorkItems(prd: Prd, now: string, repositorySlug?: string): WorkItem[] {
+  const idPrefix = repositorySlug ? `wi_${prd.requirementId}_${repositorySlug}` : `wi_${prd.requirementId}`;
+  const backendId = `${idPrefix}_backend`;
   return [
     {
-      id: `wi_${prd.requirementId}_backend`,
+      id: backendId,
       prdId: prd.id,
       title: "后端交付控制面",
       status: "ready",
@@ -1321,7 +1370,7 @@ export function createWorkItems(prd: Prd): WorkItem[] {
       updatedAt: now
     },
     {
-      id: `wi_${prd.requirementId}_frontend`,
+      id: `${idPrefix}_frontend`,
       prdId: prd.id,
       title: "前端普通用户闭环",
       status: "ready",
@@ -1330,12 +1379,13 @@ export function createWorkItems(prd: Prd): WorkItem[] {
       nonGoals: ["不做营销落地页", "不暴露不必要工程术语", "不阻塞移动端关键动作"],
       acceptanceCriteria: prd.acceptanceCriteria,
       testSuggestions: ["运行 Web 组件测试", "跑浏览器 smoke", "检查桌面和移动端无明显溢出"],
+      ...(repositorySlug ? { dependsOn: [backendId] } : {}),
       version: 1,
       createdAt: now,
       updatedAt: now
     },
     {
-      id: `wi_${prd.requirementId}_test`,
+      id: `${idPrefix}_test`,
       prdId: prd.id,
       title: "测试与回归证据",
       status: "ready",
@@ -1344,12 +1394,13 @@ export function createWorkItems(prd: Prd): WorkItem[] {
       nonGoals: ["不追求无关全量覆盖", "不把不稳定测试当作通过证据", "不跳过关键路径测试"],
       acceptanceCriteria: prd.acceptanceCriteria,
       testSuggestions: ["新增或更新关键路径测试", "确认失败能转为可处理缺陷", "记录测试命令和结果"],
+      ...(repositorySlug ? { dependsOn: [backendId] } : {}),
       version: 1,
       createdAt: now,
       updatedAt: now
     },
     {
-      id: `wi_${prd.requirementId}_ops`,
+      id: `${idPrefix}_ops`,
       prdId: prd.id,
       title: "本地运行与交付运维",
       status: "ready",
@@ -1358,11 +1409,41 @@ export function createWorkItems(prd: Prd): WorkItem[] {
       nonGoals: ["不做生产 Kubernetes 部署", "不引入强制云服务", "不自动发布"],
       acceptanceCriteria: prd.acceptanceCriteria,
       testSuggestions: ["验证 dev 脚本", "检查端口和 env 文档", "确认可选 Docker 中间件不影响本地模拟闭环"],
+      ...(repositorySlug ? { dependsOn: [backendId] } : {}),
       version: 1,
       createdAt: now,
       updatedAt: now
     }
   ];
+}
+
+function assignRepositoryToWorkItem(workItem: WorkItem, repository: WorkItemRepositoryTarget): WorkItem {
+  return {
+    ...workItem,
+    repositoryId: repository.id,
+    repositoryFullName: repository.fullName,
+    repositoryProvider: repository.provider,
+    requiredCapabilities: uniqueStrings([
+      ...(workItem.requiredCapabilities ?? []),
+      `repository:${repository.id}`
+    ])
+  };
+}
+
+function uniqueRepositoryTargets(repositories: WorkItemRepositoryTarget[]): WorkItemRepositoryTarget[] {
+  const seen = new Set<string>();
+  const targets: WorkItemRepositoryTarget[] = [];
+  for (const repository of repositories) {
+    if (!repository.id || !repository.fullName) continue;
+    if (seen.has(repository.id)) continue;
+    seen.add(repository.id);
+    targets.push(repository);
+  }
+  return targets;
+}
+
+function slugForWorkItemId(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/gu, "_").replace(/^_+|_+$/gu, "") || "repo";
 }
 
 export function createTestCasesForWorkItems(
@@ -1375,6 +1456,8 @@ export function createTestCasesForWorkItems(
     requirementId: prd.requirementId,
     prdId: prd.id,
     workItemId: workItem.id,
+    repositoryId: workItem.repositoryId,
+    repositoryFullName: workItem.repositoryFullName,
     sourceBugId: workItem.sourceBugId,
     title: testCaseTitle(workItem),
     kind: testCaseKind(workItem),

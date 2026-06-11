@@ -71,6 +71,72 @@ describe("domain helpers", () => {
     expect(testCases.every((testCase) => testCase.linkedAcceptanceCriteria === prd.acceptanceCriteria)).toBe(true);
   });
 
+  it("fans one PRD out into repository-scoped work items", () => {
+    const requirement: Requirement = {
+      id: "req_multi_repo",
+      title: "跨仓库交付",
+      rawInput: "同时修改 API 和 Web 仓库",
+      template: "feature",
+      status: "prd_draft",
+      simpleSummary: makeSimpleSummary("同时修改 API 和 Web 仓库", "feature"),
+      clarificationQuestions: [],
+      clarificationTurns: [],
+      createdAt: "2026-06-09T00:00:00.000Z",
+      updatedAt: "2026-06-09T00:00:00.000Z"
+    };
+    const prd = createPrd(requirement);
+    const repositories = [
+      { id: "repo_github_1_api", fullName: "patchpilot/api", provider: "github" as const },
+      { id: "repo_github_2_web", fullName: "patchpilot/web", provider: "github" as const }
+    ];
+
+    const singleRepoItems = createWorkItems(prd, { repositories: [repositories[0]!] });
+    expect(singleRepoItems.map((item) => item.id)).toEqual([
+      "wi_req_multi_repo_backend",
+      "wi_req_multi_repo_frontend",
+      "wi_req_multi_repo_test",
+      "wi_req_multi_repo_ops"
+    ]);
+    expect(singleRepoItems.every((item) => item.repositoryId === "repo_github_1_api")).toBe(true);
+
+    const workItems = createWorkItems(prd, { repositories });
+
+    expect(workItems).toHaveLength(8);
+    expect(workItems.map((item) => item.repositoryId)).toEqual([
+      "repo_github_1_api",
+      "repo_github_1_api",
+      "repo_github_1_api",
+      "repo_github_1_api",
+      "repo_github_2_web",
+      "repo_github_2_web",
+      "repo_github_2_web",
+      "repo_github_2_web"
+    ]);
+    expect(workItems.map((item) => item.id)).toEqual([
+      "wi_req_multi_repo_repo_github_1_api_backend",
+      "wi_req_multi_repo_repo_github_1_api_frontend",
+      "wi_req_multi_repo_repo_github_1_api_test",
+      "wi_req_multi_repo_repo_github_1_api_ops",
+      "wi_req_multi_repo_repo_github_2_web_backend",
+      "wi_req_multi_repo_repo_github_2_web_frontend",
+      "wi_req_multi_repo_repo_github_2_web_test",
+      "wi_req_multi_repo_repo_github_2_web_ops"
+    ]);
+    for (const repository of repositories) {
+      const scopedItems = workItems.filter((item) => item.repositoryId === repository.id);
+      const backend = scopedItems.find((item) => item.role === "backend");
+      expect(backend?.dependsOn).toBeUndefined();
+      expect(scopedItems.filter((item) => item.role !== "backend").every((item) =>
+        item.dependsOn?.includes(backend?.id ?? "") &&
+        item.requiredCapabilities?.includes(`repository:${repository.id}`)
+      )).toBe(true);
+    }
+
+    const testCases = createTestCasesForWorkItems(prd, workItems, "2026-06-09T00:00:00.000Z");
+    expect(testCases).toHaveLength(8);
+    expect(testCases.every((testCase) => testCase.repositoryId && testCase.repositoryFullName)).toBe(true);
+  });
+
   it("renders intake artifact references into PRDs", () => {
     const requirement: Requirement = {
       id: "req_with_artifacts",

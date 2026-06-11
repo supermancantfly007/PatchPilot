@@ -1383,6 +1383,141 @@ describe("PatchPilot API", () => {
     }
   });
 
+  it("fans one GitHub-selected PRD out into multiple repository work items and PRs", async () => {
+    const repositories = [
+      fakeGitHubAppRepository({
+        id: "repo_github_4242_patchpilot_fixtures_delivery",
+        githubRepositoryId: "987654321",
+        name: "delivery",
+        permissions: { admin: false, maintain: false, push: true }
+      }),
+      fakeGitHubAppRepository({
+        id: "repo_github_4242_patchpilot_fixtures_docs",
+        githubRepositoryId: "987654322",
+        name: "docs",
+        permissions: { admin: false, maintain: false, push: true }
+      })
+    ];
+    const upserts: UpsertPullRequestInput[] = [];
+    const fakePullRequestAdapter: PullRequestAdapter = {
+      provider: "github",
+      upsertPullRequest: async (input) => {
+        upserts.push(input);
+        const sequence = upserts.length;
+        const repositoryPath = input.draft.repositoryFullName ?? "patchpilot-fixtures/unknown";
+        return {
+          ...input.draft,
+          id: `github://${repositoryPath}/pull/${sequence}`,
+          provider: "github",
+          status: "ready_for_review",
+          url: `https://github.com/${repositoryPath}/pull/${sequence}`,
+          createdAt: input.existing?.createdAt ?? input.draft.createdAt
+        };
+      },
+      readChecks: async () => ({ status: "passed", totalCount: 0, runs: [] }),
+      writeReviewerComment: async () => undefined
+    };
+    const store = new PatchPilotStore({
+      githubAppRepositoryClient: {
+        listRepositories: async () => repositories
+      },
+      pullRequestAdapter: fakePullRequestAdapter
+    });
+    const app = await buildServer({ store });
+
+    try {
+      const list = await app.inject({
+        method: "GET",
+        url: "/api/integrations/github/repositories",
+        headers: authHeaders("maintainer", "repo-maintainer")
+      });
+      expect(list.statusCode).toBe(200);
+
+      const repositoryIds = repositories.map((repository) => repository.id);
+      const select = await app.inject({
+        method: "POST",
+        url: "/api/integrations/github/repositories/select",
+        headers: authHeaders("maintainer", "repo-maintainer"),
+        payload: { repositoryIds }
+      });
+      expect(select.statusCode).toBe(200);
+      expect(select.json()).toMatchObject({
+        repository: {
+          id: repositoryIds[0],
+          selected: true
+        },
+        selectedRepositoryIds: repositoryIds,
+        permissionReady: true
+      });
+
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/requirements",
+        payload: { rawInput: "让一个 PRD 同时更新 delivery 和 docs 仓库", template: "feature" }
+      });
+      expect(create.statusCode).toBe(201);
+      const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${create.json().id}/prd` });
+      expect(prdResponse.statusCode).toBe(200);
+      const prd = prdResponse.json().prd;
+
+      const startTeam = await app.inject({
+        method: "POST",
+        url: `/api/prds/${prd.id}/start-team`,
+        headers: authHeaders("maintainer", "repo-maintainer"),
+        payload: { runner: "simulated" }
+      });
+      expect(startTeam.statusCode).toBe(201);
+      expect(startTeam.json().workItems).toHaveLength(8);
+      expect(startTeam.json().interfaceContracts).toHaveLength(6);
+      expect(startTeam.json().runs).toHaveLength(2);
+      expect(startTeam.json().runs.map((run: { workItemId: string }) => run.workItemId).sort()).toEqual([
+        `wi_${create.json().id}_repo_github_4242_patchpilot_fixtures_delivery_backend`,
+        `wi_${create.json().id}_repo_github_4242_patchpilot_fixtures_docs_backend`
+      ]);
+      expect(startTeam.json().skippedWorkItems).toHaveLength(6);
+      expect(startTeam.json().skippedWorkItems.every((item: { dependsOn?: string[] }) => item.dependsOn?.length === 1)).toBe(true);
+
+      const completedRuns = await pollPrdRuns(app, prd.id, 2);
+      expect(completedRuns.every((run: { status: string }) => run.status === "succeeded")).toBe(true);
+
+      const snapshot = (await app.inject({ method: "GET", url: "/api/snapshot" })).json();
+      const prdWorkItems = snapshot.workItems.filter((workItem: { prdId: string }) => workItem.prdId === prd.id);
+      const prdInterfaceContracts = snapshot.interfaceContracts.filter((contract: { prdId: string }) => contract.prdId === prd.id);
+      const prdPullRequests = snapshot.pullRequests.filter((pullRequest: { prdId: string }) => pullRequest.prdId === prd.id);
+      const prdWorkspaceRuns = snapshot.workspaceRuns.filter((workspace: { prdId: string }) => workspace.prdId === prd.id);
+      const prdTestCases = snapshot.testCases.filter((testCase: { prdId: string }) => testCase.prdId === prd.id);
+      const prdTestRuns = snapshot.testRuns.filter((testRun: { prdId: string; runner?: string }) =>
+        testRun.prdId === prd.id
+      );
+      const prdExecutionTestRuns = prdTestRuns.filter((testRun: { runner?: string }) => testRun.runner === "simulated-test-runner");
+
+      expect(prdWorkItems).toHaveLength(8);
+      expect(new Set(prdWorkItems.map((workItem: { repositoryId?: string }) => workItem.repositoryId))).toEqual(
+        new Set(repositoryIds)
+      );
+      expect(prdWorkItems.filter((workItem: { role: string }) => workItem.role !== "backend").every(
+        (workItem: { dependsOn?: string[] }) => workItem.dependsOn?.length === 1
+      )).toBe(true);
+      expect(prdPullRequests).toHaveLength(2);
+      expect(new Set(prdPullRequests.map((pullRequest: { repositoryId?: string }) => pullRequest.repositoryId))).toEqual(
+        new Set(repositoryIds)
+      );
+      expect(prdPullRequests.every((pullRequest: { bodyMarkdown: string }) =>
+        pullRequest.bodyMarkdown.includes("## Repository")
+      )).toBe(true);
+      expect(new Set(prdInterfaceContracts.map((contract: { repositoryId?: string }) => contract.repositoryId))).toEqual(
+        new Set(repositoryIds)
+      );
+      expect(prdWorkspaceRuns.every((workspace: { repositoryId?: string }) => repositoryIds.includes(workspace.repositoryId ?? ""))).toBe(true);
+      expect(prdTestCases.every((testCase: { repositoryId?: string }) => repositoryIds.includes(testCase.repositoryId ?? ""))).toBe(true);
+      expect(prdTestRuns.every((testRun: { repositoryId?: string }) => repositoryIds.includes(testRun.repositoryId ?? ""))).toBe(true);
+      expect(prdExecutionTestRuns).toHaveLength(2);
+      expect(upserts.map((input) => input.draft.repositoryId).sort()).toEqual([...repositoryIds].sort());
+    } finally {
+      await app.close();
+    }
+  });
+
   it("rejects GitHub App repository selection without PR-capable repository permissions", async () => {
     const store = new PatchPilotStore({
       githubAppRepositoryClient: {

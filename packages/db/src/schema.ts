@@ -350,6 +350,8 @@ export const workItems = pgTable(
     prdVersionId: text("prd_version_id")
       .notNull()
       .references(() => prdVersions.id, { onDelete: "cascade" }),
+    repositoryId: text("repository_id").references(() => repositories.id, { onDelete: "set null" }),
+    repositoryFullName: text("repository_full_name"),
     title: text("title").notNull(),
     status: workItemStatus("status").notNull().default("proposed"),
     role: agentRole("role").notNull(),
@@ -381,6 +383,7 @@ export const workItems = pgTable(
     index("work_items_project_id_idx").on(table.projectId),
     index("work_items_requirement_id_idx").on(table.requirementId),
     index("work_items_prd_version_id_idx").on(table.prdVersionId),
+    index("work_items_repository_id_idx").on(table.repositoryId),
     index("work_items_assigned_agent_id_idx").on(table.assignedAgentId),
     index("work_items_status_idx").on(table.status),
     index("work_items_status_lease_expires_at_idx").on(table.status, table.leaseExpiresAt),
@@ -435,6 +438,8 @@ export const interfaceContracts = pgTable(
     prdVersionId: text("prd_version_id")
       .notNull()
       .references(() => prdVersions.id, { onDelete: "cascade" }),
+    repositoryId: text("repository_id").references(() => repositories.id, { onDelete: "set null" }),
+    repositoryFullName: text("repository_full_name"),
     name: text("name").notNull(),
     kind: interfaceContractKind("kind").notNull(),
     status: interfaceContractStatus("status").notNull().default("draft"),
@@ -449,9 +454,15 @@ export const interfaceContracts = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [
-    uniqueIndex("interface_contracts_prd_name_version_unique").on(table.prdVersionId, table.name, table.version),
+    uniqueIndex("interface_contracts_prd_repository_name_version_unique").on(
+      table.prdVersionId,
+      table.repositoryId,
+      table.name,
+      table.version
+    ),
     index("interface_contracts_project_id_idx").on(table.projectId),
     index("interface_contracts_requirement_id_idx").on(table.requirementId),
+    index("interface_contracts_repository_id_idx").on(table.repositoryId),
     index("interface_contracts_kind_idx").on(table.kind),
     index("interface_contracts_status_idx").on(table.status),
     check("interface_contracts_name_not_empty", sql`length(${table.name}) > 0`),
@@ -536,6 +547,8 @@ export const workspaceRuns = pgTable(
     agentRunId: text("agent_run_id")
       .notNull()
       .references(() => agentRuns.id, { onDelete: "cascade" }),
+    repositoryId: text("repository_id").references(() => repositories.id, { onDelete: "set null" }),
+    repositoryFullName: text("repository_full_name"),
     runner: agentRunnerKind("runner").notNull(),
     status: workspaceRunStatus("status").notNull().default("preparing"),
     isolation: workspaceIsolation("isolation").notNull(),
@@ -548,6 +561,7 @@ export const workspaceRuns = pgTable(
     uniqueIndex("workspace_runs_agent_run_unique").on(table.agentRunId),
     index("workspace_runs_project_id_idx").on(table.projectId),
     index("workspace_runs_work_item_id_idx").on(table.workItemId),
+    index("workspace_runs_repository_id_idx").on(table.repositoryId),
     index("workspace_runs_status_idx").on(table.status),
     check("workspace_runs_path_not_empty", sql`length(${table.path}) > 0`)
   ]
@@ -575,6 +589,8 @@ export const pullRequests = pgTable(
     agentRunId: text("agent_run_id")
       .notNull()
       .references(() => agentRuns.id, { onDelete: "cascade" }),
+    repositoryId: text("repository_id").references(() => repositories.id, { onDelete: "set null" }),
+    repositoryFullName: text("repository_full_name"),
     branchName: text("branch_name").notNull(),
     baseBranch: text("base_branch").notNull(),
     baseCommit: text("base_commit"),
@@ -592,6 +608,7 @@ export const pullRequests = pgTable(
     index("pull_requests_project_id_idx").on(table.projectId),
     index("pull_requests_work_item_id_idx").on(table.workItemId),
     index("pull_requests_agent_run_id_idx").on(table.agentRunId),
+    index("pull_requests_repository_id_idx").on(table.repositoryId),
     index("pull_requests_status_idx").on(table.status),
     check("pull_requests_title_not_empty", sql`length(${table.title}) > 0`),
     check("pull_requests_branch_name_not_empty", sql`length(${table.branchName}) > 0`),
@@ -682,6 +699,8 @@ export const testCases = pgTable(
     workItemId: text("work_item_id")
       .notNull()
       .references(() => workItems.id, { onDelete: "cascade" }),
+    repositoryId: text("repository_id").references(() => repositories.id, { onDelete: "set null" }),
+    repositoryFullName: text("repository_full_name"),
     sourceDefectId: text("source_defect_id"),
     title: text("title").notNull(),
     kind: testCaseKind("kind").notNull(),
@@ -701,6 +720,7 @@ export const testCases = pgTable(
     index("test_cases_requirement_id_idx").on(table.requirementId),
     index("test_cases_prd_version_id_idx").on(table.prdVersionId),
     index("test_cases_work_item_id_idx").on(table.workItemId),
+    index("test_cases_repository_id_idx").on(table.repositoryId),
     index("test_cases_status_idx").on(table.status),
     check("test_cases_title_not_empty", sql`length(${table.title}) > 0`),
     check("test_cases_expected_result_not_empty", sql`length(${table.expectedResult}) > 0`)
@@ -717,6 +737,8 @@ export const testRuns = pgTable(
     requirementId: text("requirement_id").references(() => requirements.id, { onDelete: "cascade" }),
     prdVersionId: text("prd_version_id").references(() => prdVersions.id, { onDelete: "cascade" }),
     workItemId: text("work_item_id").references(() => workItems.id, { onDelete: "cascade" }),
+    repositoryId: text("repository_id").references(() => repositories.id, { onDelete: "set null" }),
+    repositoryFullName: text("repository_full_name"),
     testCaseId: text("test_case_id").references(() => testCases.id, { onDelete: "set null" }),
     agentRunId: text("agent_run_id").references(() => agentRuns.id, { onDelete: "set null" }),
     pullRequestId: text("pull_request_id").references(() => pullRequests.id, { onDelete: "set null" }),
@@ -744,6 +766,7 @@ export const testRuns = pgTable(
   (table) => [
     index("test_runs_project_id_idx").on(table.projectId),
     index("test_runs_work_item_id_created_at_idx").on(table.workItemId, table.createdAt),
+    index("test_runs_repository_id_idx").on(table.repositoryId),
     index("test_runs_test_case_id_idx").on(table.testCaseId),
     index("test_runs_agent_run_id_idx").on(table.agentRunId),
     index("test_runs_pull_request_id_idx").on(table.pullRequestId),

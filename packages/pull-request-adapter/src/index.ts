@@ -11,6 +11,8 @@ export interface PullRequestDraft {
   prdId: string;
   workItemId: string;
   runId: string;
+  repositoryId?: string;
+  repositoryFullName?: string;
   branchName: string;
   baseBranch: string;
   baseCommit?: string;

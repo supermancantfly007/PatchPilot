@@ -49,6 +49,7 @@ import {
   type TestRun,
   type WorkspaceRun,
   type WorkItem,
+  type WorkItemRepositoryTarget,
   advanceTimeline,
   completeTimeline,
   computeAuditEventHash,
@@ -360,7 +361,7 @@ export class PatchPilotStore {
       return structuredClone(this.snapshot.workItems.filter((item) => item.prdId === prdId));
     }
     const previewPrd = structuredClone(prd);
-    const workItems = createWorkItems(previewPrd);
+    const workItems = createWorkItems(previewPrd, { repositories: this.repositoryTargetsForPrd() });
     this.applyConfiguredBudgets(previewPrd, workItems);
     return structuredClone(workItems);
   }
@@ -513,7 +514,7 @@ export class PatchPilotStore {
     this.snapshot.prds = this.snapshot.prds.filter((item) => item.requirementId !== requirementId);
     this.snapshot.prds.unshift(prd);
     this.snapshot.interfaceContracts = [
-      ...createInterfaceContracts(prd, "draft"),
+      ...createInterfaceContracts(prd, "draft", new Date().toISOString(), this.repositoryTargetsForPrd()),
       ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prd.id)
     ];
     await this.save();
@@ -571,7 +572,7 @@ export class PatchPilotStore {
     this.snapshot.prds = this.snapshot.prds.filter((item) => item.requirementId !== requirementId);
     this.snapshot.prds.unshift(prd);
     this.snapshot.interfaceContracts = [
-      ...createInterfaceContracts(prd, "draft"),
+      ...createInterfaceContracts(prd, "draft", now, this.repositoryTargetsForPrd()),
       ...this.snapshot.interfaceContracts.filter((item) => item.prdId !== prd.id)
     ];
     await this.save();
@@ -589,7 +590,7 @@ export class PatchPilotStore {
       if (existingInterfaceContracts.length === 0) {
         existingInterfaceContracts = await this.registerInterfaceContracts(
           prd,
-          createInterfaceContracts(prd, "draft"),
+          createInterfaceContracts(prd, "draft", new Date().toISOString(), this.repositoryTargetsForPrd()),
           existingWorkItems,
           existingTestCases,
           new Date().toISOString()
@@ -633,7 +634,8 @@ export class PatchPilotStore {
     requirement.status = "approved";
     requirement.updatedAt = now;
 
-    const workItems = createWorkItems(prd);
+    const repositoryTargets = this.repositoryTargetsForPrd();
+    const workItems = createWorkItems(prd, { repositories: repositoryTargets });
     this.applyConfiguredBudgets(prd, workItems);
     const testCases = createTestCasesForWorkItems(prd, workItems);
     this.snapshot.workItems = [
@@ -646,7 +648,7 @@ export class PatchPilotStore {
     ];
     const interfaceContracts = await this.registerInterfaceContracts(
       prd,
-      createInterfaceContracts(prd, "draft", now),
+      createInterfaceContracts(prd, "draft", now, repositoryTargets),
       workItems,
       testCases,
       now
@@ -964,9 +966,12 @@ export class PatchPilotStore {
       const now = new Date().toISOString();
       const repositories = this.syncGitHubAppRepositories(githubRepositories, now);
       const installation = this.installationForGitHubRepositories(githubRepositories, now);
-      const selectedRepository = this.selectedGitHubRepository();
+      const selectedRepositories = this.selectedGitHubRepositories();
+      const selectedRepository = selectedRepositories[0];
       const permissionReady = selectedRepository
-        ? this.githubRepositoryHasPrPermissions(selectedRepository, installation)
+        ? selectedRepositories.every((repository) =>
+          this.githubRepositoryHasPrPermissions(repository, this.githubInstallationForRepository(repository) ?? installation)
+        )
         : repositories.some((repository) => this.githubRepositoryHasPrPermissions(repository, installation));
       this.addAuditEvent({
         actor: "github-app",
@@ -979,6 +984,7 @@ export class PatchPilotStore {
           installation: installation ? auditGitHubInstallation(installation) : null,
           repositoryIds: repositories.map((repository) => repository.id),
           selectedRepositoryId: selectedRepository?.id ?? null,
+          selectedRepositoryIds: selectedRepositories.map((repository) => repository.id),
           permissionReady
         },
         metadataJson: {
@@ -992,61 +998,91 @@ export class PatchPilotStore {
         ...(installation ? { installation } : {}),
         repositories,
         ...(selectedRepository ? { selectedRepositoryId: selectedRepository.id } : {}),
+        ...(selectedRepositories.length > 0 ? { selectedRepositoryIds: selectedRepositories.map((repository) => repository.id) } : {}),
         permissionReady
       };
     });
   }
 
   async selectGitHubAppRepository(repositoryId: string, options: { actor?: string } = {}) {
+    return this.selectGitHubAppRepositories([repositoryId], options);
+  }
+
+  async selectGitHubAppRepositories(repositoryIds: string[], options: { actor?: string } = {}) {
     return this.withMutation(async () => {
       await this.load();
-      const repository = this.snapshot.repositories.find((item) => item.id === repositoryId && item.provider === "github");
-      if (!repository) throw new DomainError("NOT_FOUND", `GitHub repository not found: ${repositoryId}`);
+      const selectedIds = [...new Set(repositoryIds.map((id) => id.trim()).filter(Boolean))];
+      if (selectedIds.length === 0) throw new DomainError("INVALID_STATE", "At least one GitHub repository must be selected.");
+      const repositories = selectedIds.map((repositoryId) => {
+        const repository = this.snapshot.repositories.find((item) => item.id === repositoryId && item.provider === "github");
+        if (!repository) throw new DomainError("NOT_FOUND", `GitHub repository not found: ${repositoryId}`);
+        return repository;
+      });
       const now = new Date().toISOString();
-      const installation = this.githubInstallationForRepository(repository) ??
-        this.createGitHubInstallationFromRepository(repository, now);
-      if (!this.githubRepositoryHasPrPermissions(repository, installation)) {
-        throw new DomainError("INVALID_STATE", "GitHub App installation does not have repository PR permissions.");
+      const installations = new Map<string, GitHubAppInstallationRecord>();
+      for (const repository of repositories) {
+        const installation = this.githubInstallationForRepository(repository) ??
+          this.createGitHubInstallationFromRepository(repository, now);
+        installations.set(installation.id, installation);
+        if (!this.githubRepositoryHasPrPermissions(repository, installation)) {
+          throw new DomainError("INVALID_STATE", "GitHub App installation does not have repository PR permissions.");
+        }
       }
+      const primaryRepository = repositories[0];
+      if (!primaryRepository) throw new DomainError("INVALID_STATE", "At least one GitHub repository must be selected.");
+      const primaryInstallation = this.githubInstallationForRepository(primaryRepository) ??
+        this.createGitHubInstallationFromRepository(primaryRepository, now);
       const beforeJson = {
-        selectedRepositoryId: installation.selectedRepositoryId ?? null,
+        selectedRepositoryId: primaryInstallation.selectedRepositoryId ?? null,
+        selectedRepositoryIds: this.selectedGitHubRepositories().map((repository) => repository.id),
         repositories: this.snapshot.repositories
-          .filter((item) => item.provider === "github" && item.githubInstallationId === repository.githubInstallationId)
+          .filter((item) => item.provider === "github")
           .map((item) => ({ id: item.id, selected: item.selected ?? false }))
       };
       this.snapshot.repositories.forEach((item) => {
-        if (item.provider === "github" && item.githubInstallationId === repository.githubInstallationId) {
-          item.selected = item.id === repository.id;
+        if (item.provider === "github") {
+          item.selected = selectedIds.includes(item.id);
           item.updatedAt = now;
         }
       });
-      repository.selected = true;
-      repository.updatedAt = now;
-      installation.selectedRepositoryId = repository.id;
-      installation.updatedAt = now;
+      for (const installation of installations.values()) {
+        const selectedForInstallation = repositories.find((repository) =>
+          this.githubInstallationForRepository(repository)?.id === installation.id
+        );
+        if (selectedForInstallation) installation.selectedRepositoryId = selectedForInstallation.id;
+        installation.updatedAt = now;
+      }
       this.addAuditEvent({
         actor: options.actor ?? "github-app",
         action: "github_app.repository_selected",
         targetType: "repository",
-        targetId: repository.id,
-        message: `GitHub repository selected for PatchPilot PR creation: ${repository.fullName}.`,
+        targetId: primaryRepository.id,
+        message: repositories.length === 1
+          ? `GitHub repository selected for PatchPilot PR creation: ${primaryRepository.fullName}.`
+          : `GitHub repositories selected for PatchPilot PR creation: ${repositories.map((repository) => repository.fullName).join(", ")}.`,
         beforeJson,
         afterJson: {
-          installation: auditGitHubInstallation(installation),
-          repository: auditRepository(repository),
+          installation: auditGitHubInstallation(primaryInstallation),
+          repository: auditRepository(primaryRepository),
+          repositories: repositories.map((repository) => auditRepository(repository)),
+          selectedRepositoryIds: repositories.map((repository) => repository.id),
           permissionReady: true
         },
         metadataJson: {
           provider: "github",
-          installationId: installation.installationId,
-          repositoryId: repository.githubRepositoryId ?? repository.id,
-          fullName: repository.fullName
+          installationId: primaryInstallation.installationId,
+          repositoryId: primaryRepository.githubRepositoryId ?? primaryRepository.id,
+          repositoryIds: repositories.map((repository) => repository.githubRepositoryId ?? repository.id),
+          fullName: primaryRepository.fullName,
+          repositoryCount: repositories.length
         }
       });
       await this.save();
       return {
-        installation,
-        repository,
+        installation: primaryInstallation,
+        repository: primaryRepository,
+        repositories,
+        selectedRepositoryIds: repositories.map((repository) => repository.id),
         permissionReady: true
       };
     });
@@ -1285,6 +1321,10 @@ export class PatchPilotStore {
       }
       if (!["ready", "claimed"].includes(workItem.status)) {
         throw new DomainError("INVALID_STATE", "Work item is not ready to start");
+      }
+      const missingDependencyIds = this.unsatisfiedDependencyIds(workItem);
+      if (missingDependencyIds.length > 0) {
+        throw new DomainError("INVALID_STATE", `Work item dependencies are not done: ${missingDependencyIds.join(", ")}`);
       }
       const prd = this.findPrd(workItem.prdId);
       const runner = await this.resolveRunner(runnerOverride);
@@ -2570,11 +2610,19 @@ export class PatchPilotStore {
   }
 
   private canStartOrReuseRun(workItemId: string, status: PatchPilotSnapshot["workItems"][number]["status"]) {
-    if (["ready", "claimed"].includes(status)) return true;
+    const workItem = this.snapshot.workItems.find((item) => item.id === workItemId);
+    if (["ready", "claimed"].includes(status)) return Boolean(workItem && this.unsatisfiedDependencyIds(workItem).length === 0);
     const existingRun = this.snapshot.agentRuns.find(
       (item) => item.workItemId === workItemId && !["failed", "cancelled"].includes(item.status)
     );
     return Boolean(existingRun && ["running", "review", "done"].includes(status));
+  }
+
+  private unsatisfiedDependencyIds(workItem: WorkItem) {
+    return (workItem.dependsOn ?? []).filter((dependencyId) => {
+      const dependency = this.snapshot.workItems.find((candidate) => candidate.id === dependencyId);
+      return dependency?.status !== "done";
+    });
   }
 
   private shouldStartReworkRun(workItem: WorkItem, run: AgentRun) {
@@ -2690,6 +2738,8 @@ export class PatchPilotStore {
       requirementId: run.requirementId,
       prdId: run.prdId,
       workItemId: workItem.id,
+      ...(workItem.repositoryId ? { repositoryId: workItem.repositoryId } : {}),
+      ...(workItem.repositoryFullName ? { repositoryFullName: workItem.repositoryFullName } : {}),
       runner: run.runner,
       status: "active",
       isolation: run.runner === "codex" ? "git_worktree" : "simulated",
@@ -2724,6 +2774,8 @@ export class PatchPilotStore {
         runId: run.id,
         prdId: run.prdId,
         workItemId: workItem.id,
+        ...(workItem.repositoryId ? { repositoryId: workItem.repositoryId } : {}),
+        ...(workItem.repositoryFullName ? { repositoryFullName: workItem.repositoryFullName } : {}),
         startedAt: test.startedAt || new Date(new Date(endedAt).getTime() - test.durationMs).toISOString(),
         endedAt: test.endedAt || endedAt,
         runner: test.runner || (run.runner === "codex" ? "patchpilot-test-runner" : "simulated-test-runner"),
@@ -2788,6 +2840,7 @@ export class PatchPilotStore {
             status: test.status,
             command: test.command,
             durationMs: test.durationMs,
+            repositoryId: test.repositoryId ?? null,
             artifactIds: test.artifactIds || []
           }
         }
@@ -3029,12 +3082,12 @@ export class PatchPilotStore {
         continue;
       }
 
-      const baseline = this.findLatestApprovedContractBaseline(artifact, prd.id);
+      const baseline = this.findLatestApprovedContractBaseline(artifact, contract, prd.id);
       const contentChanged = baseline?.contentHash !== artifact.contentHash;
       const revision = baseline ? baseline.revision + (contentChanged ? 1 : 0) : 1;
       const proposedRevisionId = baseline && !contentChanged
         ? baseline.revisionId
-        : `cr_${artifact.artifactId}_r${revision}_${shortHash(artifact.contentHash)}`;
+        : `cr_${contract.repositoryId ? `${safeRepositorySegment(contract.repositoryId)}_` : ""}${artifact.artifactId}_r${revision}_${shortHash(artifact.contentHash)}`;
       const beforeJson = contract.registry
         ? { contract: auditInterfaceContractState(contract), registry: auditContractRegistryState(contract.registry) }
         : null;
@@ -3129,12 +3182,14 @@ export class PatchPilotStore {
 
   private findLatestApprovedContractBaseline(
     artifact: ContractRegistryArtifact,
+    proposedContract: InterfaceContract,
     currentPrdId: string
   ): ContractRegistryMetadata | undefined {
     return this.snapshot.interfaceContracts
       .filter((contract) =>
         contract.prdId !== currentPrdId &&
         contract.status === "approved" &&
+        (contract.repositoryId ?? null) === (proposedContract.repositoryId ?? null) &&
         contract.registry?.artifactId === artifact.artifactId &&
         contract.registry.providerRole === artifact.providerRole
       )
@@ -3173,7 +3228,7 @@ export class PatchPilotStore {
     now: string
   ) {
     if (!diff) return undefined;
-    const workItem = this.findProviderWorkItem(workItems, contract.providerRole);
+    const workItem = this.findProviderWorkItem(workItems, contract.providerRole, contract.repositoryId);
     const artifactStore = this.getArtifactStore();
     const record = await artifactStore.putArtifact({
       id: `artifact_contract_diff_${shortHash(`${contract.id}:${diff.id}`)}`,
@@ -3211,7 +3266,7 @@ export class PatchPilotStore {
   ): TestCase[] {
     const contractTestCases: TestCase[] = [];
     for (const requirement of buildContractTestRequirements(artifact)) {
-      const workItem = this.findContractTestWorkItem(workItems, requirement, contract.providerRole);
+      const workItem = this.findContractTestWorkItem(workItems, requirement, contract.providerRole, contract.repositoryId);
       if (!workItem) {
         throw new DomainError("INVALID_STATE", `No work item can own contract test requirement ${requirement.id}`);
       }
@@ -3223,6 +3278,8 @@ export class PatchPilotStore {
         requirementId: prd.requirementId,
         prdId: prd.id,
         workItemId: workItem.id,
+        ...(contract.repositoryId ? { repositoryId: contract.repositoryId } : {}),
+        ...(contract.repositoryFullName ? { repositoryFullName: contract.repositoryFullName } : {}),
         title: requirement.title,
         kind: "contract",
         status: existing?.status ?? "ready",
@@ -3249,21 +3306,23 @@ export class PatchPilotStore {
   private findContractTestWorkItem(
     workItems: WorkItem[],
     requirement: ContractTestRequirement,
-    providerRole: WorkItemRole
+    providerRole: WorkItemRole,
+    repositoryId: string | undefined
   ) {
+    const scopedWorkItems = this.workItemsForRepository(workItems, repositoryId);
     if (requirement.requirementKind === "registry_diff" || requirement.requirementKind === "provider_validation") {
-      return this.findProviderWorkItem(workItems, providerRole);
+      return this.findProviderWorkItem(scopedWorkItems, providerRole, repositoryId);
     }
     if (requirement.participantLabel === "worker consumer") {
-      return workItems.find((workItem) => workItem.role === "ops") ??
-        this.findProviderWorkItem(workItems, providerRole);
+      return scopedWorkItems.find((workItem) => workItem.role === "ops") ??
+        this.findProviderWorkItem(scopedWorkItems, providerRole, repositoryId);
     }
     if (requirement.participantRole === "reviewer") {
-      return workItems.find((workItem) => workItem.role === "test") ??
-        this.findProviderWorkItem(workItems, providerRole);
+      return scopedWorkItems.find((workItem) => workItem.role === "test") ??
+        this.findProviderWorkItem(scopedWorkItems, providerRole, repositoryId);
     }
-    return workItems.find((workItem) => workItem.role === requirement.participantRole) ??
-      this.findProviderWorkItem(workItems, providerRole);
+    return scopedWorkItems.find((workItem) => workItem.role === requirement.participantRole) ??
+      this.findProviderWorkItem(scopedWorkItems, providerRole, repositoryId);
   }
 
   private createContractRequirementTestRun(
@@ -3284,6 +3343,8 @@ export class PatchPilotStore {
       testCaseId: testCase?.id,
       prdId: prd.id,
       workItemId: testCase?.workItemId,
+      ...(contract.repositoryId ? { repositoryId: contract.repositoryId } : {}),
+      ...(contract.repositoryFullName ? { repositoryFullName: contract.repositoryFullName } : {}),
       status: blocked ? "blocked" : "passed",
       command: requirement.command,
       summary: blocked
@@ -3508,10 +3569,17 @@ export class PatchPilotStore {
     });
   }
 
-  private findProviderWorkItem(workItems: WorkItem[], providerRole: WorkItemRole) {
-    return workItems.find((workItem) => workItem.role === providerRole) ??
-      workItems.find((workItem) => workItem.role === "backend") ??
-      workItems[0];
+  private findProviderWorkItem(workItems: WorkItem[], providerRole: WorkItemRole, repositoryId?: string) {
+    const scopedWorkItems = this.workItemsForRepository(workItems, repositoryId);
+    return scopedWorkItems.find((workItem) => workItem.role === providerRole) ??
+      scopedWorkItems.find((workItem) => workItem.role === "backend") ??
+      scopedWorkItems[0];
+  }
+
+  private workItemsForRepository(workItems: WorkItem[], repositoryId?: string) {
+    if (!repositoryId) return workItems;
+    const scopedWorkItems = workItems.filter((workItem) => workItem.repositoryId === repositoryId);
+    return scopedWorkItems.length > 0 ? scopedWorkItems : workItems;
   }
 
   private async recordCompletedRunEvidence(
@@ -3963,6 +4031,8 @@ export class PatchPilotStore {
       prdId: run.prdId,
       workItemId: workItem.id,
       runId: run.id,
+      ...(workItem.repositoryId ? { repositoryId: workItem.repositoryId } : {}),
+      ...(workItem.repositoryFullName ? { repositoryFullName: workItem.repositoryFullName } : {}),
       branchName,
       baseBranch,
       ...(baseCommit ? { baseCommit } : {}),
@@ -3978,7 +4048,7 @@ export class PatchPilotStore {
       createdAt: existing?.createdAt || now,
       updatedAt: now
     };
-    const adapter = this.resolvePullRequestAdapter();
+    const adapter = this.resolvePullRequestAdapter(workItem);
     const pullRequest = await adapter.upsertPullRequest({
       draft,
       ...(existing ? { existing } : {}),
@@ -4002,7 +4072,8 @@ export class PatchPilotStore {
     now: string
   ) {
     if (pullRequest.provider !== "github") return undefined;
-    return this.resolvePullRequestAdapter().writeReviewerComment({
+    const workItem = this.snapshot.workItems.find((item) => item.id === pullRequest.workItemId);
+    return this.resolvePullRequestAdapter(workItem).writeReviewerComment({
       pullRequest,
       body: [
         "## PatchPilot Reviewer Agent",
@@ -4022,16 +4093,39 @@ export class PatchPilotStore {
     });
   }
 
-  private resolvePullRequestAdapter() {
+  private resolvePullRequestAdapter(workItem?: WorkItem) {
     return this.pullRequestAdapter ?? createConfiguredPullRequestAdapter(
       readPatchPilotConfig(),
       process.env,
-      this.selectedGitHubRepository()
+      this.repositoryForWorkItem(workItem) ?? this.selectedGitHubRepository()
     );
   }
 
+  private repositoryTargetsForPrd(): WorkItemRepositoryTarget[] {
+    const selected = this.snapshot.repositories.filter((repository) => repository.selected);
+    const repositories = selected.length > 0
+      ? selected
+      : this.snapshot.repositories.length === 1
+        ? this.snapshot.repositories
+        : [];
+    return repositories.map((repository) => ({
+      id: repository.id,
+      fullName: repository.fullName,
+      provider: repository.provider
+    }));
+  }
+
+  private repositoryForWorkItem(workItem: WorkItem | undefined) {
+    if (!workItem?.repositoryId) return undefined;
+    return this.snapshot.repositories.find((repository) => repository.id === workItem.repositoryId);
+  }
+
+  private selectedGitHubRepositories() {
+    return this.snapshot.repositories.filter((repository) => repository.provider === "github" && repository.selected);
+  }
+
   private selectedGitHubRepository() {
-    return this.snapshot.repositories.find((repository) => repository.provider === "github" && repository.selected);
+    return this.selectedGitHubRepositories()[0];
   }
 
   private githubInstallationIdForRepositoryListing() {
@@ -4297,6 +4391,14 @@ export class PatchPilotStore {
       `WorkItem: ${workItem.id}`,
       `Role: ${workItem.role}`,
       `Scope: ${workItem.scope}`,
+      ...(workItem.repositoryId
+        ? [
+            "",
+            "## Repository",
+            `Repository: ${workItem.repositoryFullName ?? workItem.repositoryId}`,
+            `Repository ID: ${workItem.repositoryId}`
+          ]
+        : []),
       "",
       "## Git",
       `Branch: ${git.branchName}`,
@@ -4401,6 +4503,8 @@ export class PatchPilotStore {
       runId: run.id,
       prdId: run.prdId,
       workItemId: workItem.id,
+      ...(workItem.repositoryId ? { repositoryId: workItem.repositoryId } : {}),
+      ...(workItem.repositoryFullName ? { repositoryFullName: workItem.repositoryFullName } : {}),
       status: "failed",
       command: "npm test --workspaces --if-present",
       summary: "模拟测试失败：断言发现交付结果不满足验收标准",
@@ -4425,6 +4529,8 @@ export class PatchPilotStore {
     if (workItem.sourceBugId && workItem.role === "test") {
       return {
         id: `test_${randomUUID()}`,
+        ...(workItem.repositoryId ? { repositoryId: workItem.repositoryId } : {}),
+        ...(workItem.repositoryFullName ? { repositoryFullName: workItem.repositoryFullName } : {}),
         status: "passed",
         command: "pnpm test -- --bug-repro",
         summary: "测试 agent 已根据复现步骤确认问题，并整理回归测试建议",
@@ -4435,6 +4541,8 @@ export class PatchPilotStore {
     if (workItem.sourceBugId) {
       return {
         id: `test_${randomUUID()}`,
+        ...(workItem.repositoryId ? { repositoryId: workItem.repositoryId } : {}),
+        ...(workItem.repositoryFullName ? { repositoryFullName: workItem.repositoryFullName } : {}),
         status: "passed",
         command: "pnpm test -- --bug-regression",
         summary: "开发修复后的回归检查通过，bug 不再复现",
@@ -4444,6 +4552,8 @@ export class PatchPilotStore {
 
     return {
       id: `test_${randomUUID()}`,
+      ...(workItem.repositoryId ? { repositoryId: workItem.repositoryId } : {}),
+      ...(workItem.repositoryFullName ? { repositoryFullName: workItem.repositoryFullName } : {}),
       status: "passed",
       command: "npm test --workspaces --if-present",
       summary: "领域规则和 UI smoke 检查通过",

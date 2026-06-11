@@ -64,6 +64,36 @@ describe("contract artifacts", () => {
     expect(contracts[1]?.specMarkdown).toContain("Terminal statuses");
   });
 
+  it("scopes interface contracts per repository when a PRD targets multiple repos", () => {
+    const repositories = [
+      { id: "repo_github_1_api", fullName: "patchpilot/api" },
+      { id: "repo_github_2_web", fullName: "patchpilot/web" }
+    ];
+    const contracts = createInterfaceContracts(prd, "approved", "2026-06-10T00:00:00.000Z", repositories);
+
+    expect(contracts).toHaveLength(6);
+    expect(contracts.map((contract) => contract.repositoryId)).toEqual([
+      "repo_github_1_api",
+      "repo_github_1_api",
+      "repo_github_1_api",
+      "repo_github_2_web",
+      "repo_github_2_web",
+      "repo_github_2_web"
+    ]);
+    expect(contracts.map((contract) => contract.id)).toEqual([
+      "ic_req_contract_repo_github_1_api_control-api",
+      "ic_req_contract_repo_github_1_api_run-events",
+      "ic_req_contract_repo_github_1_api_delivery-state",
+      "ic_req_contract_repo_github_2_web_control-api",
+      "ic_req_contract_repo_github_2_web_run-events",
+      "ic_req_contract_repo_github_2_web_delivery-state"
+    ]);
+    expect(contracts.every((contract) =>
+      contract.registry?.revisionId.includes(`${contract.repositoryId}_`) &&
+      contract.registry.approvedRevisionId === contract.registry.revisionId
+    )).toBe(true);
+  });
+
   it("renders markdown directly from each artifact", () => {
     expect(renderContractMarkdown(httpApiContract)).toContain("GET /api/snapshot");
     expect(renderContractMarkdown(httpApiContract)).toContain("GET /api/prds/:id/audit-export");

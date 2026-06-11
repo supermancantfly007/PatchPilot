@@ -199,7 +199,15 @@ export const externalIssueStatusUpdateSchema = z.object({
 });
 
 export const selectGitHubRepositorySchema = z.object({
-  repositoryId: z.string().trim().min(1)
+  repositoryId: z.string().trim().min(1).optional(),
+  repositoryIds: z.array(z.string().trim().min(1)).min(1).optional()
+}).superRefine((input, ctx) => {
+  if (input.repositoryId || input.repositoryIds?.length) return;
+  ctx.addIssue({
+    code: "custom",
+    message: "repositoryId or repositoryIds is required",
+    path: ["repositoryId"]
+  });
 });
 
 export const githubWebhookSchema = z.record(z.string(), z.unknown()).default({});
@@ -796,40 +804,65 @@ export function diffContractRegistryArtifacts(input: {
 export function createInterfaceContracts(
   prd: Prd,
   status: InterfaceContractStatus = "approved",
-  now = new Date().toISOString()
+  now = new Date().toISOString(),
+  repositories: Array<{ id: string; fullName: string }> = []
 ): InterfaceContract[] {
-  return buildContractRegistryArtifacts().map((artifact) => ({
-      id: `ic_${prd.requirementId}_${artifact.artifactId}`,
-      prdId: prd.id,
-      name: artifact.name,
-      kind: artifact.kind,
-      status,
-      version: artifact.version,
-      summary: artifact.summary,
-      providerRole: artifact.providerRole,
-      consumerRoles: artifact.consumerRoles,
-      specMarkdown: artifact.specMarkdown,
-      testSuggestions: artifact.testSuggestions,
-      registry: {
-        artifactId: artifact.artifactId,
-        generatorVersion: artifact.generatorVersion,
-        revisionId: `cr_${prd.requirementId}_${artifact.artifactId}_r${artifact.version}`,
-        revision: artifact.version,
-        contentHash: artifact.contentHash,
-        sourceRef: artifact.sourceRef,
+  const uniqueRepositories = uniqueContractRepositories(repositories);
+  const repositoryTargets = uniqueRepositories.length > 1 ? uniqueRepositories : uniqueRepositories.slice(0, 1);
+  return (repositoryTargets.length > 0 ? repositoryTargets : [undefined]).flatMap((repository) =>
+    buildContractRegistryArtifacts().map((artifact) => {
+      const repositorySlug = repository && repositoryTargets.length > 1 ? `${slugForContractId(repository.id)}_` : "";
+      const revisionScope = repository && repositoryTargets.length > 1 ? `${repositorySlug}` : "";
+      return {
+        id: `ic_${prd.requirementId}_${repositorySlug}${artifact.artifactId}`,
+        prdId: prd.id,
+        ...(repository ? { repositoryId: repository.id, repositoryFullName: repository.fullName } : {}),
+        name: artifact.name,
+        kind: artifact.kind,
+        status,
+        version: artifact.version,
+        summary: artifact.summary,
         providerRole: artifact.providerRole,
         consumerRoles: artifact.consumerRoles,
-        status,
-        normalizedContent: artifact.normalizedContent,
-        ...(status === "approved" ? {
-          approvedRevisionId: `cr_${prd.requirementId}_${artifact.artifactId}_r${artifact.version}`,
-          approvedAt: now
-        } : {}),
-        testRunIds: []
-      },
-      createdAt: now,
-      updatedAt: now
-    }));
+        specMarkdown: artifact.specMarkdown,
+        testSuggestions: artifact.testSuggestions,
+        registry: {
+          artifactId: artifact.artifactId,
+          generatorVersion: artifact.generatorVersion,
+          revisionId: `cr_${prd.requirementId}_${revisionScope}${artifact.artifactId}_r${artifact.version}`,
+          revision: artifact.version,
+          contentHash: artifact.contentHash,
+          sourceRef: artifact.sourceRef,
+          providerRole: artifact.providerRole,
+          consumerRoles: artifact.consumerRoles,
+          status,
+          normalizedContent: artifact.normalizedContent,
+          ...(status === "approved" ? {
+            approvedRevisionId: `cr_${prd.requirementId}_${revisionScope}${artifact.artifactId}_r${artifact.version}`,
+            approvedAt: now
+          } : {}),
+          testRunIds: []
+        },
+        createdAt: now,
+        updatedAt: now
+      };
+    })
+  );
+}
+
+function uniqueContractRepositories(repositories: Array<{ id: string; fullName: string }>) {
+  const seen = new Set<string>();
+  const unique: Array<{ id: string; fullName: string }> = [];
+  for (const repository of repositories) {
+    if (!repository.id || !repository.fullName || seen.has(repository.id)) continue;
+    seen.add(repository.id);
+    unique.push(repository);
+  }
+  return unique;
+}
+
+function slugForContractId(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/gu, "_").replace(/^_+|_+$/gu, "") || "repo";
 }
 
 export function renderContractMarkdown(artifact: ContractArtifact): string {
@@ -2174,6 +2207,9 @@ export const openApiSchemas = {
   WorkItem: looseObjectSchema({
     id,
     prdId: id,
+    repositoryId: id,
+    repositoryFullName: { type: "string" },
+    repositoryProvider: repositoryProvider,
     title: { type: "string" },
     status: workItemStatus,
     role: agentRole,
@@ -2202,6 +2238,8 @@ export const openApiSchemas = {
   InterfaceContract: objectSchema({
     id,
     prdId: id,
+    repositoryId: id,
+    repositoryFullName: { type: "string" },
     name: { type: "string" },
     kind: enumSchema(["http", "event", "schema"]),
     status: enumSchema(["draft", "approved", "breaking_change_pending", "deprecated"]),
@@ -2214,7 +2252,22 @@ export const openApiSchemas = {
     registry: schemaRef("ContractRegistryMetadata"),
     createdAt: isoDate,
     updatedAt: isoDate
-  }),
+  }, [
+    "id",
+    "prdId",
+    "name",
+    "kind",
+    "status",
+    "version",
+    "summary",
+    "providerRole",
+    "consumerRoles",
+    "specMarkdown",
+    "testSuggestions",
+    "registry",
+    "createdAt",
+    "updatedAt"
+  ]),
   ContractDiffChange: objectSchema({
     severity: contractDiffSeverity,
     path: { type: "string" },
@@ -2447,18 +2500,22 @@ export const openApiSchemas = {
     requirementId: id,
     prdId: id,
     workItemId: id,
+    repositoryId: id,
+    repositoryFullName: { type: "string" },
     runner: runnerKind,
     status: enumSchema(["preparing", "ready", "active", "archived", "failed", "destroyed"]),
     isolation: enumSchema(["simulated", "git_worktree"]),
     path: { type: "string" },
     createdAt: isoDate,
     updatedAt: isoDate
-  }),
+  }, ["id", "runId", "requirementId", "prdId", "workItemId", "runner", "status", "isolation", "path", "createdAt", "updatedAt"]),
   TestCase: looseObjectSchema({
     id,
     requirementId: id,
     prdId: id,
     workItemId: id,
+    repositoryId: id,
+    repositoryFullName: { type: "string" },
     title: { type: "string" },
     kind: enumSchema(["acceptance", "regression", "contract", "smoke"]),
     status: enumSchema(["draft", "ready", "passed", "failed", "blocked"]),
@@ -2476,6 +2533,8 @@ export const openApiSchemas = {
     runId: id,
     prdId: id,
     workItemId: id,
+    repositoryId: id,
+    repositoryFullName: { type: "string" },
     status: enumSchema(["queued", "running", "passed", "failed", "blocked", "skipped"]),
     command: { type: "string" },
     summary: { type: "string" },
@@ -2603,11 +2662,14 @@ export const openApiSchemas = {
     installation: schemaRef("GitHubAppInstallationRecord"),
     repositories: arrayOf(schemaRef("RepositoryRecord")),
     selectedRepositoryId: id,
+    selectedRepositoryIds: arrayOf(id),
     permissionReady: { type: "boolean" }
   }, ["repositories", "permissionReady"]),
   GitHubAppRepositorySelectionResponse: objectSchema({
     installation: schemaRef("GitHubAppInstallationRecord"),
     repository: schemaRef("RepositoryRecord"),
+    repositories: arrayOf(schemaRef("RepositoryRecord")),
+    selectedRepositoryIds: arrayOf(id),
     permissionReady: { type: "boolean" }
   }, ["repository", "permissionReady"]),
   GitHubWebhookResponse: objectSchema({
@@ -2627,6 +2689,8 @@ export const openApiSchemas = {
     prdId: id,
     workItemId: id,
     runId: id,
+    repositoryId: id,
+    repositoryFullName: { type: "string" },
     branchName: { type: "string" },
     baseBranch: { type: "string" },
     baseCommit: { type: "string" },

@@ -43,6 +43,13 @@
       "when": 1781186905303,
       "tag": "0005_high_shocker",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1781190210566,
+      "tag": "0006_adorable_red_wolf",
+      "breakpoints": true
     }
   ]
 }

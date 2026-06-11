@@ -1965,6 +1965,20 @@
             "type": "string",
             "minLength": 1
           },
+          "repositoryId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "repositoryFullName": {
+            "type": "string"
+          },
+          "repositoryProvider": {
+            "type": "string",
+            "enum": [
+              "git",
+              "github"
+            ]
+          },
           "title": {
             "type": "string"
           },
@@ -2115,6 +2129,13 @@
           "prdId": {
             "type": "string",
             "minLength": 1
+          },
+          "repositoryId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "repositoryFullName": {
+            "type": "string"
           },
           "name": {
             "type": "string"
@@ -3232,6 +3253,13 @@
             "type": "string",
             "minLength": 1
           },
+          "repositoryId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "repositoryFullName": {
+            "type": "string"
+          },
           "runner": {
             "type": "string",
             "enum": [
@@ -3302,6 +3330,13 @@
           "workItemId": {
             "type": "string",
             "minLength": 1
+          },
+          "repositoryId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "repositoryFullName": {
+            "type": "string"
           },
           "title": {
             "type": "string"
@@ -3391,6 +3426,13 @@
           "workItemId": {
             "type": "string",
             "minLength": 1
+          },
+          "repositoryId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "repositoryFullName": {
+            "type": "string"
           },
           "status": {
             "type": "string",
@@ -3913,6 +3955,13 @@
             "type": "string",
             "minLength": 1
           },
+          "selectedRepositoryIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
           "permissionReady": {
             "type": "boolean"
           }
@@ -3931,6 +3980,19 @@
           },
           "repository": {
             "$ref": "#/components/schemas/RepositoryRecord"
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepositoryRecord"
+            }
+          },
+          "selectedRepositoryIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
           },
           "permissionReady": {
             "type": "boolean"
@@ -4024,6 +4086,13 @@
           "runId": {
             "type": "string",
             "minLength": 1
+          },
+          "repositoryId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "repositoryFullName": {
+            "type": "string"
           },
           "branchName": {
             "type": "string"

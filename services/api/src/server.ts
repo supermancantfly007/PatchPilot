@@ -204,7 +204,8 @@ export async function buildServer(options: { store?: PatchPilotStore; telemetry?
   app.post(apiRoute("selectGitHubAppRepository"), async (request) => {
     assertCanManageRepositoryIntegration(request.auth);
     const input = selectGitHubRepositorySchema.parse(request.body);
-    return store.selectGitHubAppRepository(input.repositoryId, request.auth ? { actor: request.auth.userId } : {});
+    const repositoryIds = input.repositoryIds ?? (input.repositoryId ? [input.repositoryId] : []);
+    return store.selectGitHubAppRepositories(repositoryIds, request.auth ? { actor: request.auth.userId } : {});
   });
 
   app.post(apiRoute("ingestGitHubAppWebhook"), async (request) => {

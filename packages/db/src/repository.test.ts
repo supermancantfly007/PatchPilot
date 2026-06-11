@@ -23,6 +23,8 @@ describe("PatchPilot Postgres repository", () => {
     expect(loaded.prds).toHaveLength(1);
     expect(loaded.workItems).toHaveLength(1);
     expect(loaded.workItems[0]).toMatchObject({
+      repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+      repositoryFullName: "patchpilot-fixtures/delivery",
       externalIssueLinks: [
         {
           provider: "linear",
@@ -39,7 +41,21 @@ describe("PatchPilot Postgres repository", () => {
         }
       ]
     });
+    expect(loaded.interfaceContracts).toEqual([
+      expect.objectContaining({
+        id: "ic_1",
+        repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+        repositoryFullName: "patchpilot-fixtures/delivery"
+      })
+    ]);
     expect(loaded.agentRuns.map((run) => run.id).sort()).toEqual(["run_1", "run_2"]);
+    expect(loaded.workspaceRuns).toEqual([
+      expect.objectContaining({
+        id: "workspace_1",
+        repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+        repositoryFullName: "patchpilot-fixtures/delivery"
+      })
+    ]);
     expect(loaded.githubInstallations).toEqual([
       {
         id: "github_installation_4242",
@@ -78,6 +94,18 @@ describe("PatchPilot Postgres repository", () => {
       }
     ]);
     expect(loaded.pullRequests.map((pullRequest) => pullRequest.workItemId)).toEqual(["wi_1", "wi_1"]);
+    expect(loaded.pullRequests.every((pullRequest) =>
+      pullRequest.repositoryId === "repo_github_4242_patchpilot_fixtures_delivery" &&
+      pullRequest.repositoryFullName === "patchpilot-fixtures/delivery"
+    )).toBe(true);
+    expect(loaded.testCases[0]).toMatchObject({
+      repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+      repositoryFullName: "patchpilot-fixtures/delivery"
+    });
+    expect(loaded.testRuns[0]).toMatchObject({
+      repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+      repositoryFullName: "patchpilot-fixtures/delivery"
+    });
     expect(loaded.reviewRecords.map((review) => review.linkedPullRequestId).sort()).toEqual(["pr_1", "pr_2"]);
     expect(loaded.acceptances).toEqual([
       {
@@ -160,6 +188,8 @@ function snapshotFixture(): PatchPilotSnapshot {
       {
         id: "wi_1",
         prdId: "prd_1",
+        repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+        repositoryFullName: "patchpilot-fixtures/delivery",
         title: "Repository layer",
         status: "review",
         role: "backend",
@@ -203,7 +233,25 @@ function snapshotFixture(): PatchPilotSnapshot {
         updatedAt: now
       }
     ],
-    interfaceContracts: [],
+    interfaceContracts: [
+      {
+        id: "ic_1",
+        prdId: "prd_1",
+        repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+        repositoryFullName: "patchpilot-fixtures/delivery",
+        name: "Control API",
+        kind: "http",
+        status: "approved",
+        version: 1,
+        summary: "HTTP contract",
+        providerRole: "backend",
+        consumerRoles: ["frontend", "test", "ops"],
+        specMarkdown: "# Control API",
+        testSuggestions: ["Run API contract tests"],
+        createdAt: now,
+        updatedAt: now
+      }
+    ],
     agentRuns: [
       {
         id: "run_2",
@@ -245,13 +293,32 @@ function snapshotFixture(): PatchPilotSnapshot {
         endedAt: "2026-06-10T00:01:00.000Z"
       }
     ],
-    workspaceRuns: [],
+    workspaceRuns: [
+      {
+        id: "workspace_1",
+        runId: "run_2",
+        requirementId: "req_1",
+        prdId: "prd_1",
+        workItemId: "wi_1",
+        repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+        repositoryFullName: "patchpilot-fixtures/delivery",
+        runner: "simulated",
+        status: "archived",
+        isolation: "git_worktree",
+        path: "/tmp/patchpilot/workspace_1",
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: now
+      }
+    ],
     testCases: [
       {
         id: "tc_1",
         requirementId: "req_1",
         prdId: "prd_1",
         workItemId: "wi_1",
+        repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+        repositoryFullName: "patchpilot-fixtures/delivery",
         title: "Repository API test",
         kind: "contract",
         status: "passed",
@@ -273,6 +340,8 @@ function snapshotFixture(): PatchPilotSnapshot {
         runId: "run_2",
         prdId: "prd_1",
         workItemId: "wi_1",
+        repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+        repositoryFullName: "patchpilot-fixtures/delivery",
         status: "passed",
         command: "pnpm --filter @patchpilot/api test",
         summary: "passed",
@@ -293,6 +362,8 @@ function snapshotFixture(): PatchPilotSnapshot {
         prdId: "prd_1",
         workItemId: "wi_1",
         runId: "run_2",
+        repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+        repositoryFullName: "patchpilot-fixtures/delivery",
         branchName: "patchpilot/repo-2",
         baseBranch: "main",
         url: "local://pull-requests/run_2",
@@ -311,6 +382,8 @@ function snapshotFixture(): PatchPilotSnapshot {
         prdId: "prd_1",
         workItemId: "wi_1",
         runId: "run_1",
+        repositoryId: "repo_github_4242_patchpilot_fixtures_delivery",
+        repositoryFullName: "patchpilot-fixtures/delivery",
         branchName: "patchpilot/repo-1",
         baseBranch: "main",
         url: "local://pull-requests/run_1",
