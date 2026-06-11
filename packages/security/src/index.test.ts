@@ -40,6 +40,35 @@ describe("secret redaction", () => {
     expect(scanSecrets(result.redacted)).toHaveLength(0);
   });
 
+  it("redacts common PII used in audit exports", () => {
+    const result = redactSecrets(
+      "Contact alice@example.com at +1 415-555-0134 for customer_ABC123456 evidence."
+    );
+
+    expect(result.redacted).toBe(
+      "Contact [REDACTED:email] at [REDACTED:phone] for [REDACTED:account-id] evidence."
+    );
+    expect(result.findings.map((finding) => finding.kind)).toEqual([
+      "email_address",
+      "phone_number",
+      "account_identifier"
+    ]);
+  });
+
+  it("does not corrupt Git SSH remotes while redacting normal emails", () => {
+    const scpRemote = "git@github.example.com:org/repo.git";
+    const sshRemote = "ssh://git@github.example.com/org/repo.git";
+    const result = redactSecrets(
+      `Contact alice@example.com after cloning ${scpRemote} or ${sshRemote}.`
+    );
+
+    expect(result.redacted).toContain("[REDACTED:email]");
+    expect(result.redacted).not.toContain("alice@example.com");
+    expect(result.redacted).toContain(scpRemote);
+    expect(result.redacted).toContain(sshRemote);
+    expect(result.findings.map((finding) => finding.kind)).toEqual(["email_address"]);
+  });
+
   it("redacts JSON values and record metadata without hiding secret identifiers", () => {
     const value = redactJsonValue({
       requestedSecretIds: ["github-ci-token"],

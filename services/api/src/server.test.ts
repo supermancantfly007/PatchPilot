@@ -637,6 +637,103 @@ describe("PatchPilot API", () => {
     await app.close();
   });
 
+  it("exports a redacted PRD audit package with linked evidence, retention, and WORM metadata", async () => {
+    const app = await buildServer({ store: new PatchPilotStore() });
+    const rawEmail = "alice.audit@example.com";
+    const rawPhone = "+1 415-555-0134";
+    const rawAccount = "customer_AUDIT123456";
+    const startedRun = await startSimulatedRun(
+      app,
+      `管理员需要导出 ${rawEmail} ${rawPhone} ${rawAccount} 的 PRD 审计证据。`
+    );
+    const completedRun = await pollRun(app, startedRun.id);
+    expect(completedRun.status).toBe("succeeded");
+
+    const exported = await app.inject({
+      method: "GET",
+      url: `/api/prds/${completedRun.prdId}/audit-export`,
+      headers: { "x-patchpilot-admin-actor": "admin_security" }
+    });
+    expect(exported.statusCode).toBe(200);
+    const auditPackage = exported.json();
+    const packageText = JSON.stringify(auditPackage);
+
+    expect(packageText).not.toContain(rawEmail);
+    expect(packageText).not.toContain(rawPhone);
+    expect(packageText).not.toContain(rawAccount);
+    expect(packageText).toContain("[REDACTED:email]");
+    expect(packageText).toContain("[REDACTED:phone]");
+    expect(packageText).toContain("[REDACTED:account-id]");
+    expect(auditPackage.manifest).toMatchObject({
+      formatVersion: "patchpilot.audit.prd.v1",
+      createdBy: {
+        actorType: "admin",
+        actorId: "admin_security",
+        adminIntent: true,
+        authEnforcement: "pending_td_222_rbac"
+      },
+      scope: {
+        type: "prd",
+        prdId: completedRun.prdId
+      },
+      redaction: {
+        redacted: true,
+        finalPass: true
+      },
+      retention: {
+        policyVersion: "td-308-retention-v1",
+        worm: {
+          enabled: false,
+          mode: "metadata_only"
+        }
+      }
+    });
+    expect(auditPackage.manifest.exportAuditEventId).toMatch(/^audit_/u);
+    expect(auditPackage.manifest.integrity.payloadSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(auditPackage.records.agentRuns.map((run: { id: string }) => run.id)).toContain(completedRun.id);
+    expect(auditPackage.records.workspaceRuns.some((workspace: { runId: string }) => workspace.runId === completedRun.id)).toBe(true);
+    expect(auditPackage.records.testRuns.some((testRun: { runId?: string }) => testRun.runId === completedRun.id)).toBe(true);
+    expect(auditPackage.records.pullRequests.some((pullRequest: { runId: string }) => pullRequest.runId === completedRun.id)).toBe(true);
+    expect(auditPackage.records.reviewRecords.some((review: { runId: string }) => review.runId === completedRun.id)).toBe(true);
+    expect(auditPackage.artifactManifest.length).toBeGreaterThanOrEqual(5);
+    expect(
+      auditPackage.artifactManifest.every((artifact: { checksumSha256: string; includedBytes: boolean; retentionTier: string }) =>
+        /^[a-f0-9]{64}$/u.test(artifact.checksumSha256) &&
+        artifact.includedBytes === false &&
+        artifact.retentionTier.startsWith("tier_")
+      )
+    ).toBe(true);
+
+    const auditEvents = auditPackage.auditEventsJsonl.trim().split("\n").map((line: string) => JSON.parse(line));
+    const auditActions = auditEvents.map((event: { action: string }) => event.action);
+    expect(auditActions).toEqual(
+      expect.arrayContaining([
+        "prd.approved",
+        "agent_run.succeeded",
+        "test_run.passed",
+        "pull_request.ready_for_review",
+        "review.approved",
+        "audit.exported"
+      ])
+    );
+    expect(auditPackage.verification).toMatchObject({
+      valid: true,
+      checkedEvents: auditEvents.length,
+      headHash: auditEvents.at(-1).hash
+    });
+    expect(auditPackage.verification.scopeEventIds).toContain(auditPackage.manifest.exportAuditEventId);
+    expect(verifyAuditChain([...auditEvents].reverse())).toMatchObject({
+      valid: true,
+      checkedEvents: auditEvents.length,
+      headHash: auditPackage.verification.headHash
+    });
+
+    const verification = await app.inject({ method: "GET", url: "/api/audit/verify" });
+    expect(verification.json()).toMatchObject({ valid: true, headHash: auditPackage.verification.headHash });
+
+    await app.close();
+  });
+
   it("migrates legacy audit events into a verifiable hash chain", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "patchpilot-audit-migration-"));
     const dataFilePath = join(dataDir, "patchpilot-store.json");

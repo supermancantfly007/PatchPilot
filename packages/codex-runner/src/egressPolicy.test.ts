@@ -38,6 +38,10 @@ describe("egress policy", () => {
       cwd: workspace,
       stdio: "ignore"
     });
+    spawnSync("git", ["remote", "add", "upstream", "ssh://git@ssh.example.org/org/repo.git"], {
+      cwd: workspace,
+      stdio: "ignore"
+    });
     spawnSync("git", ["remote", "add", "mirror", "https://mirror.example.net/org/repo.git"], {
       cwd: workspace,
       stdio: "ignore"
@@ -50,7 +54,8 @@ describe("egress policy", () => {
     }, workspace)).resolves.toEqual([
       "github.example.com",
       "mirror.example.net",
-      "registry.npmjs.org"
+      "registry.npmjs.org",
+      "ssh.example.org"
     ]);
   });
 

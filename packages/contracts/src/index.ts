@@ -195,6 +195,11 @@ export const httpApiContract = {
       path: "/api/audit/verify",
       response: "AuditChainVerification"
     },
+    exportPrdAuditPackage: {
+      method: "GET",
+      path: "/api/prds/:id/audit-export",
+      response: "AuditExportPackage"
+    },
     agents: {
       method: "GET",
       path: "/api/agents",
@@ -1592,6 +1597,162 @@ export const openApiSchemas = {
       ]
     },
     errors: arrayOf({ type: "string" })
+  }),
+  AuditExportPackage: objectSchema({
+    manifest: schemaRef("AuditExportManifest"),
+    verification: schemaRef("AuditExportVerification"),
+    records: schemaRef("AuditExportRecords"),
+    artifactManifest: arrayOf(schemaRef("AuditExportArtifactManifestEntry")),
+    auditEvents: arrayOf(schemaRef("AuditEvent")),
+    auditEventsJsonl: { type: "string" },
+    readme: { type: "string" }
+  }),
+  AuditExportManifest: looseObjectSchema({
+    formatVersion: enumSchema(["patchpilot.audit.prd.v1"]),
+    contractVersion: { type: "string" },
+    createdAt: isoDate,
+    createdBy: looseObjectSchema({
+      actorType: { type: "string" },
+      actorId: id,
+      adminIntent: { type: "boolean" },
+      authEnforcement: enumSchema(["pending_td_222_rbac"])
+    }, ["actorType", "actorId", "adminIntent", "authEnforcement"]),
+    scope: looseObjectSchema({
+      type: enumSchema(["prd"]),
+      prdId: id,
+      requirementId: id,
+      filters: {
+        type: "object",
+        additionalProperties: { type: "boolean" }
+      }
+    }, ["type", "prdId", "requirementId", "filters"]),
+    exportAuditEventId: id,
+    counts: {
+      type: "object",
+      additionalProperties: { type: "number" }
+    },
+    redaction: looseObjectSchema({
+      redacted: { type: "boolean" },
+      finalPass: { type: "boolean" },
+      policyVersion: { type: "string" },
+      piiMarkers: arrayOf({ type: "string" })
+    }, ["redacted", "finalPass", "policyVersion", "piiMarkers"]),
+    retention: schemaRef("AuditExportRetentionPolicy"),
+    integrity: looseObjectSchema({
+      payloadSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+      auditEventJsonlSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+      artifactManifestSha256: { type: "string", pattern: "^[a-f0-9]{64}$" }
+    }, ["payloadSha256", "auditEventJsonlSha256", "artifactManifestSha256"])
+  }, [
+    "formatVersion",
+    "contractVersion",
+    "createdAt",
+    "createdBy",
+    "scope",
+    "exportAuditEventId",
+    "counts",
+    "redaction",
+    "retention",
+    "integrity"
+  ]),
+  AuditExportVerification: objectSchema({
+    chainOrder: enumSchema(["oldest_to_newest"]),
+    ledgerScope: enumSchema(["project_ledger_full"]),
+    valid: { type: "boolean" },
+    checkedEvents: { type: "integer", minimum: 0 },
+    firstHash: {
+      anyOf: [
+        { type: "string", pattern: "^[a-f0-9]{64}$" },
+        { type: "null" }
+      ]
+    },
+    headHash: {
+      anyOf: [
+        { type: "string", pattern: "^[a-f0-9]{64}$" },
+        { type: "null" }
+      ]
+    },
+    errors: arrayOf({ type: "string" }),
+    scopeEventIds: arrayOf(id),
+    interleavedEventCount: { type: "integer", minimum: 0 }
+  }),
+  AuditExportRetentionPolicy: objectSchema({
+    policyVersion: { type: "string" },
+    legalHold: { type: "boolean" },
+    worm: looseObjectSchema({
+      enabled: { type: "boolean" },
+      mode: enumSchema(["metadata_only"]),
+      semantics: { type: "string" },
+      futureStorage: enumSchema(["s3_object_lock_or_equivalent"])
+    }, ["enabled", "mode", "semantics", "futureStorage"]),
+    tiers: arrayOf(looseObjectSchema({
+      tier: enumSchema([
+        "tier_0_audit_ledger",
+        "tier_1_product_evidence",
+        "tier_2_decision_artifacts",
+        "tier_3_raw_run_artifacts"
+      ]),
+      defaultRetention: { type: "string" },
+      appliesTo: arrayOf({ type: "string" })
+    }, ["tier", "defaultRetention", "appliesTo"]))
+  }),
+  AuditExportArtifactManifestEntry: looseObjectSchema({
+    artifactId: id,
+    kind: enumSchema(["log", "trace", "diff", "test_report", "screenshot", "preview_metadata", "intake_attachment"]),
+    checksumSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    sizeBytes: { type: "number" },
+    contentType: { type: "string" },
+    storage: enumSchema(["local_fs", "s3"]),
+    uri: { type: "string" },
+    retentionTier: enumSchema([
+      "tier_0_audit_ledger",
+      "tier_1_product_evidence",
+      "tier_2_decision_artifacts",
+      "tier_3_raw_run_artifacts"
+    ]),
+    redactionStatus: enumSchema(["redacted", "not_marked", "metadata_only"]),
+    includedBytes: { type: "boolean" },
+    tombstone: { type: "boolean" },
+    createdAt: isoDate,
+    requirementId: id,
+    prdId: id,
+    workItemId: id,
+    runId: id,
+    testRunId: id
+  }, [
+    "artifactId",
+    "kind",
+    "checksumSha256",
+    "sizeBytes",
+    "contentType",
+    "storage",
+    "uri",
+    "retentionTier",
+    "redactionStatus",
+    "includedBytes",
+    "tombstone",
+    "createdAt"
+  ]),
+  AuditExportRecords: objectSchema({
+    requirement: {
+      anyOf: [
+        schemaRef("Requirement"),
+        { type: "null" }
+      ]
+    },
+    prd: schemaRef("Prd"),
+    workItems: arrayOf(schemaRef("WorkItem")),
+    interfaceContracts: arrayOf(schemaRef("InterfaceContract")),
+    agentRuns: arrayOf(schemaRef("AgentRun")),
+    workspaceRuns: arrayOf(schemaRef("WorkspaceRun")),
+    testCases: arrayOf(schemaRef("TestCase")),
+    testRuns: arrayOf(schemaRef("TestRun")),
+    artifacts: arrayOf(schemaRef("ArtifactRecord")),
+    pullRequests: arrayOf(schemaRef("PullRequestRecord")),
+    reviewRecords: arrayOf(schemaRef("ReviewRecord")),
+    approvals: arrayOf(schemaRef("ApprovalRecord")),
+    bugs: arrayOf(schemaRef("BugReport")),
+    acceptances: arrayOf(schemaRef("AcceptanceDecision"))
   }),
   CreateRequirementRequest: objectSchema({
     rawInput: { type: "string", minLength: 3 },

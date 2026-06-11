@@ -47,6 +47,13 @@ export async function buildServer(options: { store?: PatchPilotStore; telemetry?
 
   app.get(apiRoute("verifyAudit"), async () => store.verifyAuditChain());
 
+  app.get(apiRoute("exportPrdAuditPackage"), async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const actorHeader = request.headers["x-patchpilot-admin-actor"];
+    const actorId = Array.isArray(actorHeader) ? actorHeader[0] : actorHeader;
+    return store.exportPrdAuditPackage(id, { actorId });
+  });
+
   app.get(apiRoute("agents"), async () => store.getAgents());
 
   app.post(apiRoute("createRequirement"), async (request, reply) => {

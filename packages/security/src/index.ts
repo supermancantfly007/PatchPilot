@@ -10,7 +10,10 @@ export type SecretFindingKind =
   | "secret_assignment"
   | "url_credential"
   | "sensitive_query"
-  | "api_token";
+  | "api_token"
+  | "email_address"
+  | "phone_number"
+  | "account_identifier";
 
 export interface SecretFinding {
   kind: SecretFindingKind;
@@ -35,7 +38,10 @@ const redactionMarkers: Record<SecretFindingKind, string> = {
   secret_assignment: "[REDACTED:secret]",
   url_credential: "[REDACTED:credential]",
   sensitive_query: "[REDACTED:secret]",
-  api_token: "[REDACTED:token]"
+  api_token: "[REDACTED:token]",
+  email_address: "[REDACTED:email]",
+  phone_number: "[REDACTED:phone]",
+  account_identifier: "[REDACTED:account-id]"
 };
 
 const secretKeyPattern =
@@ -53,8 +59,13 @@ const commonTokenPatterns: Array<{ kind: SecretFindingKind; pattern: RegExp }> =
   { kind: "api_token", pattern: /\bAKIA[0-9A-Z]{16}\b/gu },
   { kind: "api_token", pattern: /\b(?:pp|patchpilot)[_-]fixture[_-]secret[_-][A-Za-z0-9._-]+\b/giu },
   { kind: "api_token", pattern: /\bfixture[_-]secret[_-][A-Za-z0-9._-]+\b/giu },
-  { kind: "api_token", pattern: /\bsecret[_-]fixture[_-][A-Za-z0-9._-]+\b/giu }
+  { kind: "api_token", pattern: /\bsecret[_-]fixture[_-][A-Za-z0-9._-]+\b/giu },
+  { kind: "phone_number", pattern: /(?:\+?[1-9]\d{0,2}[-.\s]?)?(?:\(\d{3}\)|\d{3})[-.\s]\d{3}[-.\s]\d{4}\b/gu },
+  { kind: "phone_number", pattern: /\B\+[1-9]\d{7,14}\b/gu },
+  { kind: "account_identifier", pattern: /\b(?:acct|account|customer|cust)[_-][A-Za-z0-9][A-Za-z0-9._-]{5,}\b/giu }
 ];
+
+const emailAddressPattern = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu;
 
 export function scanSecrets(value: string, options: SecretRedactionOptions = {}): SecretFinding[] {
   return redactSecrets(value, options).findings;
@@ -138,6 +149,8 @@ export function redactSecrets(value: string, options: SecretRedactionOptions = {
     2
   );
 
+  redacted = replaceEmailAddresses(redacted, findings);
+
   for (const item of commonTokenPatterns) {
     redacted = replaceAll(redacted, item.pattern, item.kind, findings);
   }
@@ -215,6 +228,14 @@ function replaceAll(
   });
 }
 
+function replaceEmailAddresses(value: string, findings: SecretFinding[]) {
+  return value.replace(emailAddressPattern, (match: string, offset: number, source: string) => {
+    if (isAlreadyRedacted(match) || isGitSshRemoteUserHost(source, offset, match.length)) return match;
+    findings.push(finding("email_address", match));
+    return redactionMarkers.email_address;
+  });
+}
+
 function replaceGroups(
   value: string,
   pattern: RegExp,
@@ -247,6 +268,17 @@ function isLowSignalSecret(value: string) {
 
 function isAlreadyRedacted(value: string) {
   return value.includes("[REDACTED:");
+}
+
+function isGitSshRemoteUserHost(source: string, start: number, length: number) {
+  const before = source.slice(Math.max(0, start - "git+ssh://".length), start).toLowerCase();
+  const after = source.slice(start + length);
+
+  if ((before.endsWith("ssh://") || before.endsWith("git+ssh://")) && after.startsWith("/")) return true;
+  if (!after.startsWith(":")) return false;
+
+  const remotePath = after.slice(1).match(/^[^\s"'`<>]+/u)?.[0] ?? "";
+  return remotePath.includes("/");
 }
 
 function finding(kind: SecretFindingKind, value: string): SecretFinding {
