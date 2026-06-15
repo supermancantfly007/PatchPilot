@@ -27,6 +27,7 @@ import type {
   AgentRunEvent,
   AgentRunResult,
   AgentRunToolCall,
+  AgentRunnerKind,
   AgentRunnerAvailability,
   EgressPolicyEvidence,
   EgressPolicyRuntimeConfig,
@@ -91,6 +92,144 @@ export interface CodexRunner {
   isAvailable(): Promise<boolean>;
   isGitWorkspaceAvailable(cwd?: string): Promise<boolean>;
   run(context: CodexRunContext, emit: EmitCodexRunnerEvent, config: CodexRunnerConfig): Promise<AgentRunResult>;
+}
+
+export type DurableRunnerSurface =
+  | "codex-exec-json"
+  | "codex-sdk"
+  | "codex-mcp"
+  | "pi-json-cli"
+  | "pi-rpc"
+  | "pi-sdk"
+  | "fake";
+
+export type DurableRunnerStatus =
+  | "starting"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface DurableRunnerCapabilities {
+  resume: boolean;
+  cancel: boolean;
+  stateInspection: boolean;
+  artifactCollection: boolean;
+}
+
+export interface DurableRunnerProviderOptions {
+  provider?: string;
+  model?: string;
+  thinking?: string;
+  [key: string]: unknown;
+}
+
+export interface DurableRunnerStartInput {
+  runner: AgentRunnerKind;
+  surface: DurableRunnerSurface;
+  runId: string;
+  workspaceRunId: string;
+  workItemId: string;
+  workspacePath: string;
+  taskFilePath: string;
+  idempotencyKey: string;
+  prompt: string;
+  capabilities: DurableRunnerCapabilities;
+  capabilityManifestId?: string;
+  providerOptions?: DurableRunnerProviderOptions;
+  artifactIds?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface DurableRunnerHandle {
+  runner: AgentRunnerKind;
+  surface: DurableRunnerSurface;
+  runId: string;
+  workspaceRunId: string;
+  workItemId: string;
+  idempotencyKey: string;
+  providerRunId: string;
+  threadId?: string;
+  sessionId?: string;
+  turnId?: string;
+  processId?: number;
+  parentProviderRunId?: string;
+  status: DurableRunnerStatus;
+  startedAt: string;
+  endedAt?: string;
+  supportsResume: boolean;
+  supportsCancel: boolean;
+  supportsStateInspection: boolean;
+  artifactIds: string[];
+  resumeCount?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface DurableRunnerHandleInput {
+  handle: DurableRunnerHandle;
+}
+
+export interface DurableRunnerResumeInput extends DurableRunnerHandleInput {
+  idempotencyKey: string;
+  prompt: string;
+  capabilityManifestId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface DurableRunnerCancelInput extends DurableRunnerHandleInput {
+  reason?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface DurableRunnerCancelResult {
+  handle: DurableRunnerHandle;
+  acknowledged: boolean;
+  processTerminated: boolean;
+  workspaceRetained: boolean;
+  reason?: string;
+  artifactIds?: string[];
+}
+
+export interface DurableRunnerEvent extends CodexRunnerEvent {
+  at?: string;
+  providerEventId?: string;
+  status?: DurableRunnerStatus;
+  artifactIds?: string[];
+}
+
+export interface DurableRunnerState extends DurableRunnerHandleInput {
+  status: DurableRunnerStatus;
+  lastAssistantMessage?: string;
+  pendingAction?: string;
+  failureSummary?: string;
+  artifactIds: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface DurableRunnerArtifacts extends DurableRunnerHandleInput {
+  artifactIds: string[];
+  summaryArtifactId?: string;
+  transcriptArtifactId?: string;
+  rawProviderEventArtifactId?: string;
+  sessionExportArtifactId?: string;
+  debugArtifactIds?: string[];
+}
+
+export interface DurableRunnerFailureSummary {
+  failureType?: FailureType;
+  message: string;
+  retryable?: boolean;
+  artifactIds: string[];
+}
+
+export interface DurableAgentRunner {
+  start(input: DurableRunnerStartInput): Promise<DurableRunnerHandle>;
+  resume(input: DurableRunnerResumeInput): Promise<DurableRunnerHandle>;
+  cancel(input: DurableRunnerCancelInput): Promise<DurableRunnerCancelResult>;
+  streamEvents(input: DurableRunnerHandleInput): AsyncIterable<DurableRunnerEvent>;
+  inspectState(input: DurableRunnerHandleInput): Promise<DurableRunnerState>;
+  collectArtifacts(input: DurableRunnerHandleInput): Promise<DurableRunnerArtifacts>;
+  summarizeFailure(input: DurableRunnerHandleInput): Promise<DurableRunnerFailureSummary>;
 }
 
 export class CodexRunError extends Error {

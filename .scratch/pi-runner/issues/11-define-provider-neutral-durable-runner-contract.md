@@ -1,6 +1,6 @@
 # 定义 provider-neutral durable runner contract
 
-Status: ready-for-agent
+Status: done
 Type: AFK
 
 ## Parent
@@ -13,12 +13,17 @@ Type: AFK
 
 ## Acceptance criteria
 
-- [ ] Durable runner contract 覆盖 `start`、`resume`、`cancel`、`streamEvents`、`collectArtifacts`、`summarizeFailure` 和 idempotency key。
-- [ ] Provider handle metadata 能表达 runner surface、session/thread id、workspace/run ids、status、startedAt、resume support、cancel support 和 artifact refs。
-- [ ] Contract tests 使用 fake adapter 验证 start success、duplicate idempotency key、resume supported、resume unsupported fallback、cancel acknowledged、cancel best-effort、stream terminal event 和 artifact collection。
-- [ ] 现有 `LocalCodexRunner` / `LocalPiRunner` one-shot API 保持兼容；当前 API start-run 和 E2E 不需要迁移。
-- [ ] 新 contract 使用 `AgentRun`、`WorkspaceRun`、`TestRun`、`ArtifactRecord`、`AuditEvent` 词汇，不继续扩大 Codex-only 命名。
-- [ ] 文档或 ADR cross-reference 说明该 contract 是 Pi RPC 和 SDK work 的前置条件。
+- [x] Durable runner contract 覆盖 `start`、`resume`、`cancel`、`streamEvents`、`collectArtifacts`、`summarizeFailure` 和 idempotency key。
+- [x] Provider handle metadata 能表达 runner surface、session/thread id、workspace/run ids、status、startedAt、resume support、cancel support 和 artifact refs。
+- [x] Contract tests 使用 fake adapter 验证 start success、duplicate idempotency key、resume supported、resume unsupported fallback、cancel acknowledged、cancel best-effort、stream terminal event 和 artifact collection。
+- [x] 现有 `LocalCodexRunner` / `LocalPiRunner` one-shot API 保持兼容；当前 API start-run 和 E2E 不需要迁移。
+- [x] 新 contract 使用 `AgentRun`、`WorkspaceRun`、`TestRun`、`ArtifactRecord`、`AuditEvent` 词汇，不继续扩大 Codex-only 命名。
+- [x] 文档或 ADR cross-reference 说明该 contract 是 Pi RPC 和 SDK work 的前置条件。
+
+## Verification
+
+- `pnpm --filter @patchpilot/codex-runner test -- durableRunner.test.ts`
+- `pnpm --filter @patchpilot/codex-runner typecheck`
 
 ## Blocked by
 
