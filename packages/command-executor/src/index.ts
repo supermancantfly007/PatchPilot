@@ -7,7 +7,7 @@ import {
 } from "@patchpilot/policy";
 import { knownSecretsFromEnv, redactJsonValue, redactSecrets, type SecretRedactionOptions } from "@patchpilot/security";
 
-export type CommandExecutionKind = "shell" | "git" | "codex" | "test" | "runtime";
+export type CommandExecutionKind = "shell" | "git" | "codex" | "pi" | "test" | "runtime";
 
 export type CommandAuditAction =
   | "command.policy_allowed"

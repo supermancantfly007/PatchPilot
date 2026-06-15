@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -370,6 +370,11 @@ describe("PatchPilot API", () => {
       testCommand: expect.any(String),
       workspaceRoot: expect.any(String)
     });
+    expect(response.json().pi).toEqual(expect.objectContaining({
+      command: expect.any(String),
+      stateRoot: expect.any(String),
+      timeoutMs: expect.any(Number)
+    }));
     expect(typeof response.json().codexAvailable).toBe("boolean");
     expect(typeof response.json().gitWorkspaceAvailable).toBe("boolean");
     expect(response.json().runnerAvailability).toEqual(expect.arrayContaining([
@@ -382,10 +387,9 @@ describe("PatchPilot API", () => {
       }),
       expect.objectContaining({
         runner: "pi",
-        status: "unavailable",
-        available: false,
-        runnerAvailable: false,
-        gitWorkspaceAvailable: false
+        available: expect.any(Boolean),
+        runnerAvailable: expect.any(Boolean),
+        gitWorkspaceAvailable: true
       })
     ]));
     await app.close();
@@ -2240,6 +2244,97 @@ artifacts:
     }
   });
 
+  it("starts an explicit Pi Work Item run with a fake Pi JSON executable", async () => {
+    const fixture = await createApiPiGitFixture();
+    const fakePiPath = join(fixture.root, "fake-pi.cjs");
+    await writeApiFakePiExecutable(fakePiPath);
+    await writeFile(fixture.configPath, JSON.stringify({
+      test: {
+        command: "test -f src/api-pi-output.txt",
+        timeoutMs: 30000,
+        maxRepairAttempts: 0
+      },
+      dev: {
+        runner: "auto",
+        repositoryRoot: fixture.repo,
+        workspaceRoot: fixture.workspaceRoot,
+        previewUrl: "http://pi-preview.local"
+      },
+      security: {
+        egressPolicy: { enabled: false },
+        secretBroker: { enabled: false }
+      },
+      pi: {
+        command: fakePiPath,
+        stateRoot: fixture.stateRoot,
+        timeoutMs: 30000,
+        skipVersionCheck: true,
+        disableTelemetry: true,
+        offline: false
+      }
+    }, null, 2), "utf8");
+    const restoreEnv = setApiPiConfigEnv({
+      PATCHPILOT_CONFIG_PATH: fixture.configPath,
+      PATCHPILOT_RUNNER: "auto"
+    });
+    const app = await buildTestServer({ store: createTestStore() });
+
+    try {
+      const workItem = await createApprovedWorkItem(app, "验证 API 可以用 fake Pi 完成工作项");
+
+      const start = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/start`,
+        payload: { runner: "pi" }
+      });
+
+      expect(start.statusCode).toBe(201);
+      expect(start.json().runner).toBe("pi");
+      const completedRun = await pollRun(app, start.json().id) as AgentRun;
+      expect(completedRun.status).toBe("succeeded");
+      expect(completedRun.runner).toBe("pi");
+      expect(completedRun.result).toEqual(expect.objectContaining({
+        runner: "pi",
+        summary: "API fake Pi summary",
+        changedFiles: ["src/api-pi-output.txt"],
+        previewUrl: "http://pi-preview.local"
+      }));
+      const result = completedRun.result;
+      expect(result).toBeDefined();
+      expect(result?.tests[0]).toEqual(expect.objectContaining({
+        status: "passed",
+        command: "test -f src/api-pi-output.txt",
+        branch: result?.branchName,
+        commit: result?.headCommit
+      }));
+      expect(result?.diffSummary).toEqual(expect.objectContaining({
+        hasChanges: true,
+        changedFiles: ["src/api-pi-output.txt"]
+      }));
+      expect(result?.toolCalls).toEqual([
+        expect.objectContaining({
+          id: "api-tool-1",
+          name: "bash",
+          status: "completed",
+          command: "printf api-fake-pi"
+        })
+      ]);
+      expect(completedRun.events.map((event) => event.type)).toEqual(expect.arrayContaining([
+        "agent.started",
+        "agent.output",
+        "agent.tool.started",
+        "agent.tool.completed",
+        "test.passed",
+        "git.diff.created"
+      ]));
+      expect(completedRun.events.map((event) => event.type)).not.toContain("codex.output");
+    } finally {
+      await app.close();
+      restoreEnv();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("fails explicit Pi runs when the Pi adapter is unavailable instead of falling back to Codex", async () => {
     let codexRunnerCalled = false;
     const codexRunner: CodexRunner = {
@@ -2250,7 +2345,14 @@ artifacts:
         throw new Error("Codex runner should not handle an explicit Pi run");
       }
     };
-    const app = await buildTestServer({ store: createTestStore({ codexRunner }) });
+    const piRunner: CodexRunner = {
+      isAvailable: async () => false,
+      isGitWorkspaceAvailable: async () => true,
+      run: async () => {
+        throw new Error("Unavailable Pi runner should not be started");
+      }
+    };
+    const app = await buildTestServer({ store: createTestStore({ codexRunner, piRunner }) });
 
     try {
       const workItem = await createApprovedWorkItem(app, "验证未配置 Pi adapter 时不会 fallback 到 Codex");
@@ -2262,7 +2364,7 @@ artifacts:
       });
 
       expect(start.statusCode).toBe(409);
-      expect(start.json().message).toContain("Pi runner adapter is not configured");
+      expect(start.json().message).toContain("Pi runner is required but is not available");
       expect(codexRunnerCalled).toBe(false);
     } finally {
       await app.close();
@@ -3909,11 +4011,11 @@ artifacts:
 });
 
 async function pollRun(app: Awaited<ReturnType<typeof buildServer>>, runId: string) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     const response = await app.inject({ method: "GET", url: `/api/runs/${runId}` });
     const run = response.json();
     if (run.status === "succeeded" || run.status === "failed") return run;
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`Run did not finish: ${runId}`);
 }
@@ -3971,6 +4073,84 @@ function setArtifactEnv(values: Partial<Record<(typeof artifactEnvKeys)[number],
 
   return () => {
     for (const key of artifactEnvKeys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
+async function createApiPiGitFixture() {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "patchpilot-api-pi-runner-")));
+  const repo = join(root, "repo");
+  const workspaceRoot = join(root, "worktrees");
+  const stateRoot = join(root, "state");
+  const configPath = join(root, ".patchpilot", "config.yaml");
+  await mkdir(join(root, ".patchpilot"), { recursive: true });
+  await runApiPiGit(["init", "--initial-branch=main", repo], root);
+  await runApiPiGit(["config", "user.email", "test@example.com"], repo);
+  await runApiPiGit(["config", "user.name", "PatchPilot Test"], repo);
+  await mkdir(join(repo, "src"), { recursive: true });
+  await writeFile(join(repo, "README.md"), "# api pi fixture\n");
+  await writeFile(join(repo, "src", "index.txt"), "initial\n");
+  await runApiPiGit(["add", "README.md", "src/index.txt"], repo);
+  await runApiPiGit(["commit", "-m", "initial"], repo);
+  return { root, repo, workspaceRoot, stateRoot, configPath };
+}
+
+async function writeApiFakePiExecutable(path: string) {
+  await writeFile(path, `#!/usr/bin/env node
+const { mkdirSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+
+if (process.argv.includes("--version")) {
+  console.log("0.79.3");
+  process.exit(0);
+}
+
+mkdirSync(join(process.cwd(), "src"), { recursive: true });
+writeFileSync(join(process.cwd(), "src", "api-pi-output.txt"), "api fake pi completed\\n");
+console.log(JSON.stringify({ type: "session", sessionId: "api-pi-session-123", cwd: process.cwd(), version: "0.79.3" }));
+console.log(JSON.stringify({ type: "agent_start" }));
+console.log(JSON.stringify({ type: "message_update", role: "assistant", delta: "API fake Pi is editing files" }));
+console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "api-tool-1", toolName: "bash", args: { command: "printf api-fake-pi" } }));
+console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "api-tool-1", toolName: "bash", status: "success", result: { exitCode: 0 }, durationMs: 9 }));
+console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "API fake Pi summary" }] } }));
+console.log(JSON.stringify({ type: "agent_end" }));
+`, "utf8");
+  await chmod(path, 0o755);
+}
+
+async function runApiPiGit(args: string[], cwd: string) {
+  const result = await executeCommand({
+    kind: "git",
+    command: "git",
+    args,
+    cwd,
+    timeoutMs: 30000,
+    maxOutputBytes: 256 * 1024
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${result.output}`);
+  }
+  return result;
+}
+
+function setApiPiConfigEnv(values: Record<string, string | undefined>) {
+  const keys = [
+    "PATCHPILOT_CONFIG_PATH",
+    "PATCHPILOT_RUNNER"
+  ];
+  const previous = new Map<string, string | undefined>();
+  for (const key of keys) {
+    previous.set(key, process.env[key]);
+    const value = values[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+
+  return () => {
+    for (const key of keys) {
       const value = previous.get(key);
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;

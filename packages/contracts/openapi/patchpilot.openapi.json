@@ -2296,6 +2296,7 @@
           "dev",
           "security",
           "budget",
+          "pi",
           "artifacts"
         ],
         "properties": {
@@ -2368,6 +2369,9 @@
           },
           "budget": {
             "$ref": "#/components/schemas/RuntimeBudgetConfig"
+          },
+          "pi": {
+            "$ref": "#/components/schemas/RuntimePiConfig"
           },
           "artifacts": {
             "$ref": "#/components/schemas/RuntimeArtifactsConfig"
@@ -2781,6 +2785,58 @@
           },
           "softThresholdRatio": {
             "type": "number"
+          }
+        }
+      },
+      "RuntimePiConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command",
+          "provider",
+          "model",
+          "thinking",
+          "agentDir",
+          "sessionDir",
+          "stateRoot",
+          "timeoutMs",
+          "skipVersionCheck",
+          "disableTelemetry",
+          "offline"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "thinking": {
+            "type": "string"
+          },
+          "agentDir": {
+            "type": "string"
+          },
+          "sessionDir": {
+            "type": "string"
+          },
+          "stateRoot": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "number"
+          },
+          "skipVersionCheck": {
+            "type": "boolean"
+          },
+          "disableTelemetry": {
+            "type": "boolean"
+          },
+          "offline": {
+            "type": "boolean"
           }
         }
       },

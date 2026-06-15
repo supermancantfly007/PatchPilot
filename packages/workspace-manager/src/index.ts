@@ -243,7 +243,11 @@ function parseChangedFiles(output: string) {
       return file.includes(" -> ") ? file.split(" -> ").pop() || file : file;
     })
     .map((file) => redactSecrets(file).redacted)
-    .filter((file) => file !== "PATCHPILOT_TASK.md" && !file.startsWith(".patchpilot-codex-"));
+    .filter((file) =>
+      file !== "PATCHPILOT_TASK.md" &&
+      !file.startsWith(".patchpilot-codex-") &&
+      !file.startsWith(".patchpilot-pi-")
+    );
 }
 
 async function resolveBaseInfo(baseRef: string, cwd: string, capabilityManifest?: CapabilityManifest) {

@@ -86,6 +86,8 @@ import {
 import {
   CodexRunError,
   LocalCodexRunner,
+  LocalPiRunner,
+  buildPiCommandPolicyAllow,
   classifyFailureMessage,
   resolveSecretBrokerGrants,
   revokeSecretBrokerGrants,
@@ -265,14 +267,15 @@ export class PatchPilotStore {
       repository?: PatchPilotRepository | Promise<PatchPilotRepository> | false;
     } = {}
   ) {
+    const config = readPatchPilotConfig();
     const codexRunner = options.codexRunner ?? new LocalCodexRunner();
+    const piRunner = options.piRunner ?? new LocalPiRunner(undefined, config.pi);
     this.runnerRegistry = {
       codex: codexRunner,
-      ...(options.piRunner ? { pi: options.piRunner } : {}),
+      pi: piRunner,
       ...options.runnerRegistry
     };
     this.codexRunner = this.runnerRegistry.codex ?? codexRunner;
-    const config = readPatchPilotConfig();
     this.clarifier = options.clarifier ?? new LocalCodexClarifier({
       repositoryRoot: config.dev.repositoryRoot,
       codexTimeoutMs: config.budget.codexTimeoutMs,
@@ -1478,6 +1481,7 @@ export class PatchPilotStore {
       dev: config.dev,
       security: config.security,
       budget: config.budget,
+      pi: config.pi,
       artifacts: {
         provider: config.artifacts.provider,
         ...(config.artifacts.provider === "local_fs" ? { localRoot: config.artifacts.localRoot } : {}),
@@ -1837,6 +1841,13 @@ export class PatchPilotStore {
       testTimeoutMs: config.test.timeoutMs,
       security: config.security,
       budget: config.budget,
+      ...(run.runner === "pi"
+        ? {
+            commands: {
+              allow: buildPiCommandPolicyAllow(config.pi.command)
+            }
+          }
+        : {}),
       createdBy: "scheduler"
     });
     const manifestSummary = summarizeCapabilityManifest(capabilityManifest);

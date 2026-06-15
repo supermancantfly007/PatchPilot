@@ -79,6 +79,18 @@ budget:
   workItemUsd: 1.25
   runUsd: 0.75
   softThresholdRatio: 0.6
+pi:
+  command: /opt/patchpilot/bin/pi-fixture
+  provider: openai
+  model: gpt-fixture
+  thinking: medium
+  agentDir: agent-fixture
+  sessionDir: session-fixture
+  stateRoot: .patchpilot/pi-state-fixture
+  timeoutMs: 234000
+  skipVersionCheck: false
+  disableTelemetry: false
+  offline: true
 artifacts:
   provider: s3
   localRoot: .patchpilot/artifacts-fixture
@@ -196,6 +208,19 @@ pullRequest:
         runUsd: 0.75,
         softThresholdRatio: 0.6
       });
+      expect(config.pi).toEqual({
+        command: "/opt/patchpilot/bin/pi-fixture",
+        provider: "openai",
+        model: "gpt-fixture",
+        thinking: "medium",
+        agentDir: "agent-fixture",
+        sessionDir: "session-fixture",
+        stateRoot: join(fixture.root, ".patchpilot", "pi-state-fixture"),
+        timeoutMs: 234000,
+        skipVersionCheck: false,
+        disableTelemetry: false,
+        offline: true
+      });
       expect(config.artifacts).toEqual({
         provider: "s3",
         localRoot: join(fixture.root, ".patchpilot", "artifacts-fixture"),
@@ -305,6 +330,17 @@ security:
           PATCHPILOT_BUDGET_WORK_ITEM_USD: "3.25",
           PATCHPILOT_BUDGET_RUN_USD: "1.5",
           PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO: "0.7",
+          PATCHPILOT_PI_COMMAND: "/tmp/fake-pi",
+          PATCHPILOT_PI_PROVIDER: "anthropic",
+          PATCHPILOT_PI_MODEL: "claude-fixture",
+          PATCHPILOT_PI_THINKING: "high",
+          PATCHPILOT_PI_AGENT_DIR: "agent-env",
+          PATCHPILOT_PI_SESSION_DIR: "session-env",
+          PATCHPILOT_PI_STATE_ROOT: ".patchpilot/pi-state-env",
+          PATCHPILOT_PI_TIMEOUT_MS: "345000",
+          PATCHPILOT_PI_SKIP_VERSION_CHECK: "false",
+          PATCHPILOT_PI_DISABLE_TELEMETRY: "false",
+          PATCHPILOT_PI_OFFLINE: "true",
           PATCHPILOT_ARTIFACT_STORE: "s3",
           PATCHPILOT_ARTIFACT_ROOT: ".patchpilot/artifacts-env",
           PATCHPILOT_ARTIFACT_S3_ENDPOINT: "http://minio.env:9000",
@@ -382,6 +418,19 @@ security:
       expect(config.budget.workItemUsd).toBe(3.25);
       expect(config.budget.runUsd).toBe(1.5);
       expect(config.budget.softThresholdRatio).toBe(0.7);
+      expect(config.pi).toEqual({
+        command: "/tmp/fake-pi",
+        provider: "anthropic",
+        model: "claude-fixture",
+        thinking: "high",
+        agentDir: "agent-env",
+        sessionDir: "session-env",
+        stateRoot: join(fixture.root, ".patchpilot", "pi-state-env"),
+        timeoutMs: 345000,
+        skipVersionCheck: false,
+        disableTelemetry: false,
+        offline: true
+      });
       expect(config.artifacts).toEqual({
         provider: "s3",
         localRoot: ".patchpilot/artifacts-env",

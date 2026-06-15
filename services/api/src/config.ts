@@ -33,6 +33,17 @@ export interface PatchPilotConfigEnv extends NodeJS.ProcessEnv {
   PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO?: string;
   PATCHPILOT_CODEX_SANDBOX?: string;
   PATCHPILOT_CODEX_BYPASS?: string;
+  PATCHPILOT_PI_COMMAND?: string;
+  PATCHPILOT_PI_PROVIDER?: string;
+  PATCHPILOT_PI_MODEL?: string;
+  PATCHPILOT_PI_THINKING?: string;
+  PATCHPILOT_PI_AGENT_DIR?: string;
+  PATCHPILOT_PI_SESSION_DIR?: string;
+  PATCHPILOT_PI_STATE_ROOT?: string;
+  PATCHPILOT_PI_TIMEOUT_MS?: string;
+  PATCHPILOT_PI_SKIP_VERSION_CHECK?: string;
+  PATCHPILOT_PI_DISABLE_TELEMETRY?: string;
+  PATCHPILOT_PI_OFFLINE?: string;
   PATCHPILOT_CONTAINER_SANDBOX_ENABLED?: string;
   PATCHPILOT_CONTAINER_SANDBOX_RUNTIME?: string;
   PATCHPILOT_CONTAINER_SANDBOX_IMAGE?: string;
@@ -143,6 +154,19 @@ export interface ResolvedPatchPilotConfig {
     workItemUsd: number;
     runUsd: number;
     softThresholdRatio: number;
+  };
+  pi: {
+    command: string;
+    provider: string;
+    model: string;
+    thinking: string;
+    agentDir: string;
+    sessionDir: string;
+    stateRoot: string;
+    timeoutMs: number;
+    skipVersionCheck: boolean;
+    disableTelemetry: boolean;
+    offline: boolean;
   };
   artifacts: {
     provider: ArtifactStorageProvider;
@@ -286,6 +310,19 @@ const rawConfigSchema = z.object({
     workItemUsd: z.number().nonnegative().optional(),
     runUsd: z.number().nonnegative().optional(),
     softThresholdRatio: z.number().min(0).max(1).optional()
+  }).optional(),
+  pi: z.object({
+    command: z.string().optional(),
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    thinking: z.string().optional(),
+    agentDir: z.string().optional(),
+    sessionDir: z.string().optional(),
+    stateRoot: z.string().optional(),
+    timeoutMs: z.number().positive().optional(),
+    skipVersionCheck: z.boolean().optional(),
+    disableTelemetry: z.boolean().optional(),
+    offline: z.boolean().optional()
   }).optional(),
   artifacts: z.object({
     provider: artifactProviderSchema.optional(),
@@ -473,6 +510,23 @@ export function readPatchPilotConfig(options: ReadConfigOptions = {}): ResolvedP
       workItemUsd: pickNumber(env.PATCHPILOT_BUDGET_WORK_ITEM_USD, raw.budget?.workItemUsd, 0),
       runUsd: pickNumber(env.PATCHPILOT_BUDGET_RUN_USD, raw.budget?.runUsd, 0),
       softThresholdRatio: pickNumber(env.PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO, raw.budget?.softThresholdRatio, 0.8)
+    },
+    pi: {
+      command: pickString(env.PATCHPILOT_PI_COMMAND, raw.pi?.command, "pi"),
+      provider: pickString(env.PATCHPILOT_PI_PROVIDER, raw.pi?.provider, ""),
+      model: pickString(env.PATCHPILOT_PI_MODEL, raw.pi?.model, ""),
+      thinking: pickString(env.PATCHPILOT_PI_THINKING, raw.pi?.thinking, ""),
+      agentDir: pickString(env.PATCHPILOT_PI_AGENT_DIR, raw.pi?.agentDir, ""),
+      sessionDir: pickString(env.PATCHPILOT_PI_SESSION_DIR, raw.pi?.sessionDir, ""),
+      stateRoot: pickString(
+        env.PATCHPILOT_PI_STATE_ROOT ? resolveRelativePath(configRoot, env.PATCHPILOT_PI_STATE_ROOT) : undefined,
+        raw.pi?.stateRoot ? resolveRelativePath(configRoot, raw.pi.stateRoot) : undefined,
+        join(cwd, ".patchpilot", "runner-state")
+      ),
+      timeoutMs: pickNumber(env.PATCHPILOT_PI_TIMEOUT_MS, raw.pi?.timeoutMs, 10 * 60 * 1000),
+      skipVersionCheck: pickBoolean(env.PATCHPILOT_PI_SKIP_VERSION_CHECK, raw.pi?.skipVersionCheck, true),
+      disableTelemetry: pickBoolean(env.PATCHPILOT_PI_DISABLE_TELEMETRY, raw.pi?.disableTelemetry, true),
+      offline: pickBoolean(env.PATCHPILOT_PI_OFFLINE, raw.pi?.offline, false)
     },
     artifacts: {
       provider: pickArtifactProvider(env.PATCHPILOT_ARTIFACT_STORE, raw.artifacts?.provider, "local_fs"),

@@ -752,6 +752,19 @@ export interface RuntimeConfig {
     runUsd: number;
     softThresholdRatio: number;
   };
+  pi: {
+    command: string;
+    provider: string;
+    model: string;
+    thinking: string;
+    agentDir: string;
+    sessionDir: string;
+    stateRoot: string;
+    timeoutMs: number;
+    skipVersionCheck: boolean;
+    disableTelemetry: boolean;
+    offline: boolean;
+  };
   artifacts: {
     provider: ArtifactStorageProvider;
     localRoot?: string;

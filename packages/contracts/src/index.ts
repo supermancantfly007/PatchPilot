@@ -2100,8 +2100,9 @@ export const openApiSchemas = {
     dev: schemaRef("RuntimeDevConfig"),
     security: schemaRef("RuntimeSecurityConfig"),
     budget: schemaRef("RuntimeBudgetConfig"),
+    pi: schemaRef("RuntimePiConfig"),
     artifacts: schemaRef("RuntimeArtifactsConfig")
-  }, ["configuredRunner", "activeRunner", "runnerAvailability", "codexAvailable", "gitWorkspaceAvailable", "testCommand", "repositoryRoot", "workspaceRoot", "previewUrl", "configSource", "setup", "test", "smoke", "e2e", "dev", "security", "budget", "artifacts"]),
+  }, ["configuredRunner", "activeRunner", "runnerAvailability", "codexAvailable", "gitWorkspaceAvailable", "testCommand", "repositoryRoot", "workspaceRoot", "previewUrl", "configSource", "setup", "test", "smoke", "e2e", "dev", "security", "budget", "pi", "artifacts"]),
   AgentRunnerAvailability: objectSchema({
     runner: runnerKind,
     status: enumSchema(["available", "unavailable"]),
@@ -2198,6 +2199,19 @@ export const openApiSchemas = {
     workItemUsd: { type: "number" },
     runUsd: { type: "number" },
     softThresholdRatio: { type: "number" }
+  }),
+  RuntimePiConfig: objectSchema({
+    command: { type: "string" },
+    provider: { type: "string" },
+    model: { type: "string" },
+    thinking: { type: "string" },
+    agentDir: { type: "string" },
+    sessionDir: { type: "string" },
+    stateRoot: { type: "string" },
+    timeoutMs: { type: "number" },
+    skipVersionCheck: { type: "boolean" },
+    disableTelemetry: { type: "boolean" },
+    offline: { type: "boolean" }
   }),
   RuntimeArtifactsConfig: objectSchema({
     provider: enumSchema(["local_fs", "s3"]),
