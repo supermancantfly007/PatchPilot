@@ -121,6 +121,7 @@ pullRequest:
       expect(config.smoke.previewUrl).toBe("http://fixture.local:5173");
       expect(config.e2e.baseUrl).toBe("http://fixture.local:4173");
       expect(config.dev).toEqual({
+        configuredRunner: "codex",
         runner: "codex",
         repositoryRoot: fixture.root,
         workspaceRoot: join(fixture.root, ".patchpilot", "worktrees-fixture"),
@@ -332,6 +333,7 @@ security:
 
       expect(config.test.command).toBe("pnpm test:from-env");
       expect(config.dev.previewUrl).toBe("http://from-env.local");
+      expect(config.dev.configuredRunner).toBe("codex");
       expect(config.dev.runner).toBe("codex");
       expect(config.dev.repositoryRoot).toBe(join(fixture.root, "target-repo"));
       expect(config.security.codexBypass).toBe(true);
@@ -413,6 +415,43 @@ security:
       });
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts pi as an explicit configured runner while keeping auto on codex", async () => {
+    const piFixture = await writeConfig(`
+dev:
+  runner: pi
+`);
+    const autoFixture = await writeConfig(`
+dev:
+  runner: auto
+`);
+
+    try {
+      expect(readPatchPilotConfig({ cwd: piFixture.root, env: {} }).dev.runner).toBe("pi");
+      expect(readPatchPilotConfig({ cwd: piFixture.root, env: {} }).dev.configuredRunner).toBe("pi");
+      expect(readPatchPilotConfig({
+        cwd: autoFixture.root,
+        env: { PATCHPILOT_RUNNER: "pi" }
+      }).dev.runner).toBe("pi");
+      expect(readPatchPilotConfig({
+        cwd: autoFixture.root,
+        env: { PATCHPILOT_RUNNER: "pi" }
+      }).dev.configuredRunner).toBe("pi");
+      expect(readPatchPilotConfig({ cwd: autoFixture.root, env: {} }).dev.runner).toBe("codex");
+      expect(readPatchPilotConfig({ cwd: autoFixture.root, env: {} }).dev.configuredRunner).toBe("auto");
+      expect(readPatchPilotConfig({
+        cwd: piFixture.root,
+        env: { PATCHPILOT_RUNNER: "auto" }
+      }).dev.runner).toBe("codex");
+      expect(readPatchPilotConfig({
+        cwd: piFixture.root,
+        env: { PATCHPILOT_RUNNER: "auto" }
+      }).dev.configuredRunner).toBe("auto");
+    } finally {
+      await rm(piFixture.root, { recursive: true, force: true });
+      await rm(autoFixture.root, { recursive: true, force: true });
     }
   });
 });

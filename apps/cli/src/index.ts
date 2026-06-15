@@ -1,14 +1,15 @@
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import type {
-  AcceptanceDecision,
-  AgentRun,
-  AgentRunnerKind,
-  PatchPilotSnapshot,
-  Prd,
-  Requirement,
-  RequirementTemplate,
-  WorkItem
+import {
+  agentRunnerKinds,
+  type AcceptanceDecision,
+  type AgentRun,
+  type AgentRunnerKind,
+  type PatchPilotSnapshot,
+  type Prd,
+  type Requirement,
+  type RequirementTemplate,
+  type WorkItem
 } from "@patchpilot/domain";
 import { runWorkerTick } from "@patchpilot/worker";
 
@@ -428,8 +429,8 @@ function parseTemplate(value: string): RequirementTemplate {
 
 function parseRunner(value: string | undefined): AgentRunnerKind | undefined {
   if (!value) return undefined;
-  if (value === "codex") return value;
-  throw new Error(`Invalid runner "${value}". Expected: codex`);
+  if (agentRunnerKinds.includes(value as AgentRunnerKind)) return value as AgentRunnerKind;
+  throw new Error(`Invalid runner "${value}". Expected one of: ${agentRunnerKinds.join(", ")}`);
 }
 
 function parseAcceptanceStatus(value: string): CliAcceptanceStatus {
@@ -478,11 +479,11 @@ function helpText() {
     "  create-prd --requirement <requirement-id>",
     "  approve-prd --prd <prd-id>",
     "  snapshot [--json]",
-    "  start-team --prd <prd-id> [--runner codex]",
-    "  worker-once [--runner codex]",
+    "  start-team --prd <prd-id> [--runner codex|pi]",
+    "  worker-once [--runner codex|pi]",
     "  accept-prd --prd <prd-id> [--status accepted|rejected] [--reason <text>]",
     "  report [--prd <prd-id>] [--requirement <requirement-id>] [--out report.md]",
-    "  happy-path --input <text> [--template feature|bug|ui|document] [--runner codex] [--out report.md]",
+    "  happy-path --input <text> [--template feature|bug|ui|document] [--runner codex|pi] [--out report.md]",
     "",
     "Global options:",
     "  --api <url>   API base URL, default http://localhost:4000",

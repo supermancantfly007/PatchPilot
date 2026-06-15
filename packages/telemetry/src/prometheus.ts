@@ -37,7 +37,7 @@ export interface PrometheusMetricsSnapshot {
 type MetricType = "counter" | "gauge" | "histogram";
 type Labels = Record<string, string | number | boolean | undefined>;
 
-const runnerKinds = ["codex", "unknown"] as const;
+const runnerKinds = ["codex", "pi", "unknown"] as const;
 const agentRunStatuses = ["queued", "running", "needs_approval", "succeeded", "failed", "cancelled", "unknown"] as const;
 const workItemStatuses = ["proposed", "ready", "claimed", "running", "review", "blocked", "done", "cancelled", "unknown"] as const;
 const agentRoles = ["product", "frontend", "backend", "test", "ops", "reviewer", "unknown"] as const;

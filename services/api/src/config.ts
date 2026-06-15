@@ -99,6 +99,7 @@ export interface ResolvedPatchPilotConfig {
     baseUrl: string;
   };
   dev: {
+    configuredRunner: ConfiguredRunner;
     runner: AgentRunnerKind;
     repositoryRoot: string;
     workspaceRoot: string;
@@ -182,7 +183,7 @@ interface ReadConfigOptions {
   configPath?: string;
 }
 
-const configuredRunnerSchema = z.enum(["auto", "codex"]);
+const configuredRunnerSchema = z.enum(["auto", "codex", "pi"]);
 const artifactProviderSchema = z.enum(["local_fs", "s3"]);
 const containerRuntimeSchema = z.enum(["auto", "docker", "podman"]);
 const pullRequestProviderSchema = z.enum(["local", "github"]);
@@ -363,6 +364,7 @@ export function readPatchPilotConfig(options: ReadConfigOptions = {}): ResolvedP
       baseUrl: pickString(undefined, raw.e2e?.baseUrl, devPreviewUrl)
     },
     dev: {
+      configuredRunner: pickConfiguredRunner(env.PATCHPILOT_RUNNER, raw.dev?.runner),
       runner: pickRunner(env.PATCHPILOT_RUNNER, raw.dev?.runner),
       repositoryRoot: pickString(
         env.PATCHPILOT_REPOSITORY_ROOT
@@ -696,8 +698,16 @@ function pickRunner(
   envValue: string | undefined,
   configValue: ConfiguredRunner | undefined
 ): AgentRunnerKind {
-  const selected = envValue === "auto" || envValue === "codex" ? envValue : configValue;
-  return selected === "auto" || selected === undefined ? "codex" : selected;
+  const selected = pickConfiguredRunner(envValue, configValue);
+  return selected === "auto" ? "codex" : selected;
+}
+
+function pickConfiguredRunner(
+  envValue: string | undefined,
+  configValue: ConfiguredRunner | undefined
+): ConfiguredRunner {
+  if (envValue === "auto" || envValue === "codex" || envValue === "pi") return envValue;
+  return configValue ?? "auto";
 }
 
 function pickContainerRuntime(

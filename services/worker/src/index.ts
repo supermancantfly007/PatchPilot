@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { apiPath } from "@patchpilot/contracts";
-import type { AgentRunnerKind, PatchPilotSnapshot } from "@patchpilot/domain";
+import { agentRunnerKinds, type AgentRunnerKind, type PatchPilotSnapshot } from "@patchpilot/domain";
 import { getTelemetry, type PatchPilotTelemetry } from "@patchpilot/telemetry";
 import { planDispatch, type DispatchAssignment } from "./dispatch";
 
@@ -200,7 +200,9 @@ function isTruthy(value: string | undefined) {
 }
 
 function parseRunner(value: string | undefined): AgentRunnerKind | undefined {
-  return value === "codex" ? value : undefined;
+  if (!value) return undefined;
+  if (agentRunnerKinds.includes(value as AgentRunnerKind)) return value as AgentRunnerKind;
+  throw new Error(`Invalid runner "${value}". Expected one of: ${agentRunnerKinds.join(", ")}`);
 }
 
 function sleep(ms: number) {

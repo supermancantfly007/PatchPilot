@@ -1845,7 +1845,8 @@
           "runner": {
             "type": "string",
             "enum": [
-              "codex"
+              "codex",
+              "pi"
             ]
           },
           "claimToken": {
@@ -2280,6 +2281,7 @@
         "required": [
           "configuredRunner",
           "activeRunner",
+          "runnerAvailability",
           "codexAvailable",
           "gitWorkspaceAvailable",
           "testCommand",
@@ -2300,14 +2302,23 @@
           "configuredRunner": {
             "type": "string",
             "enum": [
-              "codex"
+              "auto",
+              "codex",
+              "pi"
             ]
           },
           "activeRunner": {
             "type": "string",
             "enum": [
-              "codex"
+              "codex",
+              "pi"
             ]
+          },
+          "runnerAvailability": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentRunnerAvailability"
+            }
           },
           "codexAvailable": {
             "type": "boolean"
@@ -2360,6 +2371,45 @@
           },
           "artifacts": {
             "$ref": "#/components/schemas/RuntimeArtifactsConfig"
+          }
+        }
+      },
+      "AgentRunnerAvailability": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "runner",
+          "status",
+          "available",
+          "runnerAvailable",
+          "gitWorkspaceAvailable"
+        ],
+        "properties": {
+          "runner": {
+            "type": "string",
+            "enum": [
+              "codex",
+              "pi"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "unavailable"
+            ]
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "runnerAvailable": {
+            "type": "boolean"
+          },
+          "gitWorkspaceAvailable": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
           }
         }
       },
@@ -2451,7 +2501,8 @@
           "runner": {
             "type": "string",
             "enum": [
-              "codex"
+              "codex",
+              "pi"
             ]
           },
           "repositoryRoot": {
@@ -3699,7 +3750,8 @@
           "runner": {
             "type": "string",
             "enum": [
-              "codex"
+              "codex",
+              "pi"
             ]
           },
           "status": {
@@ -3843,7 +3895,27 @@
             "format": "date-time"
           },
           "type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "requirement.understood",
+              "plan.created",
+              "workspace.created",
+              "codex.started",
+              "codex.output",
+              "agent.started",
+              "agent.output",
+              "agent.tool.started",
+              "agent.tool.completed",
+              "agent.tool.failed",
+              "agent.progress",
+              "git.diff.created",
+              "test.started",
+              "test.passed",
+              "test.failed",
+              "review.completed",
+              "acceptance.waiting",
+              "run.failed"
+            ]
           },
           "message": {
             "type": "string"
@@ -3983,7 +4055,8 @@
           "runner": {
             "type": "string",
             "enum": [
-              "codex"
+              "codex",
+              "pi"
             ]
           },
           "agentMessages": {
@@ -4393,7 +4466,8 @@
           "runner": {
             "type": "string",
             "enum": [
-              "codex"
+              "codex",
+              "pi"
             ]
           },
           "status": {

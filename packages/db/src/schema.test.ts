@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { patchPilotTableNames } from ".";
+import { agentRunnerKind, patchPilotTableNames } from ".";
 
 const expectedTableNames = [
   "acceptance_decisions",
@@ -120,6 +120,25 @@ describe("PatchPilot Drizzle schema", () => {
     expect(constraintTypes.has("p")).toBe(true);
     expect(constraintTypes.has("f")).toBe(true);
     expect(constraintTypes.has("c")).toBe(true);
+  });
+
+  it("keeps the agent runner enum schema and migrations in sync for Pi", async () => {
+    expect(agentRunnerKind.enumValues).toEqual(["codex", "pi"]);
+
+    db = new PGlite();
+    await applyMigrations(db);
+
+    const enumValues = await db.query<{ enumlabel: string }>(
+      [
+        "select e.enumlabel",
+        "from pg_type t",
+        "join pg_enum e on e.enumtypid = t.oid",
+        "where t.typname = 'agent_runner_kind'",
+        "order by e.enumsortorder"
+      ].join(" ")
+    );
+
+    expect(enumValues.rows.map((row) => row.enumlabel)).toEqual(["codex", "pi"]);
   });
 
   it("accepts a minimal valid product-state graph across every table", async () => {

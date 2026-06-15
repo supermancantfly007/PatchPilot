@@ -1,21 +1,23 @@
 import { createHash } from "node:crypto";
-import type {
-  AgentRole,
-  AgentRun,
-  AuditJsonValue,
-  ContractDiffChange,
-  ContractDiffSeverity,
-  ContractDiffSummary,
-  ContractRegistryMetadata,
-  ExternalIssueProvider,
-  ExternalIssueStatusCategory,
-  FailureType,
-  GitHubAppRepositorySelection,
-  InterfaceContract,
-  InterfaceContractStatus,
-  PatchPilotSnapshot,
-  RepositoryProvider,
-  Prd
+import {
+  agentRunEventTypes,
+  agentRunnerKinds,
+  type AgentRole,
+  type AgentRun,
+  type AuditJsonValue,
+  type ContractDiffChange,
+  type ContractDiffSeverity,
+  type ContractDiffSummary,
+  type ContractRegistryMetadata,
+  type ExternalIssueProvider,
+  type ExternalIssueStatusCategory,
+  type FailureType,
+  type GitHubAppRepositorySelection,
+  type InterfaceContract,
+  type InterfaceContractStatus,
+  type PatchPilotSnapshot,
+  type RepositoryProvider,
+  type Prd
 } from "@patchpilot/domain";
 import { z } from "zod";
 
@@ -156,7 +158,7 @@ export const claimSchema = z.object({
 });
 
 export const startRunSchema = z.object({
-  runner: z.literal("codex").optional(),
+  runner: z.enum(agentRunnerKinds).optional(),
   claimToken: z.string().trim().min(1).optional()
 }).default({});
 
@@ -1764,7 +1766,8 @@ const isoDate = { type: "string", format: "date-time" };
 const markdown = { type: "string" };
 const requirementTemplate = enumSchema(["feature", "bug", "ui", "document"]);
 const acceptanceStatus = enumSchema(["accepted", "rejected"]);
-const runnerKind = enumSchema(["codex"]);
+const runnerKind = enumSchema(agentRunnerKinds);
+const configuredRunnerKind = enumSchema(["auto", ...agentRunnerKinds]);
 const agentRole = enumSchema(["product", "frontend", "backend", "test", "ops", "reviewer"]);
 const runStatus = enumSchema(["queued", "running", "needs_approval", "succeeded", "failed", "cancelled"]);
 const workItemStatus = enumSchema(["proposed", "ready", "claimed", "running", "review", "blocked", "done", "cancelled"]);
@@ -2079,8 +2082,9 @@ export const openApiSchemas = {
     artifactReferences: arrayOf(schemaRef("IntakeArtifactReferenceInput"))
   }, ["title", "description", "reproductionSteps", "expectedBehavior", "actualBehavior"]),
   RuntimeConfig: objectSchema({
-    configuredRunner: runnerKind,
+    configuredRunner: configuredRunnerKind,
     activeRunner: runnerKind,
+    runnerAvailability: arrayOf(schemaRef("AgentRunnerAvailability")),
     codexAvailable: { type: "boolean" },
     gitWorkspaceAvailable: { type: "boolean" },
     testCommand: { type: "string" },
@@ -2097,7 +2101,15 @@ export const openApiSchemas = {
     security: schemaRef("RuntimeSecurityConfig"),
     budget: schemaRef("RuntimeBudgetConfig"),
     artifacts: schemaRef("RuntimeArtifactsConfig")
-  }, ["configuredRunner", "activeRunner", "codexAvailable", "gitWorkspaceAvailable", "testCommand", "repositoryRoot", "workspaceRoot", "previewUrl", "configSource", "setup", "test", "smoke", "e2e", "dev", "security", "budget", "artifacts"]),
+  }, ["configuredRunner", "activeRunner", "runnerAvailability", "codexAvailable", "gitWorkspaceAvailable", "testCommand", "repositoryRoot", "workspaceRoot", "previewUrl", "configSource", "setup", "test", "smoke", "e2e", "dev", "security", "budget", "artifacts"]),
+  AgentRunnerAvailability: objectSchema({
+    runner: runnerKind,
+    status: enumSchema(["available", "unavailable"]),
+    available: { type: "boolean" },
+    runnerAvailable: { type: "boolean" },
+    gitWorkspaceAvailable: { type: "boolean" },
+    reason: { type: "string" }
+  }, ["runner", "status", "available", "runnerAvailable", "gitWorkspaceAvailable"]),
   RuntimeSetupConfig: objectSchema({
     commands: arrayOf({ type: "string" })
   }),
@@ -2424,7 +2436,7 @@ export const openApiSchemas = {
   AgentRunEvent: objectSchema({
     id,
     at: isoDate,
-    type: { type: "string" },
+    type: enumSchema(agentRunEventTypes),
     message: { type: "string" }
   }),
   AgentRunToolCall: looseObjectSchema({

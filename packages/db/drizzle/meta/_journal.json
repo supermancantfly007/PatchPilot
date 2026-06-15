@@ -57,6 +57,13 @@
       "when": 1781191967863,
       "tag": "0007_pale_moonstone",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1781511562257,
+      "tag": "0008_gray_grey_gargoyle",
+      "breakpoints": true
     }
   ]
 }

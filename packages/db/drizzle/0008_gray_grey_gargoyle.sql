@@ -1,0 +1,1 @@
+ALTER TYPE "public"."agent_runner_kind" ADD VALUE 'pi';

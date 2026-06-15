@@ -365,14 +365,53 @@ describe("PatchPilot API", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      configuredRunner: "codex",
+      configuredRunner: "auto",
       activeRunner: "codex",
       testCommand: expect.any(String),
       workspaceRoot: expect.any(String)
     });
     expect(typeof response.json().codexAvailable).toBe("boolean");
     expect(typeof response.json().gitWorkspaceAvailable).toBe("boolean");
+    expect(response.json().runnerAvailability).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        runner: "codex",
+        status: "available",
+        available: true,
+        runnerAvailable: true,
+        gitWorkspaceAvailable: true
+      }),
+      expect.objectContaining({
+        runner: "pi",
+        status: "unavailable",
+        available: false,
+        runnerAvailable: false,
+        gitWorkspaceAvailable: false
+      })
+    ]));
     await app.close();
+  });
+
+  it("preserves auto as configured runner while reporting Codex as the active runner", async () => {
+    const previousRunner = process.env.PATCHPILOT_RUNNER;
+    process.env.PATCHPILOT_RUNNER = "auto";
+    const app = await buildTestServer();
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/api/config" });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        configuredRunner: "auto",
+        activeRunner: "codex"
+      });
+    } finally {
+      if (previousRunner === undefined) {
+        delete process.env.PATCHPILOT_RUNNER;
+      } else {
+        process.env.PATCHPILOT_RUNNER = previousRunner;
+      }
+      await app.close();
+    }
   });
 
   it("serves Prometheus metrics for a Codex run", async () => {
@@ -2056,6 +2095,196 @@ artifacts:
       expect(Math.max(...payloads.map((payload) => payload.events.length))).toBeGreaterThan(1);
       expect(terminalPayload?.status).toBe("succeeded");
       expect(terminalPayload?.events.at(-1)?.type).toBe("acceptance.waiting");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps provider-neutral agent events alongside legacy Codex events in API and SSE payloads", async () => {
+    const runner: CodexRunner = {
+      isAvailable: async () => true,
+      isGitWorkspaceAvailable: async () => true,
+      run: async (context, emit) => {
+        await emit({ step: "developing", type: "agent.started", message: "Agent runner started" });
+        await emit({ step: "developing", type: "codex.output", message: "Legacy Codex output remains available" });
+        await emit({ step: "developing", type: "agent.output", message: "Provider-neutral agent output" });
+        await emit({ step: "developing", type: "agent.tool.started", message: "Tool started: exec_command" });
+        await emit({ step: "developing", type: "agent.tool.completed", message: "Tool completed: exec_command" });
+
+        return {
+          summary: "Provider-neutral event run completed.",
+          previewUrl: "http://test-preview.local",
+          riskLevel: "low",
+          changedFiles: ["services/api/src/server.test.ts"],
+          tests: [
+            {
+              id: `test_${context.runId}`,
+              status: "passed",
+              command: "pnpm test -- provider-neutral-events",
+              summary: "provider-neutral event test passed",
+              durationMs: 1
+            }
+          ],
+          reviewerSummary: "Provider-neutral event evidence recorded.",
+          runner: "codex"
+        };
+      }
+    };
+    const app = await buildTestServer({ store: createTestStore({ codexRunner: runner }) });
+
+    try {
+      const baseUrl = await listenOnRandomPort(app);
+      const run = await startCodexRun(app, "验证 provider-neutral agent events 可以透传");
+      const completedRun = await pollRun(app, run.id) as AgentRun;
+      const eventTypes = completedRun.events.map((event) => event.type);
+
+      expect(eventTypes).toEqual(expect.arrayContaining([
+        "agent.started",
+        "codex.output",
+        "agent.output",
+        "agent.tool.started",
+        "agent.tool.completed"
+      ]));
+
+      const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      const snapshottedRun = (snapshot.json().agentRuns as AgentRun[]).find((item) => item.id === run.id);
+      expect(snapshottedRun?.events.map((event) => event.type)).toEqual(expect.arrayContaining([
+        "agent.started",
+        "codex.output",
+        "agent.output",
+        "agent.tool.started",
+        "agent.tool.completed"
+      ]));
+
+      const frames = await collectSseFrames(`${baseUrl}/api/runs/${run.id}/events`, 2000);
+      const sseRun = frames
+        .filter((frame) => frame.event === "message")
+        .map((frame) => JSON.parse(frame.data) as AgentRun)
+        .at(-1);
+      expect(sseRun?.events.map((event) => event.type)).toEqual(expect.arrayContaining([
+        "agent.started",
+        "codex.output",
+        "agent.output",
+        "agent.tool.started",
+        "agent.tool.completed"
+      ]));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("routes explicit Pi runs to the injected Pi runner instead of falling back to Codex", async () => {
+    let piRunnerCalled = false;
+    const codexRunner: CodexRunner = {
+      isAvailable: async () => true,
+      isGitWorkspaceAvailable: async () => true,
+      run: async () => {
+        throw new Error("Codex runner should not handle an explicit Pi run");
+      }
+    };
+    const piRunner: CodexRunner = {
+      isAvailable: async () => true,
+      isGitWorkspaceAvailable: async () => true,
+      run: async (context, emit) => {
+        piRunnerCalled = true;
+        await emit({ step: "developing", type: "agent.started", message: "Pi runner started" });
+        return {
+          summary: "Pi runner completed the explicit override.",
+          previewUrl: "http://test-preview.local",
+          riskLevel: "low",
+          changedFiles: ["services/api/src/store.ts"],
+          tests: [
+            {
+              id: `test_${context.runId}`,
+              status: "passed",
+              command: "pnpm test -- pi-runner",
+              summary: "pi runner test passed",
+              durationMs: 1
+            }
+          ],
+          reviewerSummary: "Pi runner evidence recorded.",
+          runner: "pi"
+        };
+      }
+    };
+    const app = await buildTestServer({ store: createTestStore({ codexRunner, piRunner }) });
+
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/requirements",
+        payload: { rawInput: "验证显式 Pi runner 路由", template: "feature" }
+      });
+      const requirement = create.json();
+      const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
+      const prd = prdResponse.json().prd;
+      const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve`, headers: authHeaders("maintainer") });
+      const workItem = approval.json().workItems[0];
+
+      const start = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/start`,
+        payload: { runner: "pi" }
+      });
+
+      expect(start.statusCode).toBe(201);
+      expect(start.json().runner).toBe("pi");
+      const completedRun = await pollRun(app, start.json().id) as AgentRun;
+      expect(piRunnerCalled).toBe(true);
+      expect(completedRun.status).toBe("succeeded");
+      expect(completedRun.runner).toBe("pi");
+      expect(completedRun.result?.runner).toBe("pi");
+      expect(completedRun.events.some((event) => event.type === "agent.started" && event.message.includes("Pi"))).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("fails explicit Pi runs when the Pi adapter is unavailable instead of falling back to Codex", async () => {
+    let codexRunnerCalled = false;
+    const codexRunner: CodexRunner = {
+      isAvailable: async () => true,
+      isGitWorkspaceAvailable: async () => true,
+      run: async () => {
+        codexRunnerCalled = true;
+        throw new Error("Codex runner should not handle an explicit Pi run");
+      }
+    };
+    const app = await buildTestServer({ store: createTestStore({ codexRunner }) });
+
+    try {
+      const workItem = await createApprovedWorkItem(app, "验证未配置 Pi adapter 时不会 fallback 到 Codex");
+
+      const start = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/start`,
+        payload: { runner: "pi" }
+      });
+
+      expect(start.statusCode).toBe(409);
+      expect(start.json().message).toContain("Pi runner adapter is not configured");
+      expect(codexRunnerCalled).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects unknown runner overrides before starting a Work Item", async () => {
+    const app = await buildTestServer({ store: createTestStore() });
+
+    try {
+      const workItem = await createApprovedWorkItem(app, "验证未知 runner override 会被拒绝");
+
+      const start = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/start`,
+        payload: { runner: "not-a-runner" }
+      });
+
+      expect(start.statusCode).toBe(400);
+      expect(start.json().message).toContain("Invalid option");
+      expect(start.json().message).toContain("codex");
+      expect(start.json().message).toContain("pi");
     } finally {
       await app.close();
     }
@@ -3873,22 +4102,7 @@ async function listenOnRandomPort(app: Awaited<ReturnType<typeof buildServer>>) 
 }
 
 async function startCodexRun(app: Awaited<ReturnType<typeof buildServer>>, rawInput: string) {
-  const create = await app.inject({
-    method: "POST",
-    url: "/api/requirements",
-    payload: { rawInput, template: "feature" }
-  });
-  expect(create.statusCode).toBe(201);
-  const requirement = create.json() as { id: string };
-
-  const prdResponse = await app.inject({ method: "POST", url: `/api/requirements/${requirement.id}/prd` });
-  expect(prdResponse.statusCode).toBe(200);
-  const prd = prdResponse.json().prd as { id: string };
-
-  const approval = await app.inject({ method: "POST", url: `/api/prds/${prd.id}/approve`, headers: authHeaders("maintainer") });
-  expect(approval.statusCode).toBe(200);
-  const workItem = (approval.json().workItems as Array<{ id: string }>)[0];
-  if (!workItem) throw new Error("Expected approved PRD to create at least one work item");
+  const workItem = await createApprovedWorkItem(app, rawInput);
 
   const start = await app.inject({
     method: "POST",

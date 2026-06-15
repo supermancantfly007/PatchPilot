@@ -37,7 +37,7 @@ export const workItemStatus = pgEnum("work_item_status", [
 ]);
 export const agentRole = pgEnum("agent_role", ["product", "frontend", "backend", "test", "ops", "reviewer"]);
 export const agentStatus = pgEnum("agent_status", ["idle", "busy", "offline"]);
-export const agentRunnerKind = pgEnum("agent_runner_kind", ["codex"]);
+export const agentRunnerKind = pgEnum("agent_runner_kind", ["codex", "pi"]);
 export const agentRunStatus = pgEnum("agent_run_status", [
   "queued",
   "running",

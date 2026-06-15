@@ -166,6 +166,8 @@ const defaultCommandDeny = [
 const defaultCommandAllow = [
   "codex exec*",
   "codex --version",
+  "pi --mode json*",
+  "pi --version",
   "git branch*",
   "git show-ref*",
   "git status*",

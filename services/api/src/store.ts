@@ -19,6 +19,8 @@ import {
   type AgentRunDiffSummary,
   type AgentRunEvent,
   type AgentRunResult,
+  type AgentRunnerAvailability,
+  type AgentRunnerKind,
   type ArtifactRecord,
   type AuditEvent,
   type AuditJsonValue,
@@ -61,6 +63,7 @@ import {
   createBugWorkItem,
   createDefaultAgents,
   evaluateAcceptanceQualityGate,
+  agentRunnerKinds,
   createPrd,
   createTestCasesForWorkItems,
   createTimeline,
@@ -228,10 +231,14 @@ interface GitHubAppRepositoryClient {
   listRepositories(): Promise<GitHubAppRepository[]>;
 }
 
+type RunnerAdapter = CodexRunner;
+type RunnerRegistry = Partial<Record<AgentRunnerKind, RunnerAdapter>>;
+
 export class PatchPilotStore {
   private snapshot: PatchPilotSnapshot = emptySnapshot();
   private loaded = false;
   private readonly codexRunner: CodexRunner;
+  private readonly runnerRegistry: RunnerRegistry;
   private readonly clarifier: RequirementClarifier;
   private readonly artifactStore?: ArtifactStore;
   private readonly telemetry: PatchPilotTelemetry;
@@ -246,6 +253,8 @@ export class PatchPilotStore {
   constructor(
     options: {
       codexRunner?: CodexRunner;
+      piRunner?: CodexRunner;
+      runnerRegistry?: RunnerRegistry;
       clarifier?: RequirementClarifier;
       dataFilePath?: string | false;
       artifactStore?: ArtifactStore;
@@ -256,7 +265,13 @@ export class PatchPilotStore {
       repository?: PatchPilotRepository | Promise<PatchPilotRepository> | false;
     } = {}
   ) {
-    this.codexRunner = options.codexRunner ?? new LocalCodexRunner();
+    const codexRunner = options.codexRunner ?? new LocalCodexRunner();
+    this.runnerRegistry = {
+      codex: codexRunner,
+      ...(options.piRunner ? { pi: options.piRunner } : {}),
+      ...options.runnerRegistry
+    };
+    this.codexRunner = this.runnerRegistry.codex ?? codexRunner;
     const config = readPatchPilotConfig();
     this.clarifier = options.clarifier ?? new LocalCodexClarifier({
       repositoryRoot: config.dev.repositoryRoot,
@@ -1440,13 +1455,16 @@ export class PatchPilotStore {
 
   async getRuntimeConfig(): Promise<RuntimeConfig> {
     const config = readPatchPilotConfig();
-    const codexAvailable = await this.codexRunner.isAvailable();
-    const gitWorkspaceAvailable = await this.codexRunner.isGitWorkspaceAvailable(config.dev.repositoryRoot);
+    const runnerAvailability = await Promise.all(
+      agentRunnerKinds.map((runner) => this.getRunnerAvailability(runner, config.dev.repositoryRoot))
+    );
+    const codexAvailability = runnerAvailability.find((item) => item.runner === "codex");
     return {
-      configuredRunner: config.dev.runner,
-      activeRunner: "codex",
-      codexAvailable,
-      gitWorkspaceAvailable,
+      configuredRunner: config.dev.configuredRunner,
+      activeRunner: config.dev.runner,
+      runnerAvailability,
+      codexAvailable: codexAvailability?.runnerAvailable ?? false,
+      gitWorkspaceAvailable: codexAvailability?.gitWorkspaceAvailable ?? false,
       testCommand: config.test.command,
       repositoryRoot: config.dev.repositoryRoot,
       workspaceRoot: config.dev.workspaceRoot,
@@ -1787,23 +1805,27 @@ export class PatchPilotStore {
   private async executeRun(runId: string) {
     try {
       await this.load();
-      await this.executeCodexRun(runId);
+      await this.executeAgentRun(runId);
     } catch (error) {
       await this.markRunFailed(runId, error);
     }
   }
 
-  private async executeCodexRun(runId: string) {
+  private async executeAgentRun(runId: string) {
     await this.load();
     const run = this.findRun(runId);
     const requirement = this.findRequirement(run.requirementId);
     const prd = this.findPrd(run.prdId);
     const workItem = this.findWorkItem(run.workItemId);
+    const runnerAdapter = this.runnerRegistry[run.runner];
+    if (!runnerAdapter) {
+      throw createRunFailureError(`${runnerDisplayName(run.runner)} runner adapter is not configured.`, "environment_failed");
+    }
 
     await this.appendRunEvent(runId, {
       step: "planning",
       type: "plan.created",
-      message: "已确认任务上下文，准备为本地 Codex agent 创建隔离工作区"
+      message: `已确认任务上下文，准备为 ${runnerDisplayName(run.runner)} agent 创建隔离工作区`
     });
 
     const config = readPatchPilotConfig();
@@ -1844,7 +1866,7 @@ export class PatchPilotStore {
     let result: AgentRunResult | undefined;
     let runError: unknown;
     try {
-      result = await this.codexRunner.run(
+      result = await runnerAdapter.run(
         { runId, requirement, prd, workItem },
         (event) => this.appendRunEvent(runId, event, redactionOptions),
         {
@@ -1869,7 +1891,7 @@ export class PatchPilotStore {
     if (runError) {
       throw attachSecretBrokerEvidence(runError, secretBrokerResolution.evidence);
     }
-    if (!result) throw createRunFailureError("Codex runner did not return a result.", "environment_failed");
+    if (!result) throw createRunFailureError(`${runnerDisplayName(run.runner)} runner did not return a result.`, "environment_failed");
     if (secretBrokerResolution.evidence.requestedSecretIds.length > 0) {
       result.secretBrokerEvidence = secretBrokerResolution.evidence;
     }
@@ -1975,22 +1997,70 @@ export class PatchPilotStore {
   }
 
   private async resolveRunner(
-    override?: AgentRun["runner"],
-    availability?: { codexAvailable: boolean; gitWorkspaceAvailable: boolean }
+    override?: AgentRun["runner"]
   ): Promise<AgentRun["runner"]> {
-    if (override) return "codex";
     const config = readPatchPilotConfig();
-    const checks = availability || {
-      codexAvailable: await this.codexRunner.isAvailable(),
-      gitWorkspaceAvailable: await this.codexRunner.isGitWorkspaceAvailable(config.dev.repositoryRoot)
+    const runner = override ?? config.dev.runner;
+    const availability = await this.getRunnerAvailability(runner, config.dev.repositoryRoot);
+    if (!this.runnerRegistry[runner]) {
+      throw new DomainError("INVALID_STATE", `${runnerDisplayName(runner)} runner adapter is not configured`);
+    }
+    if (!availability.runnerAvailable) {
+      throw new DomainError("INVALID_STATE", `${runnerDisplayName(runner)} runner is required but is not available`);
+    }
+    if (!availability.gitWorkspaceAvailable) {
+      throw new DomainError("INVALID_STATE", `A git workspace is required for ${runnerDisplayName(runner)} execution`);
+    }
+    return runner;
+  }
+
+  private async getRunnerAvailability(
+    runner: AgentRunnerKind,
+    repositoryRoot: string
+  ): Promise<AgentRunnerAvailability> {
+    const adapter = this.runnerRegistry[runner];
+    if (!adapter) {
+      return {
+        runner,
+        status: "unavailable",
+        available: false,
+        runnerAvailable: false,
+        gitWorkspaceAvailable: false,
+        reason: `${runnerDisplayName(runner)} runner adapter is not configured`
+      };
+    }
+
+    let runnerAvailable = false;
+    let gitWorkspaceAvailable = false;
+    try {
+      [runnerAvailable, gitWorkspaceAvailable] = await Promise.all([
+        adapter.isAvailable(),
+        adapter.isGitWorkspaceAvailable(repositoryRoot)
+      ]);
+    } catch (error) {
+      return {
+        runner,
+        status: "unavailable",
+        available: false,
+        runnerAvailable,
+        gitWorkspaceAvailable,
+        reason: error instanceof Error ? error.message : `${runnerDisplayName(runner)} availability check failed`
+      };
+    }
+
+    const available = runnerAvailable && gitWorkspaceAvailable;
+    return {
+      runner,
+      status: available ? "available" : "unavailable",
+      available,
+      runnerAvailable,
+      gitWorkspaceAvailable,
+      ...(!runnerAvailable
+        ? { reason: `${runnerDisplayName(runner)} runner is not available` }
+        : !gitWorkspaceAvailable
+          ? { reason: `A git workspace is required for ${runnerDisplayName(runner)} execution` }
+          : {})
     };
-    if (!checks.codexAvailable) {
-      throw new DomainError("INVALID_STATE", "Codex CLI is required but is not available");
-    }
-    if (!checks.gitWorkspaceAvailable) {
-      throw new DomainError("INVALID_STATE", "A git workspace is required for Codex execution");
-    }
-    return "codex";
   }
 
   private findRequirement(id: string) {
@@ -5834,6 +5904,10 @@ function failureTypeLabel(failureType: FailureType) {
     environment_failed: "环境失败"
   };
   return labels[failureType];
+}
+
+function runnerDisplayName(runner: AgentRunnerKind) {
+  return runner === "codex" ? "Codex" : "Pi";
 }
 
 function severityForFailure(failureType: FailureType): BugSeverity {

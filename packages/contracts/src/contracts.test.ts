@@ -14,6 +14,7 @@ import {
   renderContractMarkdown,
   runEventStreamContract,
   sharedStateContract,
+  startRunSchema,
   type ApiOperationId,
   type RunEventTerminalStatus,
   type SharedStateSchemaName
@@ -21,6 +22,11 @@ import {
 import type { Prd } from "@patchpilot/domain";
 
 describe("contract artifacts", () => {
+  it("accepts pi as a Work Item runner override without widening unknown runner values", () => {
+    expect(startRunSchema.parse({ runner: "pi" })).toEqual({ runner: "pi" });
+    expect(() => startRunSchema.parse({ runner: "not-a-runner" })).toThrow();
+  });
+
   it("publishes versioned HTTP, event, and shared-state artifacts", () => {
     expect(contractVersion).toBe("patchpilot.mvp.v1");
     expect(contractArtifacts.map((artifact) => artifact.kind)).toEqual(["http", "event", "schema"]);

@@ -43,7 +43,40 @@ export type AcceptanceStatus = "pending" | "accepted" | "rejected";
 
 export type TimelineStepKey = "understanding" | "planning" | "developing" | "testing" | "confirming";
 
-export type AgentRunnerKind = "codex";
+export const agentRunnerKinds = ["codex", "pi"] as const;
+
+export type AgentRunnerKind = typeof agentRunnerKinds[number];
+export type ConfiguredAgentRunnerKind = "auto" | AgentRunnerKind;
+export type AgentRunnerAvailabilityStatus = "available" | "unavailable";
+export interface AgentRunnerAvailability {
+  runner: AgentRunnerKind;
+  status: AgentRunnerAvailabilityStatus;
+  available: boolean;
+  runnerAvailable: boolean;
+  gitWorkspaceAvailable: boolean;
+  reason?: string;
+}
+export const agentRunEventTypes = [
+  "requirement.understood",
+  "plan.created",
+  "workspace.created",
+  "codex.started",
+  "codex.output",
+  "agent.started",
+  "agent.output",
+  "agent.tool.started",
+  "agent.tool.completed",
+  "agent.tool.failed",
+  "agent.progress",
+  "git.diff.created",
+  "test.started",
+  "test.passed",
+  "test.failed",
+  "review.completed",
+  "acceptance.waiting",
+  "run.failed"
+] as const;
+export type AgentRunEventType = typeof agentRunEventTypes[number];
 
 export type AgentRole = "product" | "frontend" | "backend" | "test" | "ops" | "reviewer";
 
@@ -616,20 +649,7 @@ export interface AgentRun {
 export interface AgentRunEvent {
   id: string;
   at: string;
-  type:
-    | "requirement.understood"
-    | "plan.created"
-    | "workspace.created"
-    | "codex.started"
-    | "codex.output"
-    | "git.diff.created"
-    | "agent.progress"
-    | "test.started"
-    | "test.passed"
-    | "test.failed"
-    | "review.completed"
-    | "acceptance.waiting"
-    | "run.failed";
+  type: AgentRunEventType;
   message: string;
 }
 
@@ -682,8 +702,9 @@ export interface AgentRunDiffSummary {
 }
 
 export interface RuntimeConfig {
-  configuredRunner: AgentRunnerKind;
+  configuredRunner: ConfiguredAgentRunnerKind;
   activeRunner: AgentRunnerKind;
+  runnerAvailability: AgentRunnerAvailability[];
   codexAvailable: boolean;
   gitWorkspaceAvailable: boolean;
   testCommand: string;

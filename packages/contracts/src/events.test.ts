@@ -2,6 +2,27 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { buildRunEventSchemaDocument, runEventStreamContract } from "./index";
 
+const expectedAgentRunEventTypes = [
+  "requirement.understood",
+  "plan.created",
+  "workspace.created",
+  "codex.started",
+  "codex.output",
+  "agent.started",
+  "agent.output",
+  "agent.tool.started",
+  "agent.tool.completed",
+  "agent.tool.failed",
+  "agent.progress",
+  "git.diff.created",
+  "test.started",
+  "test.passed",
+  "test.failed",
+  "review.completed",
+  "acceptance.waiting",
+  "run.failed"
+];
+
 describe("run event schema document", () => {
   it("describes the SSE channel, envelopes, terminal statuses, and compatibility rules", () => {
     const document = buildRunEventSchemaDocument();
@@ -69,6 +90,17 @@ describe("run event schema document", () => {
     expect(document.components.schemas.TestRun).toMatchObject({
       required: ["id", "status", "command", "summary", "durationMs"]
     });
+    expect(document.components.schemas.AgentRunEvent).toMatchObject({
+      additionalProperties: false,
+      required: ["id", "at", "type", "message"],
+      properties: {
+        type: {
+          enum: expectedAgentRunEventTypes
+        }
+      }
+    });
+    expect(document.components.schemas.AgentRunEvent.properties).not.toHaveProperty("raw");
+    expect(document.components.schemas.AgentRunEvent.properties).not.toHaveProperty("payload");
   });
 
   it("matches the committed generated artifact", async () => {

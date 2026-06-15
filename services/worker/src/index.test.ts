@@ -23,6 +23,20 @@ describe("worker runtime", () => {
     });
   });
 
+  it("accepts pi runner overrides and rejects unknown runner values", () => {
+    expect(
+      readWorkerConfig({
+        PATCHPILOT_WORKER_RUNNER: "pi"
+      }).runner
+    ).toBe("pi");
+
+    expect(() =>
+      readWorkerConfig({
+        PATCHPILOT_WORKER_RUNNER: "not-a-runner"
+      })
+    ).toThrow('Invalid runner "not-a-runner". Expected one of: codex, pi');
+  });
+
   it("dispatches planned assignments and passes the runner override to start", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     vi.stubGlobal(

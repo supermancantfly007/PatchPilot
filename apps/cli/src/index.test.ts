@@ -1,8 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PatchPilotSnapshot } from "@patchpilot/domain";
-import { buildReport, parseCliArgs, summarizeSnapshot } from "./index";
+import { buildReport, parseCliArgs, runCli, summarizeSnapshot } from "./index";
 
 describe("PatchPilot CLI", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
   it("parses command options and flags", () => {
     expect(parseCliArgs(["happy-path", "--input", "ship it", "--template=feature", "--runner", "codex", "--json"])).toEqual({
       command: "happy-path",
@@ -20,6 +26,31 @@ describe("PatchPilot CLI", () => {
       options: {},
       positionals: []
     });
+  });
+
+  it("passes pi runner overrides through start-team requests", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        return jsonResponse({
+          prd: { id: "prd_pi" },
+          workItems: [],
+          runs: [],
+          skippedWorkItems: []
+        });
+      })
+    );
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await runCli(["start-team", "--prd", "prd_pi", "--runner", "pi", "--api", "http://patchpilot.test"]);
+
+    expect(process.exitCode).toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("http://patchpilot.test/api/prds/prd_pi/start-team");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ runner: "pi" });
   });
 
   it("summarizes a snapshot for console output", () => {
@@ -46,6 +77,13 @@ describe("PatchPilot CLI", () => {
     expect(report).toContain("Decisions: accepted=2");
   });
 });
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" }
+  });
+}
 
 const snapshot: PatchPilotSnapshot = {
   repositories: [],

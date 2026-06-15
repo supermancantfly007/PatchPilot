@@ -120,6 +120,14 @@ describe("capability manifest policy", () => {
     expect(() => enforceCommandPolicy(manifest, "npm test")).toThrow(/command_not_allowlisted/u);
   });
 
+  it("allows Pi JSON runner launch commands without allowing Pi RPC yet", () => {
+    const manifest = generateCapabilityManifest();
+
+    expect(() => enforceCommandPolicy(manifest, "pi --mode json --no-session")).not.toThrow();
+    expect(() => enforceCommandPolicy(manifest, "pi --version")).not.toThrow();
+    expect(() => enforceCommandPolicy(manifest, "pi --mode rpc")).toThrow(/command_not_allowlisted/u);
+  });
+
   it("enforces repo write allow and deny path policies", () => {
     const manifest = generateCapabilityManifest({
       repo: {

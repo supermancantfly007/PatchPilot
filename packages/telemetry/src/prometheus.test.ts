@@ -26,6 +26,14 @@ describe("Prometheus metrics renderer", () => {
           status: "running",
           startedAt: "2026-06-10T00:02:00.000Z",
           costEstimateUsd: 0.42
+        },
+        {
+          runner: "pi",
+          status: "succeeded",
+          startedAt: "2026-06-10T00:03:00.000Z",
+          endedAt: "2026-06-10T00:03:03.000Z",
+          costEstimateUsd: 0.33,
+          costActualUsd: 0.31
         }
       ],
       workItems: [
@@ -50,11 +58,15 @@ describe("Prometheus metrics renderer", () => {
     expect(text).toContain(
       'patchpilot_agent_run_duration_seconds_bucket{runner="codex",status="succeeded",le="5"} 1'
     );
+    expect(text).toContain(
+      'patchpilot_agent_run_duration_seconds_bucket{runner="pi",status="succeeded",le="5"} 1'
+    );
     expect(text).toContain('patchpilot_agent_run_duration_seconds_count{runner="codex",status="failed"} 1');
     expect(text).toContain('patchpilot_agent_run_failures_total{runner="codex",failure_type="test_failed"} 1');
     expect(text).toContain('patchpilot_work_item_queue_depth{role="backend",status="ready"} 1');
     expect(text).toContain('patchpilot_agent_run_cost_estimate_usd{runner="codex",status="failed"} 0.55');
     expect(text).toContain('patchpilot_agent_run_cost_actual_usd{runner="codex",status="succeeded"} 0.38');
+    expect(text).toContain('patchpilot_agent_run_cost_actual_usd{runner="pi",status="succeeded"} 0.31');
     expect(text).toContain('patchpilot_test_runs_total{status="passed"} 1');
     expect(text).toContain("patchpilot_test_pass_rate_ratio 0.5");
     expect(text).toContain('patchpilot_acceptance_decisions_total{status="accepted"} 1');
@@ -71,7 +83,9 @@ describe("Prometheus metrics renderer", () => {
     });
 
     expect(text).toContain('patchpilot_agent_run_duration_seconds_count{runner="codex",status="succeeded"} 0');
+    expect(text).toContain('patchpilot_agent_run_duration_seconds_count{runner="pi",status="succeeded"} 0');
     expect(text).toContain('patchpilot_agent_run_failures_total{runner="codex",failure_type="test_failed"} 0');
+    expect(text).toContain('patchpilot_agent_run_failures_total{runner="pi",failure_type="test_failed"} 0');
     expect(text).toContain('patchpilot_work_item_queue_depth{role="backend",status="ready"} 0');
     expect(text).toContain("patchpilot_test_pass_rate_ratio 0");
     expect(text).toContain("patchpilot_acceptance_rate_ratio 0");
