@@ -32,6 +32,8 @@
     "e2e:professional-governance": "node scripts/e2e-professional-governance.mjs",
     "e2e:otel": "node scripts/e2e-otel.mjs",
     "e2e:metrics": "node scripts/e2e-metrics.mjs",
+    "e2e:pi-fake": "node scripts/e2e-pi-fake.mjs",
+    "e2e:pi-real-smoke": "node scripts/e2e-pi-real-smoke.mjs",
     "e2e:audit-export": "node scripts/e2e-audit-export.mjs",
     "e2e:release-rollback": "tsx scripts/e2e-release-rollback-approval.mjs",
     "e2e:external-issue": "node scripts/e2e-external-issue-sync.mjs",

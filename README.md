@@ -40,6 +40,16 @@ dev:
   repositoryRoot: .
   workspaceRoot: .patchpilot/worktrees
   previewUrl: http://localhost:3000
+pi:
+  command: pi
+  provider: ""
+  model: ""
+  thinking: ""
+  stateRoot: .patchpilot/runner-state
+  timeoutMs: 600000
+  skipVersionCheck: true
+  disableTelemetry: true
+  offline: false
 security:
   codexSandbox: workspace-write
   codexBypass: false
@@ -267,7 +277,7 @@ pnpm e2e:metrics
 
 `/metrics` returns Prometheus text format for run duration, failure type, WorkItem queue depth, run cost, TestRun pass rate, and acceptance rate. Metric names are stable `patchpilot_*` series with low-cardinality labels such as `runner`, `status`, `role`, and `failure_type`.
 
-Codex runner environment:
+Runner environment:
 
 ```bash
 PATCHPILOT_RUNNER=codex
@@ -290,7 +300,26 @@ PATCHPILOT_CONTAINER_SANDBOX_PIDS_LIMIT=512
 PATCHPILOT_PREVIEW_URL=http://localhost:3000
 ```
 
-The Codex runner requires a working `codex` CLI, an authenticated local Codex session, and a git worktree-capable checkout. Codex runner variables are read by the API process; worker variables are read by the worker process.
+The Codex runner requires a working `codex` CLI, an authenticated local Codex session, and a git worktree-capable checkout. `auto` still defaults to Codex. Pi requires an explicit `PATCHPILOT_RUNNER=pi`, `.patchpilot/config.yaml` `dev.runner: pi`, or API start body `{ "runner": "pi" }`.
+
+Pi runner variables:
+
+```bash
+PATCHPILOT_RUNNER=pi
+PATCHPILOT_PI_COMMAND=pi
+PATCHPILOT_PI_PROVIDER=fake # fake, openai, or anthropic
+PATCHPILOT_PI_MODEL=
+PATCHPILOT_PI_THINKING=
+PATCHPILOT_PI_STATE_ROOT=.patchpilot/runner-state
+PATCHPILOT_PI_TIMEOUT_MS=600000
+PATCHPILOT_PI_SKIP_VERSION_CHECK=true
+PATCHPILOT_PI_DISABLE_TELEMETRY=true
+PATCHPILOT_PI_OFFLINE=false
+```
+
+Pi does not provide PatchPilot's sandbox boundary. Keep Pi's coding-agent capability intact; use PatchPilot worktrees, container sandbox, egress policy, Secret Broker, Capability Manifest, Audit Event, and artifact evidence as the control plane. See [docs/pi-runner.md](docs/pi-runner.md).
+
+Runner variables are read by the API process; worker variables are read by the worker process.
 
 `PATCHPILOT_REPOSITORY_ROOT` is the git checkout PatchPilot should develop. It defaults to the repo containing `.patchpilot/config.yaml`, or the API process cwd when no config file is present. `PATCHPILOT_WORKSPACE_ROOT` is only the directory where isolated run worktrees are created.
 
@@ -402,4 +431,6 @@ pnpm e2e:budget
 pnpm e2e:failure-defect
 pnpm e2e:otel
 pnpm e2e:metrics
+pnpm e2e:pi-fake
+pnpm e2e:pi-real-smoke # skips unless PATCHPILOT_PI_REAL_SMOKE=1
 ```
