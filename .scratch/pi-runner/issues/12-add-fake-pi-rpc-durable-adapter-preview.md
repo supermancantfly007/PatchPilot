@@ -1,6 +1,6 @@
 # 添加 fake Pi RPC durable adapter preview
 
-Status: ready-for-agent
+Status: done
 Type: AFK
 
 ## Parent
@@ -13,12 +13,22 @@ Type: AFK
 
 ## Acceptance criteria
 
-- [ ] fake `pi --mode rpc` fixture 支持 prompt、abort、get_state、get_last_assistant_text 以及终态 JSONL/RPC 响应。
-- [ ] Pi RPC adapter 通过 durable runner contract 启动 fake RPC process，记录 provider handle metadata，并能 idempotently 复用同一 handle。
-- [ ] Resume path 能在同一 prepared workspace 中追加 prompt，并记录是复用 Pi session 还是重新链接新 session。
-- [ ] Cancel path 能终止或 abort fake RPC process，并记录 provider acknowledged / process killed / workspace retained evidence。
-- [ ] Stream events 规范化为 provider-neutral `agent.*` events，large/raw RPC transcript 进入 artifact 而不是 AgentRun event payload。
-- [ ] Fake Pi RPC E2E 覆盖 API start run、event stream、test、diff、commit、artifact、cancel 或 resume 的至少一个真实闭环。
+- [x] fake `pi --mode rpc` fixture 支持 prompt、abort、get_state、get_last_assistant_text 以及终态 JSONL/RPC 响应。
+- [x] Pi RPC adapter 通过 durable runner contract 启动 fake RPC process，记录 provider handle metadata，并能 idempotently 复用同一 handle。
+- [x] Resume path 能在同一 prepared workspace 中追加 prompt，并记录是复用 Pi session 还是重新链接新 session。
+- [x] Cancel path 能终止或 abort fake RPC process，并记录 provider acknowledged / process killed / workspace retained evidence。
+- [x] Stream events 规范化为 provider-neutral `agent.*` events，large/raw RPC transcript 进入 artifact 而不是 AgentRun event payload。
+- [x] Fake Pi RPC E2E 覆盖 API start run、event stream、test、diff、commit、artifact、cancel 或 resume 的至少一个真实闭环。
+
+## Verification
+
+- `pnpm --filter @patchpilot/codex-runner test -- piRpcDurableRunner.test.ts`
+- `pnpm --filter @patchpilot/codex-runner test -- durableRunner.test.ts`
+- `pnpm --filter @patchpilot/policy test -- index.test.ts`
+- `pnpm --filter @patchpilot/codex-runner typecheck`
+- `pnpm --filter @patchpilot/policy typecheck`
+- `pnpm e2e:pi-rpc-fake`
+- `pnpm lint:repo`
 
 ## Blocked by
 

@@ -167,6 +167,7 @@ const defaultCommandAllow = [
   "codex exec*",
   "codex --version",
   "pi --mode json*",
+  "pi --mode rpc*",
   "pi --version",
   "git branch*",
   "git show-ref*",

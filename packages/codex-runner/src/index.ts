@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   executeCommand,
   shellJoin,
@@ -230,6 +230,472 @@ export interface DurableAgentRunner {
   inspectState(input: DurableRunnerHandleInput): Promise<DurableRunnerState>;
   collectArtifacts(input: DurableRunnerHandleInput): Promise<DurableRunnerArtifacts>;
   summarizeFailure(input: DurableRunnerHandleInput): Promise<DurableRunnerFailureSummary>;
+}
+
+export interface LocalPiRpcDurableRunnerOptions {
+  command: string;
+  timeoutMs: number;
+  transcriptPath: string;
+  capabilityManifest?: CapabilityManifest;
+  env?: Record<string, string | undefined>;
+  redaction?: SecretRedactionOptions;
+}
+
+interface PiRpcRequest {
+  id: string;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+interface PiRpcResponse {
+  id: string;
+  ok?: boolean;
+  result?: unknown;
+  error?: unknown;
+}
+
+interface PiRpcPendingRequest {
+  resolve(response: PiRpcResponse): void;
+  reject(error: Error): void;
+  timeout: NodeJS.Timeout;
+}
+
+export class LocalPiRpcDurableRunner implements DurableAgentRunner {
+  private commandProcess?: Awaited<ReturnType<typeof spawnCommand>>;
+  private stdoutBuffer = "";
+  private pendingTranscriptWrite = Promise.resolve();
+  private requestSequence = 0;
+  private workspacePath?: string;
+  private sessionId?: string;
+  private lastAssistantMessage?: string;
+  private processClosed = false;
+  private readonly pendingRequests = new Map<string, PiRpcPendingRequest>();
+  private readonly startsByIdempotencyKey = new Map<string, DurableRunnerHandle>();
+  private readonly resumesByIdempotencyKey = new Map<string, DurableRunnerHandle>();
+  private readonly handles = new Map<string, DurableRunnerHandle>();
+  private readonly events: DurableRunnerEvent[] = [];
+  private readonly transcriptArtifactId: string;
+
+  constructor(private readonly options: LocalPiRpcDurableRunnerOptions) {
+    this.transcriptArtifactId = `artifact-${safeArtifactSegment(basename(options.transcriptPath))}`;
+  }
+
+  async start(input: DurableRunnerStartInput): Promise<DurableRunnerHandle> {
+    const existing = this.startsByIdempotencyKey.get(input.idempotencyKey);
+    if (existing) return existing;
+
+    this.workspacePath = input.workspacePath;
+    await this.ensureProcess(input.workspacePath);
+    const response = await this.sendRpc("prompt", {
+      prompt: input.prompt,
+      taskFilePath: input.taskFilePath,
+      idempotencyKey: input.idempotencyKey,
+      runId: input.runId,
+      workspaceRunId: input.workspaceRunId,
+      workItemId: input.workItemId,
+      providerOptions: input.providerOptions ?? {}
+    });
+    const result = asRecord(response.result) ?? {};
+    const status = durableStatusFromProvider(result.status);
+    const sessionId = stringValue(result.sessionId) || this.sessionId;
+    if (sessionId) this.sessionId = sessionId;
+    const lastAssistantText = stringValue(result.lastAssistantText);
+    if (lastAssistantText) this.lastAssistantMessage = lastAssistantText;
+
+    const handle: DurableRunnerHandle = {
+      runner: input.runner,
+      surface: input.surface,
+      runId: input.runId,
+      workspaceRunId: input.workspaceRunId,
+      workItemId: input.workItemId,
+      idempotencyKey: input.idempotencyKey,
+      providerRunId: `pi-rpc-${input.runId}`,
+      ...(sessionId ? { sessionId } : {}),
+      ...(this.commandProcess?.child.pid ? { processId: this.commandProcess.child.pid } : {}),
+      status,
+      startedAt: new Date().toISOString(),
+      ...(isTerminalDurableStatus(status) ? { endedAt: new Date().toISOString() } : {}),
+      supportsResume: input.capabilities.resume,
+      supportsCancel: input.capabilities.cancel,
+      supportsStateInspection: input.capabilities.stateInspection,
+      artifactIds: uniqueStrings([...(input.artifactIds ?? []), this.transcriptArtifactId]),
+      resumeCount: 0,
+      metadata: compactMetadata({
+        ...(input.metadata ?? {}),
+        providerOptions: input.providerOptions ?? {},
+        capabilityManifestId: input.capabilityManifestId,
+        lastAssistantMessage: this.lastAssistantMessage,
+        sessionState: sessionId ? "provider_session_reused" : undefined
+      })
+    };
+    this.storeHandle(handle);
+    this.startsByIdempotencyKey.set(input.idempotencyKey, handle);
+    return handle;
+  }
+
+  async resume(input: DurableRunnerResumeInput): Promise<DurableRunnerHandle> {
+    const existing = this.resumesByIdempotencyKey.get(input.idempotencyKey);
+    if (existing) return existing;
+    await this.ensureProcess(this.workspacePath);
+    const response = await this.sendRpc("prompt", {
+      prompt: input.prompt,
+      idempotencyKey: input.idempotencyKey,
+      providerRunId: input.handle.providerRunId,
+      sessionId: input.handle.sessionId
+    });
+    const result = asRecord(response.result) ?? {};
+    const status = durableStatusFromProvider(result.status);
+    const sessionId = stringValue(result.sessionId) || input.handle.sessionId || this.sessionId;
+    if (sessionId) this.sessionId = sessionId;
+    const lastAssistantText = stringValue(result.lastAssistantText);
+    if (lastAssistantText) this.lastAssistantMessage = lastAssistantText;
+
+    const resumed: DurableRunnerHandle = {
+      ...input.handle,
+      ...(sessionId ? { sessionId } : {}),
+      ...(this.commandProcess?.child.pid ? { processId: this.commandProcess.child.pid } : {}),
+      status,
+      ...(isTerminalDurableStatus(status) ? { endedAt: new Date().toISOString() } : {}),
+      artifactIds: uniqueStrings([...input.handle.artifactIds, this.transcriptArtifactId]),
+      resumeCount: (input.handle.resumeCount ?? 0) + 1,
+      metadata: compactMetadata({
+        ...(input.handle.metadata ?? {}),
+        ...(input.metadata ?? {}),
+        capabilityManifestId: input.capabilityManifestId,
+        lastResumePrompt: input.prompt,
+        lastAssistantMessage: this.lastAssistantMessage,
+        resumeMode: "same_provider_session"
+      })
+    };
+    this.storeHandle(resumed);
+    this.resumesByIdempotencyKey.set(input.idempotencyKey, resumed);
+    return resumed;
+  }
+
+  async cancel(input: DurableRunnerCancelInput): Promise<DurableRunnerCancelResult> {
+    let acknowledged = false;
+    if (this.commandProcess && !this.processClosed) {
+      const response = await this.sendRpc("abort", {
+        reason: input.reason,
+        providerRunId: input.handle.providerRunId,
+        sessionId: input.handle.sessionId
+      }).catch((error: unknown) => {
+        if (error instanceof Error && /closed|exited|stdin/u.test(error.message)) return undefined;
+        throw error;
+      });
+      const result = asRecord(response?.result);
+      acknowledged = Boolean(result?.acknowledged);
+    }
+
+    let processTerminated = await this.waitForProcessExit(1000);
+    if (!processTerminated && this.commandProcess) {
+      this.commandProcess.child.kill("SIGTERM");
+      processTerminated = await this.waitForProcessExit(1000);
+    }
+    if (!processTerminated && this.commandProcess) {
+      this.commandProcess.child.kill("SIGKILL");
+      processTerminated = await this.waitForProcessExit(1000);
+    }
+    const cancelled: DurableRunnerHandle = {
+      ...input.handle,
+      status: "cancelled",
+      endedAt: new Date().toISOString(),
+      artifactIds: uniqueStrings([...input.handle.artifactIds, this.transcriptArtifactId]),
+      metadata: compactMetadata({
+        ...(input.handle.metadata ?? {}),
+        ...(input.metadata ?? {}),
+        cancelReason: input.reason,
+        providerCancelAcknowledged: acknowledged
+      })
+    };
+    this.storeHandle(cancelled);
+    await this.flushTranscript();
+    return {
+      handle: cancelled,
+      acknowledged,
+      processTerminated,
+      workspaceRetained: true,
+      reason: input.reason,
+      artifactIds: cancelled.artifactIds
+    };
+  }
+
+  async *streamEvents(_input: DurableRunnerHandleInput): AsyncIterable<DurableRunnerEvent> {
+    for (const event of this.events) yield event;
+  }
+
+  async inspectState(input: DurableRunnerHandleInput): Promise<DurableRunnerState> {
+    let status = this.handles.get(input.handle.providerRunId)?.status ?? input.handle.status;
+    let sessionId = input.handle.sessionId || this.sessionId;
+    let lastAssistantMessage = this.lastAssistantMessage;
+    if (this.commandProcess && !this.processClosed && input.handle.supportsStateInspection) {
+      const stateResponse = await this.sendRpc("get_state", {
+        providerRunId: input.handle.providerRunId,
+        sessionId: input.handle.sessionId
+      });
+      const state = asRecord(stateResponse.result) ?? {};
+      status = durableStatusFromProvider(state.status);
+      sessionId = stringValue(state.sessionId) || sessionId;
+      lastAssistantMessage = stringValue(state.lastAssistantText) || lastAssistantMessage;
+
+      const assistantResponse = await this.sendRpc("get_last_assistant_text", {
+        providerRunId: input.handle.providerRunId,
+        sessionId
+      });
+      const assistant = asRecord(assistantResponse.result) ?? {};
+      lastAssistantMessage = stringValue(assistant.text) || lastAssistantMessage;
+    }
+    if (sessionId) this.sessionId = sessionId;
+    if (lastAssistantMessage) this.lastAssistantMessage = lastAssistantMessage;
+    const handle = this.handles.get(input.handle.providerRunId) ?? input.handle;
+    const inspectedHandle: DurableRunnerHandle = {
+      ...handle,
+      ...(sessionId ? { sessionId } : {}),
+      status,
+      artifactIds: uniqueStrings([...handle.artifactIds, this.transcriptArtifactId]),
+      metadata: compactMetadata({
+        ...(handle.metadata ?? {}),
+        lastAssistantMessage
+      })
+    };
+    this.storeHandle(inspectedHandle);
+    await this.flushTranscript();
+    return {
+      handle: inspectedHandle,
+      status,
+      ...(lastAssistantMessage ? { lastAssistantMessage } : {}),
+      artifactIds: inspectedHandle.artifactIds,
+      metadata: compactMetadata({
+        sessionId,
+        transcriptArtifactId: this.transcriptArtifactId
+      })
+    };
+  }
+
+  async collectArtifacts(input: DurableRunnerHandleInput): Promise<DurableRunnerArtifacts> {
+    await this.flushTranscript();
+    const handle = this.handles.get(input.handle.providerRunId) ?? input.handle;
+    const artifactIds = uniqueStrings([...handle.artifactIds, this.transcriptArtifactId]);
+    return {
+      handle: {
+        ...handle,
+        artifactIds
+      },
+      artifactIds,
+      transcriptArtifactId: this.transcriptArtifactId
+    };
+  }
+
+  async summarizeFailure(input: DurableRunnerHandleInput): Promise<DurableRunnerFailureSummary> {
+    const state = await this.inspectState(input);
+    return {
+      failureType: state.status === "failed" ? "deterministic" : undefined,
+      message: state.failureSummary ?? state.lastAssistantMessage ?? `Pi RPC run ${state.status}`,
+      artifactIds: state.artifactIds
+    };
+  }
+
+  async dispose(): Promise<void> {
+    if (this.commandProcess && !this.processClosed) {
+      this.commandProcess.child.kill("SIGTERM");
+      const terminated = await this.waitForProcessExit(1000);
+      if (!terminated) this.commandProcess.child.kill("SIGKILL");
+      await this.waitForProcessExit(1000);
+    }
+    this.rejectPendingRequests(new Error("Pi RPC runner disposed."));
+    await this.flushTranscript();
+  }
+
+  private async ensureProcess(workspacePath?: string) {
+    if (this.commandProcess && !this.processClosed) return;
+    const cwd = workspacePath ?? this.workspacePath;
+    if (!cwd) throw new Error("Pi RPC workspacePath is required before launch.");
+    this.workspacePath = cwd;
+    this.processClosed = false;
+    this.stdoutBuffer = "";
+    await mkdir(dirname(this.options.transcriptPath), { recursive: true });
+    await writeFile(this.options.transcriptPath, "", "utf8");
+    const commandProcess = await spawnCommand({
+      kind: "pi",
+      command: this.options.command,
+      args: ["--mode", "rpc"],
+      cwd,
+      timeoutMs: this.options.timeoutMs,
+      env: compactEnv(this.options.env ?? {}),
+      inheritEnv: false,
+      capabilityManifest: this.options.capabilityManifest,
+      redaction: this.options.redaction,
+      maxOutputBytes: 512 * 1024
+    });
+    this.commandProcess = commandProcess;
+    commandProcess.child.stdout.on("data", (chunk: Buffer) => this.handleStdoutChunk(chunk));
+    commandProcess.done.then(
+      (result) => {
+        this.processClosed = true;
+        if (this.stdoutBuffer.trim()) this.handleStdoutLine(this.stdoutBuffer.trim());
+        this.stdoutBuffer = "";
+        const message = result.exitCode === 0
+          ? "Pi RPC process exited."
+          : `Pi RPC process exited with ${result.exitCode ?? "unknown exit code"}.`;
+        this.rejectPendingRequests(new Error(message));
+      },
+      (error: unknown) => {
+        this.processClosed = true;
+        this.rejectPendingRequests(error instanceof Error ? error : new Error("Pi RPC process failed."));
+      }
+    );
+  }
+
+  private handleStdoutChunk(chunk: Buffer) {
+    this.stdoutBuffer += chunk.toString("utf8");
+    const lines = this.stdoutBuffer.split("\n");
+    this.stdoutBuffer = lines.pop() || "";
+    for (const line of lines) this.handleStdoutLine(line);
+  }
+
+  private handleStdoutLine(line: string) {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    this.appendTranscriptLine(trimmed);
+    let raw: unknown;
+    try {
+      raw = JSON.parse(trimmed);
+    } catch {
+      const event = parsePiEvent(trimmed, this.options.redaction);
+      this.recordEvent(event);
+      return;
+    }
+
+    const response = asPiRpcResponse(raw);
+    if (response) {
+      const pending = this.pendingRequests.get(response.id);
+      if (!pending) return;
+      clearTimeout(pending.timeout);
+      this.pendingRequests.delete(response.id);
+      if (response.ok === false) {
+        pending.reject(new Error(`Pi RPC ${response.id} failed: ${stringValue(response.error) || "unknown error"}`));
+      } else {
+        pending.resolve(response);
+      }
+      return;
+    }
+
+    const event = parsePiEvent(trimmed, this.options.redaction);
+    this.recordEvent(event);
+  }
+
+  private recordEvent(event: ParsedPiEvent) {
+    if (event.sessionId) this.sessionId = event.sessionId;
+    if (event.agentMessage) this.lastAssistantMessage = event.agentMessage;
+    if (!event.type || !event.message) return;
+    this.events.push({
+      type: event.type,
+      message: event.message,
+      at: new Date().toISOString(),
+      ...(event.sessionId ? { providerEventId: event.sessionId } : {}),
+      artifactIds: [this.transcriptArtifactId]
+    });
+  }
+
+  private async sendRpc(method: string, params: Record<string, unknown> = {}) {
+    const commandProcess = this.commandProcess;
+    if (!commandProcess || this.processClosed) throw new Error("Pi RPC process is closed.");
+    const request: PiRpcRequest = {
+      id: `rpc-${++this.requestSequence}`,
+      method,
+      params
+    };
+    const line = JSON.stringify(request);
+    this.appendTranscriptLine(line);
+    const response = new Promise<PiRpcResponse>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(request.id);
+        reject(new Error(`Pi RPC request timed out: ${method}`));
+      }, this.options.timeoutMs);
+      timeout.unref();
+      this.pendingRequests.set(request.id, { resolve, reject, timeout });
+    });
+    if (!commandProcess.child.stdin.writable) {
+      const pending = this.pendingRequests.get(request.id);
+      if (pending) {
+        clearTimeout(pending.timeout);
+        this.pendingRequests.delete(request.id);
+      }
+      throw new Error("Pi RPC stdin is not writable.");
+    }
+    commandProcess.child.stdin.write(`${line}\n`);
+    return response;
+  }
+
+  private appendTranscriptLine(line: string) {
+    const redacted = redactSecrets(line, this.options.redaction).redacted;
+    this.pendingTranscriptWrite = this.pendingTranscriptWrite.then(() =>
+      appendFile(this.options.transcriptPath, `${redacted}\n`, "utf8")
+    );
+  }
+
+  private async flushTranscript() {
+    await this.pendingTranscriptWrite;
+  }
+
+  private async waitForProcessExit(timeoutMs: number) {
+    if (!this.commandProcess || this.processClosed) return true;
+    const timeout = new Promise<false>((resolve) => setTimeout(() => resolve(false), timeoutMs));
+    const exited = this.commandProcess.done.then(() => true, () => true);
+    return Promise.race([exited, timeout]);
+  }
+
+  private rejectPendingRequests(error: Error) {
+    for (const [id, pending] of this.pendingRequests.entries()) {
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+      this.pendingRequests.delete(id);
+    }
+  }
+
+  private storeHandle(handle: DurableRunnerHandle) {
+    this.handles.set(handle.providerRunId, handle);
+  }
+}
+
+function asPiRpcResponse(value: unknown): PiRpcResponse | undefined {
+  const record = asRecord(value);
+  const id = stringValue(record?.id);
+  if (!record || !id || !("ok" in record || "result" in record || "error" in record)) return undefined;
+  return {
+    id,
+    ...(typeof record.ok === "boolean" ? { ok: record.ok } : {}),
+    ...("result" in record ? { result: record.result } : {}),
+    ...("error" in record ? { error: record.error } : {})
+  };
+}
+
+function durableStatusFromProvider(value: unknown): DurableRunnerStatus {
+  const status = stringValue(value)?.toLowerCase();
+  if (status === "starting") return "starting";
+  if (status === "running") return "running";
+  if (status === "succeeded" || status === "success" || status === "completed" || status === "complete") {
+    return "succeeded";
+  }
+  if (status === "failed" || status === "error") return "failed";
+  if (status === "cancelled" || status === "canceled" || status === "aborted") return "cancelled";
+  return "running";
+}
+
+function isTerminalDurableStatus(status: DurableRunnerStatus) {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
+function safeArtifactSegment(value: string) {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "_") || "artifact";
+}
+
+function compactMetadata(metadata: Record<string, unknown>) {
+  const compacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (value !== undefined) compacted[key] = value;
+  }
+  return compacted;
 }
 
 export class CodexRunError extends Error {
@@ -1153,8 +1619,10 @@ export function buildPiCommandPolicyAllow(command: string) {
   const displayToken = /^[A-Za-z0-9_./:=@%+,-]+$/u.test(normalized) ? normalized : shellJoin([normalized]);
   return uniqueStrings([
     `${displayToken} --mode json`,
+    `${displayToken} --mode rpc`,
     `${displayToken} --version`,
     `${normalized} --mode json`,
+    `${normalized} --mode rpc`,
     `${normalized} --version`
   ]);
 }
