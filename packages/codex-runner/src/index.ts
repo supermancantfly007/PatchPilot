@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import {
   executeCommand,
@@ -157,6 +157,7 @@ interface ParsedPiEvent {
 
 interface PiExecResult {
   lastMessagePath: string;
+  transcriptPath: string;
   sessionId?: string;
   capture: CodexExecCapture;
   egressPolicyEvidence?: EgressPolicyEvidence;
@@ -484,7 +485,8 @@ export class LocalPiRunner implements CodexRunner {
       message: "Pi agent 已启动，正在隔离 worktree 中开发"
     });
 
-    const piRun = await runPiJson(
+    const piRuns: PiExecResult[] = [];
+    const firstPiRun = await runPiJson(
       workspace.path,
       prompt,
       context,
@@ -493,6 +495,7 @@ export class LocalPiRunner implements CodexRunner {
       containerSandbox,
       capabilityManifest
     );
+    piRuns.push(firstPiRun);
 
     await emit({
       step: "testing",
@@ -500,7 +503,33 @@ export class LocalPiRunner implements CodexRunner {
       message: "Pi 执行结束，开始运行项目测试"
     });
 
-    const testRun = await runConfiguredTests(context, workspace.path, effectiveConfig, containerSandbox, capabilityManifest);
+    let testRun = await runConfiguredTests(context, workspace.path, effectiveConfig, containerSandbox, capabilityManifest);
+    const repairAttempts = effectiveConfig.test.maxRepairAttempts;
+
+    for (let attempt = 1; testRun.status === "failed" && attempt <= repairAttempts; attempt += 1) {
+      await emit({
+        step: "developing",
+        type: "test.failed",
+        message: `测试未通过，启动第 ${attempt} 次 Pi 修复回合`
+      });
+      const repairPiRun = await runPiJson(
+        workspace.path,
+        redactSecrets(buildPiRepairPrompt(context, testRun), redactionOptions).redacted,
+        context,
+        emit,
+        effectiveConfig,
+        containerSandbox,
+        capabilityManifest
+      );
+      piRuns.push(repairPiRun);
+      await emit({
+        step: "testing",
+        type: "test.started",
+        message: `第 ${attempt} 次修复完成，重新运行测试`
+      });
+      testRun = await runConfiguredTests(context, workspace.path, effectiveConfig, containerSandbox, capabilityManifest);
+    }
+
     if (testRun.status !== "passed") {
       throw new CodexRunError(`测试未通过：${testRun.summary}`, "test_failed", testRun);
     }
@@ -512,7 +541,7 @@ export class LocalPiRunner implements CodexRunner {
     });
 
     const artifacts = await this.workspaceManager.collectArtifacts(workspace, {
-      summaryPath: piRun.lastMessagePath,
+      summaryPath: piRuns.at(-1)?.lastMessagePath ?? firstPiRun.lastMessagePath,
       capabilityManifest
     });
     const changedFiles = artifacts.changedFiles;
@@ -531,9 +560,11 @@ export class LocalPiRunner implements CodexRunner {
       branch: test.branch || commit.branchName,
       commit: commit.headCommit
     }));
+    const piCapture = mergeCodexCaptures(piRuns.map((result) => result.capture));
     const egressPolicyEvidence = containerSandbox
       ? await containerSandbox.collectEgressPolicyEvidence(workspace.path)
       : undefined;
+    const piEgressPolicyEvidence = piRuns.find((result) => result.egressPolicyEvidence)?.egressPolicyEvidence;
 
     return {
       summary: artifacts.summary,
@@ -544,9 +575,9 @@ export class LocalPiRunner implements CodexRunner {
       reviewerSummary:
         "本次交付在隔离 worktree 中完成，平台已收集变更文件、测试命令和执行摘要。验收通过后仍需人工按仓库规则合并。",
       runner: "pi",
-      agentMessages: piRun.capture.agentMessages,
-      reasoningSummaries: piRun.capture.reasoningSummaries,
-      toolCalls: piRun.capture.toolCalls,
+      agentMessages: piCapture.agentMessages,
+      reasoningSummaries: piCapture.reasoningSummaries,
+      toolCalls: piCapture.toolCalls,
       diffSummary,
       testOutputSummary: summarizeTestOutput(finalizedTests),
       workspacePath: workspace.path,
@@ -554,8 +585,8 @@ export class LocalPiRunner implements CodexRunner {
       baseBranch: commit.baseBranch,
       baseCommit: commit.baseCommit,
       headCommit: commit.headCommit,
-      ...(egressPolicyEvidence ?? piRun.egressPolicyEvidence ? {
-        egressPolicyEvidence: egressPolicyEvidence ?? piRun.egressPolicyEvidence
+      ...(egressPolicyEvidence ?? piEgressPolicyEvidence ? {
+        egressPolicyEvidence: egressPolicyEvidence ?? piEgressPolicyEvidence
       } : {})
     };
   }
@@ -786,10 +817,13 @@ async function runPiJson(
   const piConfig = resolvePiRunnerConfig(config);
   const lastMessageFileName = `.patchpilot-pi-${randomUUID()}.md`;
   const lastMessagePath = join(workspacePath, lastMessageFileName);
+  const transcriptFileName = `.patchpilot-pi-transcript-${randomUUID()}.jsonl`;
+  const transcriptPath = join(workspacePath, transcriptFileName);
   const redactionOptions = redactionOptionsForConfig(config);
   const stateDirs = await resolvePiStateDirs(piConfig, context.runId, workspacePath);
   const args = buildPiArgs(piConfig, prompt);
   const timeoutMs = resolveCapabilityRuntimeTimeoutMs(piConfig.timeoutMs, capabilityManifest);
+  await writeFile(transcriptPath, "", "utf8");
 
   const commandProcess = await spawnCommand({
     kind: "pi",
@@ -827,11 +861,32 @@ async function runPiJson(
   let sessionId: string | undefined;
   let emitted = 0;
   let pendingEmit = Promise.resolve();
+  let pendingTranscriptWrite = Promise.resolve();
   const capture = emptyCodexCapture();
   const recentMessages: string[] = [];
+  const parseErrors: string[] = [];
+  let lineNumber = 0;
+  let sawAgentStart = false;
+  let sawAgentEnd = false;
 
   const handleLine = (line: string) => {
-    const event = parsePiEvent(line, redactionOptions);
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    lineNumber += 1;
+    pendingTranscriptWrite = pendingTranscriptWrite.then(() =>
+      appendFile(transcriptPath, `${redactSecrets(trimmed, redactionOptions).redacted}\n`, "utf8")
+    );
+    let rawEvent: Record<string, unknown>;
+    try {
+      rawEvent = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      parseErrors.push(`line ${lineNumber}: ${tail(trimmed, 240)}`);
+      return;
+    }
+    const rawType = stringValue(rawEvent.type) || "pi.event";
+    if (rawType === "agent_start") sawAgentStart = true;
+    if (rawType === "agent_end") sawAgentEnd = true;
+    const event = parsePiEvent(trimmed, redactionOptions);
     if (event.sessionId) sessionId = event.sessionId;
     recordCodexCapture(capture, event);
     if (event.message) {
@@ -869,22 +924,42 @@ async function runPiJson(
         egressPolicyEvidence?: EgressPolicyEvidence;
       }
     | undefined;
+  await pendingTranscriptWrite;
   await pendingEmit;
 
-  if (commandResult.exitCode !== 0 || sandboxCompletion?.diskLimitExceeded) {
+  if (commandResult.exitCode !== 0 || commandResult.timedOut || sandboxCompletion?.diskLimitExceeded) {
     const egressPolicyEvidence = sandboxCompletion?.egressPolicyEvidence;
     const message = summarizePiExecFailure({
       stderr: sandboxCompletion?.diskLimitExceeded
         ? `${commandResult.stderr}\nContainer sandbox workspace disk quota exceeded.`
         : commandResult.stderr,
       stdoutRemainder: [stdoutBuffer.trim(), ...recentMessages].filter(Boolean).join("\n"),
-      exitCode: commandResult.exitCode
+      exitCode: commandResult.exitCode,
+      timedOut: commandResult.timedOut,
+      timeoutMs,
+      transcriptFileName
     }, redactionOptions);
     throw new CodexRunError(
       message,
       classifyFailureMessage(message),
       undefined,
       egressPolicyEvidence,
+      undefined,
+      commandResult.auditEvents
+    );
+  }
+
+  if (parseErrors.length > 0 || !sawAgentStart || !sawAgentEnd) {
+    throw new CodexRunError(
+      summarizePiProtocolFailure({
+        parseErrors,
+        sawAgentStart,
+        sawAgentEnd,
+        transcriptFileName
+      }, redactionOptions),
+      "environment_failed",
+      undefined,
+      sandboxCompletion?.egressPolicyEvidence,
       undefined,
       commandResult.auditEvents
     );
@@ -897,6 +972,7 @@ async function runPiJson(
 
   return {
     lastMessagePath,
+    transcriptPath,
     sessionId,
     capture,
     ...(sandboxCompletion?.egressPolicyEvidence ? { egressPolicyEvidence: sandboxCompletion.egressPolicyEvidence } : {})
@@ -1086,9 +1162,31 @@ function summarizePiExecFailure(input: {
   stderr?: string;
   stdoutRemainder?: string;
   exitCode: number | null;
+  timedOut?: boolean;
+  timeoutMs?: number;
+  transcriptFileName?: string;
 }, options: SecretRedactionOptions = {}) {
-  const summary = tail(input.stderr || input.stdoutRemainder || `exit ${input.exitCode}`, 1600);
+  const reason = input.timedOut
+    ? `Pi command timed out after ${input.timeoutMs ?? "configured"}ms.`
+    : input.stderr || input.stdoutRemainder || `exit ${input.exitCode}`;
+  const transcript = input.transcriptFileName ? `\nTranscript artifact: ${input.transcriptFileName}` : "";
+  const summary = tail(`${reason}${transcript}`, 1600);
   return `Pi 执行失败：${redactSecrets(summary, options).redacted}`;
+}
+
+function summarizePiProtocolFailure(input: {
+  parseErrors: string[];
+  sawAgentStart: boolean;
+  sawAgentEnd: boolean;
+  transcriptFileName: string;
+}, options: SecretRedactionOptions = {}) {
+  const problems = [
+    ...input.parseErrors.slice(0, 5).map((error) => `Invalid JSONL ${error}`),
+    ...(input.sawAgentStart ? [] : ["Missing lifecycle event: agent_start"]),
+    ...(input.sawAgentEnd ? [] : ["Missing lifecycle event: agent_end"]),
+    `Transcript artifact: ${input.transcriptFileName}`
+  ];
+  return `Pi JSONL evidence invalid：${redactSecrets(tail(problems.join("\n"), 1600), options).redacted}`;
 }
 
 function lastPiMessage(messages: string[]) {
@@ -1288,6 +1386,24 @@ function buildRepairPrompt(context: CodexRunContext, testSummary: string) {
     testSummary,
     "",
     "完成后说明：修复、测试、风险。"
+  ].join("\n");
+}
+
+function buildPiRepairPrompt(context: CodexRunContext, testRun: Pick<TestRun, "command" | "summary" | "failureSummary">) {
+  const method = context.workItem.sourceBugId ? "Continue using the diagnosis workflow." : "Continue using TDD.";
+  const failureSummary = tail(testRun.failureSummary || testRun.summary, 1600);
+
+  return [
+    `Test failed while completing task: ${context.workItem.title}`,
+    method,
+    "Continue in the same prepared workspace.",
+    "Keep full coding-agent capability available; PatchPilot provides isolation, policy, secrets, network, and evidence boundaries externally.",
+    "",
+    `Test command: ${testRun.command}`,
+    "Failure summary:",
+    failureSummary,
+    "",
+    "When finished, summarize the repair, tests, and risks."
   ].join("\n");
 }
 

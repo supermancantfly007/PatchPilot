@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -8,6 +8,8 @@ import {
   defaultContainerSandboxConfig,
   defaultEgressPolicyConfig,
   LocalPiRunner,
+  parsePiEvent,
+  type CodexRunError,
   type CodexRunnerConfig,
   type CodexRunnerEvent
 } from "./index";
@@ -109,10 +111,185 @@ describe("LocalPiRunner", () => {
 
       const committedFiles = await runGit(["show", "--name-only", "--format=", result.headCommit ?? "HEAD"], result.workspacePath ?? fixture.repo);
       expect(committedFiles.stdout.trim().split("\n")).toEqual(["src/pi-output.txt"]);
+      const workspaceFiles = await readdir(result.workspacePath ?? fixture.repo);
+      const transcriptFile = workspaceFiles.find((file) => file.startsWith(".patchpilot-pi-transcript-"));
+      expect(transcriptFile).toBeDefined();
+      expect(await readFile(join(result.workspacePath ?? fixture.repo, transcriptFile ?? ""), "utf8"))
+        .toContain('"type":"agent_start"');
     } finally {
       restoreEnv(previousEnv);
       await rm(fixture.root, { recursive: true, force: true });
     }
+  });
+
+  it("runs one Pi repair pass in the same worktree after configured tests fail", async () => {
+    const fixture = await createGitFixture();
+    const fakePiPath = join(fixture.root, "fake-pi-repair.cjs");
+    await writeRepairingFakePiExecutable(fakePiPath);
+    const context = { ...makeContext(), runId: "run_pi_repair" };
+    const events: CodexRunnerEvent[] = [];
+    const runner = new LocalPiRunner();
+
+    try {
+      const result = await runner.run(
+        context,
+        async (event) => {
+          events.push(event);
+        },
+        makeRunnerConfig({
+          command: fakePiPath,
+          repositoryRoot: fixture.repo,
+          workspaceRoot: fixture.workspaceRoot,
+          stateRoot: fixture.stateRoot,
+          testCommand: "test -f src/pi-repaired.txt",
+          maxRepairAttempts: 1
+        })
+      );
+
+      expect(result.runner).toBe("pi");
+      expect(result.summary).toContain("Repair summary");
+      expect(result.changedFiles).toEqual(["src/pi-repaired.txt"]);
+      expect(result.tests[0]).toEqual(expect.objectContaining({
+        status: "passed",
+        command: "test -f src/pi-repaired.txt"
+      }));
+      expect(result.agentMessages).toEqual(expect.arrayContaining(["First attempt summary", "Repair summary"]));
+      expect(events.map((event) => event.type)).toEqual(expect.arrayContaining([
+        "test.failed",
+        "test.passed",
+        "agent.started",
+        "agent.output"
+      ]));
+
+      const observation = JSON.parse(
+        await readFile(join(fixture.stateRoot, "runner", "pi", context.runId, "sessions", "repair-observation.json"), "utf8")
+      ) as {
+        prompts: string[];
+        cwd: string[];
+      };
+      expect(observation.cwd).toEqual([result.workspacePath, result.workspacePath]);
+      expect(observation.prompts[1]).toContain("Test failed");
+      expect(observation.prompts[1]).toContain("test -f src/pi-repaired.txt");
+      expect(observation.prompts[1]).not.toContain("full PRD context marker");
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails Pi runs with invalid JSONL and missing lifecycle evidence", async () => {
+    const fixture = await createGitFixture();
+    const invalidPiPath = join(fixture.root, "fake-pi-invalid.cjs");
+    await writeInvalidJsonFakePiExecutable(invalidPiPath);
+    const runner = new LocalPiRunner();
+
+    try {
+      await expect(runner.run(
+        makeContext(),
+        async () => undefined,
+        makeRunnerConfig({
+          command: invalidPiPath,
+          repositoryRoot: fixture.repo,
+          workspaceRoot: fixture.workspaceRoot,
+          stateRoot: fixture.stateRoot
+        })
+      )).rejects.toMatchObject({
+        name: "CodexRunError",
+        failureType: "environment_failed"
+      } satisfies Partial<CodexRunError>);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("maps Pi non-zero exit, timeout, and missing lifecycle evidence to clear failures", async () => {
+    const cases = [
+      {
+        runId: "run_pi_nonzero",
+        fileName: "fake-pi-nonzero.cjs",
+        write: writeNonZeroFakePiExecutable,
+        expectedFailureType: "deterministic",
+        expectedMessage: "exit 2"
+      },
+      {
+        runId: "run_pi_timeout",
+        fileName: "fake-pi-timeout.cjs",
+        write: writeTimeoutFakePiExecutable,
+        expectedFailureType: "transient",
+        expectedMessage: "timed out",
+        timeoutMs: 100
+      },
+      {
+        runId: "run_pi_missing_lifecycle",
+        fileName: "fake-pi-missing-lifecycle.cjs",
+        write: writeMissingLifecycleFakePiExecutable,
+        expectedFailureType: "environment_failed",
+        expectedMessage: "Missing lifecycle event: agent_end"
+      }
+    ] as const;
+
+    for (const scenario of cases) {
+      const fixture = await createGitFixture();
+      const fakePiPath = join(fixture.root, scenario.fileName);
+      await scenario.write(fakePiPath);
+      const runner = new LocalPiRunner();
+      let error: unknown;
+
+      try {
+        await runner.run(
+          { ...makeContext(), runId: scenario.runId },
+          async () => undefined,
+          makeRunnerConfig({
+            command: fakePiPath,
+            repositoryRoot: fixture.repo,
+            workspaceRoot: fixture.workspaceRoot,
+            stateRoot: fixture.stateRoot,
+            timeoutMs: "timeoutMs" in scenario ? scenario.timeoutMs : undefined
+          })
+        );
+      } catch (caught) {
+        error = caught;
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+
+      expect(error).toMatchObject({
+        name: "CodexRunError",
+        failureType: scenario.expectedFailureType
+      });
+      expect((error as Error).message).toContain(scenario.expectedMessage);
+    }
+  });
+
+  it("parses Pi fixtures into provider-neutral events and bounded tool evidence", async () => {
+    const [successLine, toolFailureLine, unknownLine] = (await readFile(
+      new URL("./fixtures/pi-parser-events.jsonl", import.meta.url),
+      "utf8"
+    )).trim().split("\n");
+    const success = parsePiEvent(successLine ?? "");
+    expect(success).toMatchObject({
+      type: "agent.output",
+      agentMessage: "Done from fixture"
+    });
+
+    const toolFailure = parsePiEvent(toolFailureLine ?? "");
+    expect(toolFailure).toMatchObject({
+      type: "agent.tool.failed",
+      toolCall: expect.objectContaining({
+        id: "fixture-tool",
+        name: "bash",
+        status: "failed",
+        command: "pnpm test",
+        exitCode: 1,
+        durationMs: 123
+      })
+    });
+    expect(toolFailure.toolCall?.summary.length).toBeLessThanOrEqual(500);
+
+    const unknown = parsePiEvent(unknownLine ?? "");
+    expect(unknown).toMatchObject({
+      type: "agent.progress",
+      message: "Pi event: new_protocol_event"
+    });
   });
 });
 
@@ -121,13 +298,16 @@ function makeRunnerConfig(input: {
   repositoryRoot: string;
   workspaceRoot: string;
   stateRoot: string;
+  testCommand?: string;
+  maxRepairAttempts?: number;
+  timeoutMs?: number;
 }): CodexRunnerConfig {
   const { egressPolicy: _egressPolicy, ...containerSandbox } = defaultContainerSandboxConfig();
   return {
     test: {
-      command: "test -f src/pi-output.txt",
+      command: input.testCommand ?? "test -f src/pi-output.txt",
       timeoutMs: 30_000,
-      maxRepairAttempts: 0
+      maxRepairAttempts: input.maxRepairAttempts ?? 0
     },
     dev: {
       repositoryRoot: input.repositoryRoot,
@@ -164,7 +344,7 @@ function makeRunnerConfig(input: {
       agentDir: "",
       sessionDir: "",
       stateRoot: input.stateRoot,
-      timeoutMs: 30_000,
+      timeoutMs: input.timeoutMs ?? 30_000,
       skipVersionCheck: true,
       disableTelemetry: true,
       offline: false
@@ -263,6 +443,69 @@ console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "tool-1",
 console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "bash", status: "success", result: { exitCode: 0 }, durationMs: 12 }));
 console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Fake Pi summary" }] } }));
 console.log(JSON.stringify({ type: "agent_end" }));
+`, "utf8");
+  await chmod(path, 0o755);
+}
+
+async function writeRepairingFakePiExecutable(path: string) {
+  await writeFile(path, `#!/usr/bin/env node
+const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+
+const prompt = process.argv.at(-1) || "";
+const sessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
+const countPath = join(sessionDir, "repair-count.txt");
+const observationPath = join(sessionDir, "repair-observation.json");
+mkdirSync(join(process.cwd(), "src"), { recursive: true });
+mkdirSync(sessionDir, { recursive: true });
+const count = existsSync(countPath) ? Number(readFileSync(countPath, "utf8")) + 1 : 1;
+writeFileSync(countPath, String(count));
+const observation = existsSync(observationPath) ? JSON.parse(readFileSync(observationPath, "utf8")) : { prompts: [], cwd: [] };
+observation.prompts.push(prompt);
+observation.cwd.push(process.cwd());
+writeFileSync(observationPath, JSON.stringify(observation, null, 2));
+console.log(JSON.stringify({ type: "session", sessionId: "pi-repair-session", cwd: process.cwd(), version: "0.79.3" }));
+console.log(JSON.stringify({ type: "agent_start" }));
+if (count === 1) {
+  console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "First attempt summary" }] } }));
+} else {
+  writeFileSync(join(process.cwd(), "src", "pi-repaired.txt"), "repair completed\\n");
+  console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Repair summary" }] } }));
+}
+console.log(JSON.stringify({ type: "agent_end" }));
+`, "utf8");
+  await chmod(path, 0o755);
+}
+
+async function writeInvalidJsonFakePiExecutable(path: string) {
+  await writeFile(path, `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "session", sessionId: "pi-invalid-session", version: "0.79.3" }));
+console.log("not-json");
+console.log(JSON.stringify({ type: "agent_start" }));
+console.log(JSON.stringify({ type: "agent_end" }));
+`, "utf8");
+  await chmod(path, 0o755);
+}
+
+async function writeNonZeroFakePiExecutable(path: string) {
+  await writeFile(path, `#!/usr/bin/env node
+process.exit(2);
+`, "utf8");
+  await chmod(path, 0o755);
+}
+
+async function writeTimeoutFakePiExecutable(path: string) {
+  await writeFile(path, `#!/usr/bin/env node
+setTimeout(() => {}, 10_000);
+`, "utf8");
+  await chmod(path, 0o755);
+}
+
+async function writeMissingLifecycleFakePiExecutable(path: string) {
+  await writeFile(path, `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "session", sessionId: "pi-missing-lifecycle", version: "0.79.3" }));
+console.log(JSON.stringify({ type: "agent_start" }));
+console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Lifecycle summary" }] } }));
 `, "utf8");
   await chmod(path, 0o755);
 }
