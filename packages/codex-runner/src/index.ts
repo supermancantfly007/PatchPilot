@@ -26,6 +26,7 @@ import type {
   AgentRunEvent,
   AgentRunResult,
   AgentRunToolCall,
+  AgentRunnerAvailability,
   EgressPolicyEvidence,
   EgressPolicyRuntimeConfig,
   FailureType,
@@ -85,6 +86,7 @@ export interface CodexRunnerConfig {
 }
 
 export interface CodexRunner {
+  availability?(cwd?: string): Promise<AgentRunnerAvailability>;
   isAvailable(): Promise<boolean>;
   isGitWorkspaceAvailable(cwd?: string): Promise<boolean>;
   run(context: CodexRunContext, emit: EmitCodexRunnerEvent, config: CodexRunnerConfig): Promise<AgentRunResult>;
@@ -146,6 +148,10 @@ interface PiStateDirs {
   sessionDir: string;
 }
 
+interface PiRunnerRuntimeOptions {
+  nodeVersion?: string;
+}
+
 interface ParsedPiEvent {
   type?: AgentRunEvent["type"];
   message?: string;
@@ -162,6 +168,9 @@ interface PiExecResult {
   capture: CodexExecCapture;
   egressPolicyEvidence?: EgressPolicyEvidence;
 }
+
+const verifiedPiVersion = "0.79.3";
+const requiredPiNodeEngine = ">=22.19.0";
 
 export {
   RootlessContainerSandbox,
@@ -196,6 +205,43 @@ export {
 
 export class LocalCodexRunner implements CodexRunner {
   constructor(private readonly workspaceManager: WorkspaceManager = new GitWorkspaceManager()) {}
+
+  async availability(cwd = process.cwd()): Promise<AgentRunnerAvailability> {
+    let runnerAvailable = false;
+    let runnerReason: string | undefined;
+    try {
+      const result = await executeCommand({
+        kind: "codex",
+        command: "codex",
+        args: ["--version"],
+        cwd,
+        timeoutMs: 5000,
+        maxOutputBytes: 4096
+      });
+      runnerAvailable = result.exitCode === 0;
+      if (!runnerAvailable) {
+        runnerReason = tail(result.stderr || result.stdout || result.output || `exit ${result.exitCode}`, 600);
+      }
+    } catch (error) {
+      runnerReason = error instanceof Error ? error.message : "Codex availability check failed";
+    }
+
+    const gitWorkspaceAvailable = await this.isGitWorkspaceAvailable(cwd).catch(() => false);
+    const available = runnerAvailable && gitWorkspaceAvailable;
+    return compactAvailability({
+      runner: "codex",
+      status: available ? "available" : "unavailable",
+      available,
+      runnerAvailable,
+      gitWorkspaceAvailable,
+      mode: "local_unsafe",
+      ...(!runnerAvailable
+        ? { reason: runnerReason || "Codex CLI is not available" }
+        : !gitWorkspaceAvailable
+          ? { reason: "A git workspace is required for Codex execution" }
+          : {})
+    });
+  }
 
   async isAvailable() {
     try {
@@ -388,26 +434,152 @@ export class LocalCodexRunner implements CodexRunner {
 export class LocalPiRunner implements CodexRunner {
   constructor(
     private readonly workspaceManager: WorkspaceManager = new GitWorkspaceManager(),
-    private readonly piDefaults: Partial<PiRunnerConfig> = {}
+    private readonly piDefaults: Partial<PiRunnerConfig> = {},
+    private readonly runtime: PiRunnerRuntimeOptions = {}
   ) {}
 
-  async isAvailable() {
-    const command = this.piDefaults.command?.trim() || process.env.PATCHPILOT_PI_COMMAND?.trim() || "pi";
+  async availability(cwd = process.cwd()): Promise<AgentRunnerAvailability> {
+    const piConfig = resolvePiAvailabilityConfig(this.piDefaults);
+    const gitWorkspaceAvailable = await this.isGitWorkspaceAvailable(cwd).catch(() => false);
+    const nodeVersion = this.runtime.nodeVersion ?? process.version;
+    const detailsBase = {
+      command: piConfig.command,
+      nodeVersion,
+      requiredNodeEngine: requiredPiNodeEngine,
+      verifiedVersion: verifiedPiVersion
+    };
+    const nodeCheck = checkNodeEngine(nodeVersion);
+    if (!nodeCheck.ok) {
+      return compactAvailability({
+        runner: "pi",
+        status: "unavailable",
+        available: false,
+        runnerAvailable: false,
+        gitWorkspaceAvailable,
+        mode: "local_unsafe",
+        reason: `Node runtime ${nodeVersion} does not satisfy Pi engine requirement ${requiredPiNodeEngine}.`,
+        details: detailsBase
+      });
+    }
+
+    let versionOutput = "";
+    let version = "";
     try {
       const result = await executeCommand({
         kind: "pi",
-        command,
+        command: piConfig.command,
         args: ["--version"],
-        cwd: process.cwd(),
+        cwd,
         timeoutMs: 5000,
         env: compactEnv({ PATH: process.env.PATH }),
         inheritEnv: false,
         maxOutputBytes: 4096
       });
-      return result.exitCode === 0;
-    } catch {
-      return false;
+      versionOutput = (result.stdout || result.stderr || result.output).trim();
+      if (result.exitCode !== 0) {
+        const reason = summarizePiVersionCommandFailure(result.stderr || result.stdout || result.output, result.exitCode);
+        return compactAvailability({
+          runner: "pi",
+          status: "unavailable",
+          available: false,
+          runnerAvailable: false,
+          gitWorkspaceAvailable,
+          mode: "local_unsafe",
+          reason,
+          details: {
+            ...detailsBase,
+            versionOutput
+          }
+        });
+      }
+      version = extractSemver(versionOutput) || "";
+    } catch (error) {
+      return compactAvailability({
+        runner: "pi",
+        status: "unavailable",
+        available: false,
+        runnerAvailable: false,
+        gitWorkspaceAvailable,
+        mode: "local_unsafe",
+        reason: isMissingCommandError(error) ? "Pi CLI is not installed" : error instanceof Error ? error.message : "Pi availability check failed",
+        details: detailsBase
+      });
     }
+
+    const details = {
+      ...detailsBase,
+      ...(version ? { version } : {}),
+      ...(versionOutput ? { versionOutput } : {})
+    };
+    if (isFakePiMode(piConfig)) {
+      return compactAvailability({
+        runner: "pi",
+        status: "degraded",
+        available: gitWorkspaceAvailable,
+        runnerAvailable: true,
+        gitWorkspaceAvailable,
+        mode: "fake",
+        reason: "Fake Pi command configured for tests.",
+        details: {
+          ...details,
+          fake: true
+        }
+      });
+    }
+    if (!version) {
+      return compactAvailability({
+        runner: "pi",
+        status: "unavailable",
+        available: false,
+        runnerAvailable: false,
+        gitWorkspaceAvailable,
+        mode: "local_unsafe",
+        reason: `Pi version output did not include a semver version: ${tail(versionOutput, 200) || "<empty>"}`,
+        details
+      });
+    }
+
+    const versionComparison = compareSemver(version, verifiedPiVersion);
+    if (versionComparison < 0) {
+      return compactAvailability({
+        runner: "pi",
+        status: "unavailable",
+        available: false,
+        runnerAvailable: false,
+        gitWorkspaceAvailable,
+        mode: "local_unsafe",
+        reason: `Pi version ${version} is older than verified version ${verifiedPiVersion}.`,
+        details
+      });
+    }
+    if (versionComparison > 0) {
+      return compactAvailability({
+        runner: "pi",
+        status: "degraded",
+        available: false,
+        runnerAvailable: false,
+        gitWorkspaceAvailable,
+        mode: "preview",
+        reason: `Pi version ${version} is newer than verified version ${verifiedPiVersion}; update fixtures before real runs.`,
+        details
+      });
+    }
+
+    const available = gitWorkspaceAvailable;
+    return compactAvailability({
+      runner: "pi",
+      status: available ? "available" : "unavailable",
+      available,
+      runnerAvailable: true,
+      gitWorkspaceAvailable,
+      mode: "local_unsafe",
+      ...(!gitWorkspaceAvailable ? { reason: "A git workspace is required for Pi execution" } : {}),
+      details
+    });
+  }
+
+  async isAvailable() {
+    return (await this.availability(process.cwd())).runnerAvailable;
   }
 
   async isGitWorkspaceAvailable(cwd = process.cwd()) {
@@ -803,6 +975,80 @@ function resolvePiRunnerConfig(config: CodexRunnerConfig): PiRunnerConfig {
     disableTelemetry: pickPiBoolean(input.disableTelemetry, process.env.PATCHPILOT_PI_DISABLE_TELEMETRY, true),
     offline: pickPiBoolean(input.offline, process.env.PATCHPILOT_PI_OFFLINE, false)
   };
+}
+
+function resolvePiAvailabilityConfig(input: Partial<PiRunnerConfig>) {
+  return {
+    command: pickPiString(input.command, process.env.PATCHPILOT_PI_COMMAND, "pi"),
+    provider: pickPiString(input.provider, process.env.PATCHPILOT_PI_PROVIDER, ""),
+    timeoutMs: pickPiNumber(input.timeoutMs, process.env.PATCHPILOT_PI_TIMEOUT_MS, 5000)
+  };
+}
+
+function compactAvailability(availability: AgentRunnerAvailability): AgentRunnerAvailability {
+  return {
+    runner: availability.runner,
+    status: availability.status,
+    available: availability.available,
+    runnerAvailable: availability.runnerAvailable,
+    gitWorkspaceAvailable: availability.gitWorkspaceAvailable,
+    ...(availability.reason ? { reason: availability.reason } : {}),
+    ...(availability.mode ? { mode: availability.mode } : {}),
+    ...(availability.details ? { details: availability.details } : {})
+  };
+}
+
+function checkNodeEngine(nodeVersion: string) {
+  const current = parseSemver(nodeVersion);
+  const required = parseSemver(requiredPiNodeEngine);
+  return {
+    ok: Boolean(current && required && compareParsedSemver(current, required) >= 0)
+  };
+}
+
+function summarizePiVersionCommandFailure(output: string | undefined, exitCode: number | null) {
+  const summary = tail((output || "").trim(), 600);
+  if (/enoent|not found|no such file/i.test(summary)) return "Pi CLI is not installed";
+  return summary || `Pi --version failed with exit ${exitCode}`;
+}
+
+function isMissingCommandError(error: unknown) {
+  return error instanceof Error && /enoent|not found|no such file/i.test(error.message);
+}
+
+function isFakePiMode(piConfig: Pick<PiRunnerConfig, "command" | "provider">) {
+  const provider = (piConfig.provider ?? "").trim().toLowerCase();
+  const command = piConfig.command.trim().toLowerCase();
+  return provider === "fake" || process.env.PATCHPILOT_PI_FAKE === "1" || /(^|[/_-])fake-pi|pi-fake/u.test(command);
+}
+
+function extractSemver(output: string) {
+  const match = output.match(/(\d+)\.(\d+)\.(\d+)/u);
+  return match?.[0];
+}
+
+function compareSemver(left: string, right: string) {
+  const parsedLeft = parseSemver(left);
+  const parsedRight = parseSemver(right);
+  if (!parsedLeft || !parsedRight) return 0;
+  return compareParsedSemver(parsedLeft, parsedRight);
+}
+
+function parseSemver(value: string) {
+  const match = value.match(/(\d+)\.(\d+)\.(\d+)/u);
+  if (!match) return undefined;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3])
+  };
+}
+
+function compareParsedSemver(
+  left: { major: number; minor: number; patch: number },
+  right: { major: number; minor: number; patch: number }
+) {
+  return left.major - right.major || left.minor - right.minor || left.patch - right.patch;
 }
 
 async function runPiJson(

@@ -395,6 +395,51 @@ describe("PatchPilot API", () => {
     await app.close();
   });
 
+  it("returns structured degraded Pi availability evidence in runtime configuration", async () => {
+    const piRunner: CodexRunner = {
+      isAvailable: async () => true,
+      isGitWorkspaceAvailable: async () => true,
+      availability: async () => ({
+        runner: "pi",
+        status: "degraded",
+        available: true,
+        runnerAvailable: true,
+        gitWorkspaceAvailable: true,
+        mode: "fake",
+        reason: "Fake Pi command configured for tests.",
+        details: {
+          command: "/tmp/fake-pi",
+          version: "0.0.0-test"
+        }
+      }),
+      run: testCodexRunner.run
+    };
+    const app = await buildTestServer({ store: createTestStore({ piRunner }) });
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/api/config" });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().runnerAvailability).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          runner: "pi",
+          status: "degraded",
+          available: true,
+          runnerAvailable: true,
+          gitWorkspaceAvailable: true,
+          mode: "fake",
+          reason: "Fake Pi command configured for tests.",
+          details: {
+            command: "/tmp/fake-pi",
+            version: "0.0.0-test"
+          }
+        })
+      ]));
+    } finally {
+      await app.close();
+    }
+  });
+
   it("preserves auto as configured runner while reporting Codex as the active runner", async () => {
     const previousRunner = process.env.PATCHPILOT_RUNNER;
     process.env.PATCHPILOT_RUNNER = "auto";
@@ -2364,7 +2409,7 @@ artifacts:
       });
 
       expect(start.statusCode).toBe(409);
-      expect(start.json().message).toContain("Pi runner is required but is not available");
+      expect(start.json().message).toContain("Pi runner is not available");
       expect(codexRunnerCalled).toBe(false);
     } finally {
       await app.close();

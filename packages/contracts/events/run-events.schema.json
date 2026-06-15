@@ -1336,6 +1336,7 @@
             "type": "string",
             "enum": [
               "available",
+              "degraded",
               "unavailable"
             ]
           },
@@ -1350,6 +1351,19 @@
           },
           "reason": {
             "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "production_enforceable",
+              "local_unsafe",
+              "fake",
+              "preview"
+            ]
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
           }
         }
       },

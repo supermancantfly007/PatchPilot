@@ -50,7 +50,7 @@ describe("OpenAPI document", () => {
   it("documents Pi runner overrides separately from auto runtime configuration", () => {
     const document = buildOpenApiDocument();
     const schemas = document.components.schemas as Record<string, {
-      properties?: Record<string, { enum?: string[]; type?: string; items?: { $ref?: string } }>;
+      properties?: Record<string, { enum?: string[]; type?: string; items?: { $ref?: string }; additionalProperties?: boolean }>;
       required?: string[];
     }>;
 
@@ -69,7 +69,17 @@ describe("OpenAPI document", () => {
       "gitWorkspaceAvailable"
     ]);
     expect(schemas.AgentRunnerAvailability?.properties?.runner?.enum).toEqual(["codex", "pi"]);
-    expect(schemas.AgentRunnerAvailability?.properties?.status?.enum).toEqual(["available", "unavailable"]);
+    expect(schemas.AgentRunnerAvailability?.properties?.status?.enum).toEqual(["available", "degraded", "unavailable"]);
+    expect(schemas.AgentRunnerAvailability?.properties?.mode?.enum).toEqual([
+      "production_enforceable",
+      "local_unsafe",
+      "fake",
+      "preview"
+    ]);
+    expect(schemas.AgentRunnerAvailability?.properties?.details).toEqual({
+      type: "object",
+      additionalProperties: true
+    });
   });
 
   it("documents provider-neutral AgentRun event types without dropping Codex compatibility", () => {

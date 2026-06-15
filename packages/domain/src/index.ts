@@ -47,7 +47,8 @@ export const agentRunnerKinds = ["codex", "pi"] as const;
 
 export type AgentRunnerKind = typeof agentRunnerKinds[number];
 export type ConfiguredAgentRunnerKind = "auto" | AgentRunnerKind;
-export type AgentRunnerAvailabilityStatus = "available" | "unavailable";
+export type AgentRunnerAvailabilityStatus = "available" | "degraded" | "unavailable";
+export type AgentRunnerAvailabilityMode = "production_enforceable" | "local_unsafe" | "fake" | "preview";
 export interface AgentRunnerAvailability {
   runner: AgentRunnerKind;
   status: AgentRunnerAvailabilityStatus;
@@ -55,6 +56,8 @@ export interface AgentRunnerAvailability {
   runnerAvailable: boolean;
   gitWorkspaceAvailable: boolean;
   reason?: string;
+  mode?: AgentRunnerAvailabilityMode;
+  details?: Record<string, unknown>;
 }
 export const agentRunEventTypes = [
   "requirement.understood",

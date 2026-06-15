@@ -15,6 +15,88 @@ import {
 } from "./index";
 
 describe("LocalPiRunner", () => {
+  it("reports structured Pi availability for installed, missing, bad version, bad engine, fake mode, and command failure", async () => {
+    const fixture = await createGitFixture();
+    const compatiblePiPath = join(fixture.root, "pi-compatible.cjs");
+    const oldPiPath = join(fixture.root, "pi-old.cjs");
+    const futurePiPath = join(fixture.root, "pi-future.cjs");
+    const failingPiPath = join(fixture.root, "pi-failing.cjs");
+    const fakePiPath = join(fixture.root, "fake-pi-version.cjs");
+    await writeVersionPiExecutable(compatiblePiPath, { version: "0.79.3" });
+    await writeVersionPiExecutable(oldPiPath, { version: "0.70.0" });
+    await writeVersionPiExecutable(futurePiPath, { version: "0.80.0" });
+    await writeVersionPiExecutable(failingPiPath, { exitCode: 7, stderr: "bad pi install" });
+    await writeVersionPiExecutable(fakePiPath, { version: "0.0.0-test" });
+
+    try {
+      await expect(new LocalPiRunner(undefined, { command: compatiblePiPath }).availability(fixture.repo))
+        .resolves.toMatchObject({
+          runner: "pi",
+          status: "available",
+          available: true,
+          runnerAvailable: true,
+          gitWorkspaceAvailable: true,
+          mode: "local_unsafe",
+          details: expect.objectContaining({
+            command: compatiblePiPath,
+            version: "0.79.3",
+            verifiedVersion: "0.79.3",
+            nodeVersion: process.version,
+            requiredNodeEngine: ">=22.19.0"
+          })
+        });
+
+      await expect(new LocalPiRunner(undefined, { command: join(fixture.root, "missing-pi") }).availability(fixture.repo))
+        .resolves.toMatchObject({
+          runner: "pi",
+          status: "unavailable",
+          available: false,
+          runnerAvailable: false,
+          reason: "Pi CLI is not installed"
+        });
+
+      await expect(new LocalPiRunner(undefined, { command: oldPiPath }).availability(fixture.repo))
+        .resolves.toMatchObject({
+          status: "unavailable",
+          runnerAvailable: false,
+          reason: expect.stringContaining("0.70.0")
+        });
+
+      await expect(new LocalPiRunner(undefined, { command: futurePiPath }).availability(fixture.repo))
+        .resolves.toMatchObject({
+          status: "degraded",
+          available: false,
+          runnerAvailable: false,
+          reason: expect.stringContaining("0.80.0")
+        });
+
+      await expect(new LocalPiRunner(undefined, { command: compatiblePiPath }, { nodeVersion: "v20.11.0" }).availability(fixture.repo))
+        .resolves.toMatchObject({
+          status: "unavailable",
+          runnerAvailable: false,
+          reason: expect.stringContaining("v20.11.0")
+        });
+
+      await expect(new LocalPiRunner(undefined, { command: fakePiPath, provider: "fake" }).availability(fixture.repo))
+        .resolves.toMatchObject({
+          status: "degraded",
+          available: true,
+          runnerAvailable: true,
+          mode: "fake",
+          reason: expect.stringContaining("Fake Pi")
+        });
+
+      await expect(new LocalPiRunner(undefined, { command: failingPiPath }).availability(fixture.repo))
+        .resolves.toMatchObject({
+          status: "unavailable",
+          runnerAvailable: false,
+          reason: expect.stringContaining("bad pi install")
+        });
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("runs fake Pi JSON through the same worktree, test, diff, commit, and artifact boundary", async () => {
     const fixture = await createGitFixture();
     const fakePiPath = join(fixture.root, "fake-pi.cjs");
@@ -442,6 +524,23 @@ console.log(JSON.stringify({ type: "message_update", role: "assistant", delta: "
 console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash", args: { command: "printf fake-pi" } }));
 console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "bash", status: "success", result: { exitCode: 0 }, durationMs: 12 }));
 console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Fake Pi summary" }] } }));
+console.log(JSON.stringify({ type: "agent_end" }));
+`, "utf8");
+  await chmod(path, 0o755);
+}
+
+async function writeVersionPiExecutable(path: string, options: {
+  version?: string;
+  exitCode?: number;
+  stderr?: string;
+}) {
+  await writeFile(path, `#!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  ${options.stderr ? `console.error(${JSON.stringify(options.stderr)});` : ""}
+  ${options.version ? `console.log("pi ${options.version}");` : ""}
+  process.exit(${options.exitCode ?? 0});
+}
+console.log(JSON.stringify({ type: "agent_start" }));
 console.log(JSON.stringify({ type: "agent_end" }));
 `, "utf8");
   await chmod(path, 0o755);

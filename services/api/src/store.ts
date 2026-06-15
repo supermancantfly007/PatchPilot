@@ -2017,7 +2017,16 @@ export class PatchPilotStore {
       throw new DomainError("INVALID_STATE", `${runnerDisplayName(runner)} runner adapter is not configured`);
     }
     if (!availability.runnerAvailable) {
-      throw new DomainError("INVALID_STATE", `${runnerDisplayName(runner)} runner is required but is not available`);
+      throw new DomainError(
+        "INVALID_STATE",
+        availability.reason || `${runnerDisplayName(runner)} runner is required but is not available`
+      );
+    }
+    if (availability.status === "degraded" && availability.mode !== "fake") {
+      throw new DomainError(
+        "INVALID_STATE",
+        availability.reason || `${runnerDisplayName(runner)} runner is degraded and cannot start a real Work Item run`
+      );
     }
     if (!availability.gitWorkspaceAvailable) {
       throw new DomainError("INVALID_STATE", `A git workspace is required for ${runnerDisplayName(runner)} execution`);
@@ -2039,6 +2048,22 @@ export class PatchPilotStore {
         gitWorkspaceAvailable: false,
         reason: `${runnerDisplayName(runner)} runner adapter is not configured`
       };
+    }
+
+    if (adapter.availability) {
+      try {
+        const availability = await adapter.availability(repositoryRoot);
+        return normalizeRunnerAvailability(runner, availability);
+      } catch (error) {
+        return {
+          runner,
+          status: "unavailable",
+          available: false,
+          runnerAvailable: false,
+          gitWorkspaceAvailable: false,
+          reason: error instanceof Error ? error.message : `${runnerDisplayName(runner)} availability check failed`
+        };
+      }
     }
 
     let runnerAvailable = false;
@@ -5919,6 +5944,25 @@ function failureTypeLabel(failureType: FailureType) {
 
 function runnerDisplayName(runner: AgentRunnerKind) {
   return runner === "codex" ? "Codex" : "Pi";
+}
+
+function normalizeRunnerAvailability(
+  runner: AgentRunnerKind,
+  availability: AgentRunnerAvailability
+): AgentRunnerAvailability {
+  const runnerAvailable = Boolean(availability.runnerAvailable);
+  const gitWorkspaceAvailable = Boolean(availability.gitWorkspaceAvailable);
+  const available = Boolean(availability.available && runnerAvailable && gitWorkspaceAvailable);
+  return {
+    runner,
+    status: availability.status,
+    available,
+    runnerAvailable,
+    gitWorkspaceAvailable,
+    ...(availability.reason ? { reason: availability.reason } : {}),
+    ...(availability.mode ? { mode: availability.mode } : {}),
+    ...(availability.details ? { details: availability.details } : {})
+  };
 }
 
 function severityForFailure(failureType: FailureType): BugSeverity {

@@ -2105,11 +2105,16 @@ export const openApiSchemas = {
   }, ["configuredRunner", "activeRunner", "runnerAvailability", "codexAvailable", "gitWorkspaceAvailable", "testCommand", "repositoryRoot", "workspaceRoot", "previewUrl", "configSource", "setup", "test", "smoke", "e2e", "dev", "security", "budget", "pi", "artifacts"]),
   AgentRunnerAvailability: objectSchema({
     runner: runnerKind,
-    status: enumSchema(["available", "unavailable"]),
+    status: enumSchema(["available", "degraded", "unavailable"]),
     available: { type: "boolean" },
     runnerAvailable: { type: "boolean" },
     gitWorkspaceAvailable: { type: "boolean" },
-    reason: { type: "string" }
+    reason: { type: "string" },
+    mode: enumSchema(["production_enforceable", "local_unsafe", "fake", "preview"]),
+    details: {
+      type: "object",
+      additionalProperties: true
+    }
   }, ["runner", "status", "available", "runnerAvailable", "gitWorkspaceAvailable"]),
   RuntimeSetupConfig: objectSchema({
     commands: arrayOf({ type: "string" })
