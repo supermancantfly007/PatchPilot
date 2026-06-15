@@ -867,6 +867,14 @@ export {
   type SecretBrokerResolvedGrant,
   type SecretBrokerResolution
 } from "./secretBroker";
+export {
+  FakePiPolicyToolBridge,
+  PiPolicyToolDeniedError,
+  type FakePiPolicyToolBridgeOptions,
+  type PiPolicyToolEvidence,
+  type PiPolicyToolEvidenceAction,
+  type PiPolicyToolKind
+} from "./piPolicyToolBridge";
 
 export class LocalCodexRunner implements CodexRunner {
   constructor(private readonly workspaceManager: WorkspaceManager = new GitWorkspaceManager()) {}

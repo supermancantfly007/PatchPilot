@@ -62,6 +62,12 @@ Raw Pi transcript、RPC stream、session export 和大体积 tool output 只通�
 
 Product state、Audit Event、OpenTelemetry 和 generated artifacts 不应保存 plaintext provider secrets、OAuth tokens、host HOME、SSH agent、Docker socket 或 cloud credential env。需要排障时查看 redacted artifact 和 retention metadata，不要把 Pi/Codex 的工具、shell、编辑、测试、模型或上下文能力降级成安全边界。
 
+## SDK/custom tool policy bridge prototype
+
+`FakePiPolicyToolBridge` 验证了 Pi SDK 或 platform-owned custom tools 的候选强制路径：shell、file write、file edit、network-affecting action 和 secret-bound action 在执行前先调用 active Capability Manifest 的 command、repo write、egress host 和 secret policy。Denied action 会在 side effect 前返回 `policy_denied` evidence，不执行 shell、不写 workspace、不调用网络回调，也不返回 secret grant。
+
+Allowed action 保持完整 coding-agent 能力路径：tool 可以继续写文件、编辑文件、访问 manifest 允许的网络目的地、读取已授权 secret grant，并运行测试命令。该原型不是通过默认减少 Pi/Codex 能力实现安全；生产路径应保持完整 Pi 能力，并把 PatchPilot policy bridge 放在 Pi 内部 tool action 的 pre-execution 边界。
+
 ## Real Pi Smoke
 
 真实 smoke 默认跳过，避免 CI 或本地误触发真实 LLM 调用：

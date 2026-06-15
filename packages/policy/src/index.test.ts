@@ -4,6 +4,8 @@ import {
   agentSatisfiesCapabilityManifest,
   applyManifestToEgressPolicyConfig,
   enforceCommandPolicy,
+  enforceNetworkPolicy,
+  enforceSecretPolicy,
   enforceWorkspaceWritePolicy,
   generateCapabilityManifest,
   isCostWithinCapabilityManifest,
@@ -187,5 +189,45 @@ describe("capability manifest policy", () => {
     expect(config.allowedHosts).toEqual(expect.arrayContaining(["registry.npmjs.org"]));
     expect(config.allowGitRemotes).toBe(false);
     expect(summarizeCapabilityManifest(manifest).secretValuesStored).toBe(false);
+  });
+
+  it("enforces manifest network host policy before egress", () => {
+    const manifest = generateCapabilityManifest({
+      network: {
+        allow: ["api.allowed.test", "*.registry.test"]
+      }
+    });
+
+    expect(() => enforceNetworkPolicy(manifest, "https://api.allowed.test/v1")).not.toThrow();
+    expect(() => enforceNetworkPolicy(manifest, "packages.registry.test:443")).not.toThrow();
+    expect(() => enforceNetworkPolicy(manifest, "https://blocked.example/v1")).toThrow(/network_not_allowlisted/u);
+    expect(() => enforceNetworkPolicy(manifest, "http://169.254.169.254/latest/meta-data")).toThrow(/network_metadata_denied/u);
+    expect(() => enforceNetworkPolicy(manifest, "http://127.0.0.1:8080")).toThrow(/network_private_denied/u);
+  });
+
+  it("enforces manifest secret refs without storing secret values", () => {
+    const manifest = generateCapabilityManifest({
+      workItem: {
+        id: "wi_secret",
+        prdId: "prd_secret",
+        requiredCapabilities: ["secret:ci-token"]
+      },
+      security: {
+        secretBroker: {
+          allowedSecrets: [
+            {
+              id: "ci-token",
+              envVar: "CI_TOKEN",
+              sourceEnv: "PATCHPILOT_CI_TOKEN",
+              environment: "ci"
+            }
+          ]
+        }
+      }
+    });
+
+    expect(() => enforceSecretPolicy(manifest, "ci-token")).not.toThrow();
+    expect(() => enforceSecretPolicy(manifest, "prod-token")).toThrow(/secret_not_requested/u);
+    expect(JSON.stringify(summarizeCapabilityManifest(manifest))).not.toContain("PATCHPILOT_CI_TOKEN");
   });
 });

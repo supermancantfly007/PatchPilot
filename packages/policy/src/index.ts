@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import {
   defaultEgressAllowedHosts,
   defaultEgressAuditLogPath,
@@ -419,6 +420,72 @@ export function enforceWorkspaceWritePolicy(manifest: CapabilityManifest, change
   );
 }
 
+export function evaluateNetworkPolicy(manifest: CapabilityManifest, target: string): PolicyDecision {
+  assertValidCapabilityManifest(manifest);
+  const host = normalizeNetworkHost(target);
+  if (!host) {
+    return { decision: "denied", reason: "network_target_invalid", target };
+  }
+  if (manifest.network.denyMetadataEndpoints && isMetadataHost(host)) {
+    return { decision: "denied", reason: "network_metadata_denied", target: host };
+  }
+  if (manifest.network.denyPrivateNetworks && isPrivateNetworkHost(host)) {
+    return { decision: "denied", reason: "network_private_denied", target: host };
+  }
+  const allowedPattern = manifest.network.allow.find((pattern) => matchesNetworkHost(host, pattern));
+  if (!allowedPattern) {
+    return {
+      decision: "denied",
+      reason: "network_not_allowlisted",
+      target: host
+    };
+  }
+  return {
+    decision: "allowed",
+    reason: "network_allowlisted",
+    target: host,
+    matchedPattern: allowedPattern
+  };
+}
+
+export function enforceNetworkPolicy(manifest: CapabilityManifest, target: string) {
+  const decision = evaluateNetworkPolicy(manifest, target);
+  if (decision.decision === "allowed") return decision;
+  throw new CapabilityPolicyViolation(
+    `Capability policy denied network target "${decision.target}": ${decision.reason}`,
+    decision
+  );
+}
+
+export function evaluateSecretPolicy(manifest: CapabilityManifest, secretId: string): PolicyDecision {
+  assertValidCapabilityManifest(manifest);
+  const normalized = secretId.trim();
+  if (!normalized) {
+    return { decision: "denied", reason: "secret_ref_empty", target: secretId };
+  }
+  if (!manifest.secrets.requested.includes(normalized)) {
+    return { decision: "denied", reason: "secret_not_requested", target: normalized };
+  }
+  if (!manifest.secrets.allow.includes(normalized)) {
+    return { decision: "denied", reason: "secret_not_allowlisted", target: normalized };
+  }
+  return {
+    decision: "allowed",
+    reason: "secret_allowlisted",
+    target: normalized,
+    matchedPattern: normalized
+  };
+}
+
+export function enforceSecretPolicy(manifest: CapabilityManifest, secretId: string) {
+  const decision = evaluateSecretPolicy(manifest, secretId);
+  if (decision.decision === "allowed") return decision;
+  throw new CapabilityPolicyViolation(
+    `Capability policy denied secret "${decision.target}": ${decision.reason}`,
+    decision
+  );
+}
+
 export function agentSatisfiesCapabilityManifest(
   agent: Pick<AgentProfile, "role" | "capabilities">,
   manifest: CapabilityManifest
@@ -532,6 +599,89 @@ function uniqueStrings(values: readonly string[]) {
 
 function normalizeHostPattern(value: string) {
   return value.toLowerCase().trim().replace(/^\.+/u, ".");
+}
+
+function normalizeNetworkHost(value: string) {
+  const trimmed = value.trim().toLowerCase().replace(/\.+$/u, "");
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) return trimmed.slice(1, -1);
+  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(trimmed)) {
+    try {
+      return new URL(trimmed).hostname.toLowerCase().replace(/\.+$/u, "");
+    } catch {
+      return undefined;
+    }
+  }
+  if (trimmed.includes("@") && trimmed.includes(":") && !trimmed.includes("/")) {
+    return trimmed.split("@").pop()?.split(":")[0]?.toLowerCase().replace(/\.+$/u, "");
+  }
+  if (trimmed.includes(":") && !isIP(trimmed)) return trimmed.split(":")[0]?.toLowerCase().replace(/\.+$/u, "");
+  return trimmed;
+}
+
+function matchesNetworkHost(host: string, rawPattern: string) {
+  const pattern = normalizeNetworkHost(rawPattern);
+  if (!pattern) return false;
+  if (pattern === "*" || pattern === "**") return true;
+  if (pattern.startsWith("*.")) {
+    const suffix = pattern.slice(1);
+    return host.endsWith(suffix) && host.length > suffix.length;
+  }
+  return host === pattern;
+}
+
+function isMetadataHost(host: string) {
+  return (
+    host === "metadata.google.internal" ||
+    host === "metadata.azure.com" ||
+    host === "metadata.oraclecloud.com" ||
+    host === "169.254.169.254" ||
+    host.endsWith(".metadata.google.internal")
+  );
+}
+
+function isPrivateNetworkHost(host: string) {
+  if (!isIP(host)) return false;
+  if (host === "169.254.169.254") return true;
+  const maybeV4 = host.startsWith("::ffff:") ? host.slice("::ffff:".length) : host;
+  const v4 = ipv4ToInt(maybeV4);
+  if (v4 !== undefined) {
+    return (
+      inV4Range(v4, "0.0.0.0", 8) ||
+      inV4Range(v4, "10.0.0.0", 8) ||
+      inV4Range(v4, "100.64.0.0", 10) ||
+      inV4Range(v4, "127.0.0.0", 8) ||
+      inV4Range(v4, "169.254.0.0", 16) ||
+      inV4Range(v4, "172.16.0.0", 12) ||
+      inV4Range(v4, "192.168.0.0", 16)
+    );
+  }
+  return (
+    host === "::" ||
+    host === "::1" ||
+    host.startsWith("fe80:") ||
+    host.startsWith("fc") ||
+    host.startsWith("fd")
+  );
+}
+
+function ipv4ToInt(ip: string) {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return undefined;
+  let value = 0;
+  for (const part of parts) {
+    const number = Number(part);
+    if (!Number.isInteger(number) || number < 0 || number > 255) return undefined;
+    value = (value << 8) + number;
+  }
+  return value >>> 0;
+}
+
+function inV4Range(ip: number, cidrBase: string, prefixLength: number) {
+  const base = ipv4ToInt(cidrBase);
+  if (base === undefined) return false;
+  const mask = prefixLength === 0 ? 0 : (0xffffffff << (32 - prefixLength)) >>> 0;
+  return (ip & mask) === (base & mask);
 }
 
 function normalizeRepoPath(value: string) {
