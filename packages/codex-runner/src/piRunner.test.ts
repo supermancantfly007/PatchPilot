@@ -4,9 +4,11 @@ import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import type { AgentRunEvent, Prd, Requirement, WorkItem } from "@patchpilot/domain";
+import { generateCapabilityManifest } from "@patchpilot/policy";
 import {
   defaultContainerSandboxConfig,
   defaultEgressPolicyConfig,
+  evaluatePiSecurityPreflight,
   LocalPiRunner,
   parsePiEvent,
   type CodexRunError,
@@ -15,6 +17,245 @@ import {
 } from "./index";
 
 describe("LocalPiRunner", () => {
+  it("fails closed Pi security preflight unless real-provider boundaries or explicit local degraded mode are present", async () => {
+    const fixture = await createGitFixture();
+    const context = makeContext();
+    const workItemWithSecret = {
+      ...context.workItem,
+      requiredCapabilities: ["secret:openai-api-key"]
+    };
+    const baseConfig = makeRunnerConfig({
+      command: "pi",
+      repositoryRoot: fixture.repo,
+      workspaceRoot: fixture.workspaceRoot,
+      stateRoot: fixture.stateRoot,
+      provider: "openai",
+      containerSandboxEnabled: true,
+      egressPolicyEnabled: true,
+      egressAllowedHosts: ["api.openai.com"],
+      secretBrokerEnabled: true,
+      secretEnv: {
+        OPENAI_API_KEY: "test-openai-key"
+      }
+    });
+    const manifest = generateCapabilityManifest({
+      runId: context.runId,
+      prdId: context.prd.id,
+      workItem: workItemWithSecret,
+      testCommand: baseConfig.test.command,
+      testTimeoutMs: baseConfig.test.timeoutMs,
+      security: baseConfig.security,
+      budget: baseConfig.budget,
+      commands: {
+        allow: ["pi --mode json", "pi --version"]
+      },
+      createdBy: "pi-runner-test"
+    });
+    const manifestWithoutSecret = generateCapabilityManifest({
+      runId: context.runId,
+      prdId: context.prd.id,
+      workItem: context.workItem,
+      testCommand: baseConfig.test.command,
+      testTimeoutMs: baseConfig.test.timeoutMs,
+      security: baseConfig.security,
+      budget: baseConfig.budget,
+      commands: {
+        allow: ["pi --mode json", "pi --version"]
+      },
+      createdBy: "pi-runner-test"
+    });
+
+    try {
+      await expect(evaluatePiSecurityPreflight({
+        config: {
+          ...baseConfig,
+          pi: { ...baseConfig.pi!, provider: "" }
+        },
+        capabilityManifest: manifest
+      })).resolves.toMatchObject({
+        status: "failed",
+        failureType: "policy_denied",
+        reason: expect.stringContaining("provider")
+      });
+
+      await expect(evaluatePiSecurityPreflight({
+        config: {
+          ...baseConfig,
+          pi: { ...baseConfig.pi!, provider: "google" }
+        },
+        capabilityManifest: manifest
+      })).resolves.toMatchObject({
+        status: "failed",
+        failureType: "policy_denied",
+        reason: expect.stringContaining("Unsupported Pi provider")
+      });
+
+      await expect(evaluatePiSecurityPreflight({
+        config: {
+          ...baseConfig,
+          security: {
+            ...baseConfig.security,
+            egressPolicy: {
+              ...baseConfig.security.egressPolicy,
+              allowedHosts: ["*.openai.com"]
+            }
+          }
+        },
+        capabilityManifest: manifest
+      })).resolves.toMatchObject({
+        status: "failed",
+        failureType: "policy_denied",
+        reason: expect.stringContaining("wildcard")
+      });
+
+      await expect(evaluatePiSecurityPreflight({
+        config: {
+          ...baseConfig,
+          security: {
+            ...baseConfig.security,
+            containerSandbox: {
+              ...baseConfig.security.containerSandbox,
+              enabled: false
+            }
+          }
+        },
+        capabilityManifest: manifest
+      })).resolves.toMatchObject({
+        status: "failed",
+        failureType: "policy_denied",
+        reason: expect.stringContaining("container sandbox")
+      });
+
+      await expect(evaluatePiSecurityPreflight({
+        config: baseConfig,
+        capabilityManifest: manifest,
+        containerRuntimeResolver: async () => undefined
+      })).resolves.toMatchObject({
+        status: "failed",
+        failureType: "environment_failed",
+        reason: expect.stringContaining("runtime")
+      });
+
+      await expect(evaluatePiSecurityPreflight({
+        config: {
+          ...baseConfig,
+          security: {
+            ...baseConfig.security,
+            egressPolicy: {
+              ...baseConfig.security.egressPolicy,
+              enabled: false
+            }
+          }
+        },
+        capabilityManifest: manifest
+      })).resolves.toMatchObject({
+        status: "failed",
+        failureType: "policy_denied",
+        reason: expect.stringContaining("egress policy")
+      });
+
+      await expect(evaluatePiSecurityPreflight({
+        config: baseConfig,
+        capabilityManifest: undefined
+      })).resolves.toMatchObject({
+        status: "failed",
+        failureType: "policy_denied",
+        reason: expect.stringContaining("Capability Manifest")
+      });
+
+      await expect(evaluatePiSecurityPreflight({
+        config: baseConfig,
+        capabilityManifest: manifestWithoutSecret
+      })).resolves.toMatchObject({
+        status: "failed",
+        failureType: "policy_denied",
+        reason: expect.stringContaining("openai-api-key")
+      });
+
+      await expect(evaluatePiSecurityPreflight({
+        config: {
+          ...baseConfig,
+          security: {
+            ...baseConfig.security,
+            secretBroker: {
+              ...baseConfig.security.secretBroker,
+              enabled: false
+            }
+          }
+        },
+        capabilityManifest: manifest
+      })).resolves.toMatchObject({
+        status: "failed",
+        failureType: "policy_denied",
+        reason: expect.stringContaining("Secret Broker")
+      });
+
+      await expect(evaluatePiSecurityPreflight({
+        config: {
+          ...baseConfig,
+          security: {
+            ...baseConfig.security,
+            secretEnv: {}
+          }
+        },
+        capabilityManifest: manifest
+      })).resolves.toMatchObject({
+        status: "failed",
+        failureType: "policy_denied",
+        reason: expect.stringContaining("openai-api-key")
+      });
+
+      await expect(evaluatePiSecurityPreflight({
+        config: baseConfig,
+        capabilityManifest: manifest
+      })).resolves.toMatchObject({
+        status: "failed",
+        failureType: "policy_denied",
+        reason: expect.stringContaining("pre-execution command enforcement")
+      });
+
+      const previousEnv = pickEnv([
+        "PATCHPILOT_PI_ALLOW_LOCAL_UNSAFE",
+        "PATCHPILOT_PI_ALLOW_OBSERVED_INTERNAL_TOOL_POLICY"
+      ]);
+      process.env.PATCHPILOT_PI_ALLOW_LOCAL_UNSAFE = "1";
+      process.env.PATCHPILOT_PI_ALLOW_OBSERVED_INTERNAL_TOOL_POLICY = "1";
+      try {
+        await expect(evaluatePiSecurityPreflight({
+          config: {
+            ...baseConfig,
+            security: {
+              ...baseConfig.security,
+              containerSandbox: {
+                ...baseConfig.security.containerSandbox,
+                enabled: false
+              },
+              egressPolicy: {
+                ...baseConfig.security.egressPolicy,
+                enabled: false
+              }
+            }
+          },
+          capabilityManifest: manifest
+        })).resolves.toMatchObject({
+          status: "passed",
+          evidence: expect.objectContaining({
+            mode: "local_unsafe",
+            isolationMode: "host_user",
+            egressPolicy: "disabled_explicit_local_degraded",
+            internalToolCommandPolicy: "observed_after_execution",
+            preExecutionCommandPolicy: "pi_process_only",
+            enforcementGaps: expect.arrayContaining(["pi_internal_tool_pre_execution"])
+          })
+        });
+      } finally {
+        restoreEnv(previousEnv);
+      }
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("reports structured Pi availability for installed, missing, bad version, bad engine, fake mode, and command failure", async () => {
     const fixture = await createGitFixture();
     const compatiblePiPath = join(fixture.root, "pi-compatible.cjs");
@@ -150,6 +391,14 @@ describe("LocalPiRunner", () => {
         })
       ]);
       expect(result.codexSessionId).toBeUndefined();
+      expect(result.securityPreflightEvidence).toMatchObject({
+        mode: "fake",
+        isolationMode: "host_user",
+        egressPolicy: "disabled_fake",
+        secretBroker: "not_required",
+        internalToolCommandPolicy: "not_applicable",
+        preExecutionCommandPolicy: "not_applicable"
+      });
 
       const eventTypes = events.map((event) => event.type);
       expect(eventTypes).toEqual(expect.arrayContaining<AgentRunEvent["type"]>([
@@ -380,6 +629,12 @@ function makeRunnerConfig(input: {
   repositoryRoot: string;
   workspaceRoot: string;
   stateRoot: string;
+  provider?: string;
+  containerSandboxEnabled?: boolean;
+  egressPolicyEnabled?: boolean;
+  egressAllowedHosts?: string[];
+  secretBrokerEnabled?: boolean;
+  secretEnv?: Record<string, string>;
   testCommand?: string;
   maxRepairAttempts?: number;
   timeoutMs?: number;
@@ -399,16 +654,21 @@ function makeRunnerConfig(input: {
     security: {
       codexSandbox: "workspace-write",
       codexBypass: false,
-      containerSandbox,
+      containerSandbox: {
+        ...containerSandbox,
+        enabled: input.containerSandboxEnabled ?? containerSandbox.enabled
+      },
       egressPolicy: {
         ...defaultEgressPolicyConfig(),
-        enabled: false
+        enabled: input.egressPolicyEnabled ?? false,
+        allowedHosts: input.egressAllowedHosts ?? defaultEgressPolicyConfig().allowedHosts
       },
       secretBroker: {
-        enabled: false,
+        enabled: input.secretBrokerEnabled ?? false,
         allowedSecrets: [],
         allowProductionSecrets: false
-      }
+      },
+      ...(input.secretEnv ? { secretEnv: input.secretEnv } : {})
     },
     budget: {
       codexTimeoutMs: 30_000,
@@ -420,7 +680,7 @@ function makeRunnerConfig(input: {
     },
     pi: {
       command: input.command,
-      provider: "",
+      provider: input.provider ?? "",
       model: "",
       thinking: "",
       agentDir: "",

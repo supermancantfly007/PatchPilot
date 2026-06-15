@@ -678,6 +678,35 @@ export interface AgentRunResult {
   artifactIds?: string[];
   egressPolicyEvidence?: EgressPolicyEvidence;
   secretBrokerEvidence?: SecretBrokerEvidence;
+  securityPreflightEvidence?: AgentRunSecurityPreflightEvidence;
+}
+
+export interface AgentRunSecurityPreflightEvidence {
+  mode: "production" | "local_unsafe" | "fake";
+  provider?: string;
+  providerHost?: string;
+  providerSecretId?: string;
+  providerSecretEnvVar?: string;
+  isolationMode: "rootless_container" | "host_user";
+  egressPolicy:
+    | "proxy_exact_host"
+    | "proxy_missing_provider_host"
+    | "disabled_explicit_local_degraded"
+    | "disabled_unapproved"
+    | "disabled_fake";
+  egressAllowedHosts: string[];
+  secretBroker:
+    | "broker_injected"
+    | "not_required"
+    | "broker_disabled"
+    | "missing_manifest_grant"
+    | "missing_injected_secret";
+  internalToolCommandPolicy:
+    | "observed_after_execution"
+    | "requires_pre_execution_enforcement"
+    | "not_applicable";
+  preExecutionCommandPolicy: "pi_process_only" | "not_applicable";
+  enforcementGaps: string[];
 }
 
 export type AgentRunToolCallStatus = "started" | "completed" | "failed" | "unknown";

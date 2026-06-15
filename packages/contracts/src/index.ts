@@ -2499,8 +2499,48 @@ export const openApiSchemas = {
     codexSessionId: { type: "string" },
     artifactIds: arrayOf(id),
     egressPolicyEvidence: schemaRef("EgressPolicyEvidence"),
-    secretBrokerEvidence: schemaRef("SecretBrokerEvidence")
+    secretBrokerEvidence: schemaRef("SecretBrokerEvidence"),
+    securityPreflightEvidence: schemaRef("AgentRunSecurityPreflightEvidence")
   }, ["summary", "previewUrl", "riskLevel", "changedFiles", "tests", "reviewerSummary", "runner"]),
+  AgentRunSecurityPreflightEvidence: looseObjectSchema({
+    mode: enumSchema(["production", "local_unsafe", "fake"]),
+    provider: { type: "string" },
+    providerHost: { type: "string" },
+    providerSecretId: { type: "string" },
+    providerSecretEnvVar: { type: "string" },
+    isolationMode: enumSchema(["rootless_container", "host_user"]),
+    egressPolicy: enumSchema([
+      "proxy_exact_host",
+      "proxy_missing_provider_host",
+      "disabled_explicit_local_degraded",
+      "disabled_unapproved",
+      "disabled_fake"
+    ]),
+    egressAllowedHosts: arrayOf({ type: "string" }),
+    secretBroker: enumSchema([
+      "broker_injected",
+      "not_required",
+      "broker_disabled",
+      "missing_manifest_grant",
+      "missing_injected_secret"
+    ]),
+    internalToolCommandPolicy: enumSchema([
+      "observed_after_execution",
+      "requires_pre_execution_enforcement",
+      "not_applicable"
+    ]),
+    preExecutionCommandPolicy: enumSchema(["pi_process_only", "not_applicable"]),
+    enforcementGaps: arrayOf({ type: "string" })
+  }, [
+    "mode",
+    "isolationMode",
+    "egressPolicy",
+    "egressAllowedHosts",
+    "secretBroker",
+    "internalToolCommandPolicy",
+    "preExecutionCommandPolicy",
+    "enforcementGaps"
+  ]),
   EgressPolicyEvidence: looseObjectSchema({
     enabled: { type: "boolean" },
     mode: enumSchema(["proxy_sidecar", "disabled"]),

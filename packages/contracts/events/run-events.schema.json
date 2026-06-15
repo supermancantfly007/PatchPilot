@@ -3119,6 +3119,99 @@
           },
           "secretBrokerEvidence": {
             "$ref": "#/components/schemas/SecretBrokerEvidence"
+          },
+          "securityPreflightEvidence": {
+            "$ref": "#/components/schemas/AgentRunSecurityPreflightEvidence"
+          }
+        }
+      },
+      "AgentRunSecurityPreflightEvidence": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "mode",
+          "isolationMode",
+          "egressPolicy",
+          "egressAllowedHosts",
+          "secretBroker",
+          "internalToolCommandPolicy",
+          "preExecutionCommandPolicy",
+          "enforcementGaps"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "production",
+              "local_unsafe",
+              "fake"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "providerHost": {
+            "type": "string"
+          },
+          "providerSecretId": {
+            "type": "string"
+          },
+          "providerSecretEnvVar": {
+            "type": "string"
+          },
+          "isolationMode": {
+            "type": "string",
+            "enum": [
+              "rootless_container",
+              "host_user"
+            ]
+          },
+          "egressPolicy": {
+            "type": "string",
+            "enum": [
+              "proxy_exact_host",
+              "proxy_missing_provider_host",
+              "disabled_explicit_local_degraded",
+              "disabled_unapproved",
+              "disabled_fake"
+            ]
+          },
+          "egressAllowedHosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "secretBroker": {
+            "type": "string",
+            "enum": [
+              "broker_injected",
+              "not_required",
+              "broker_disabled",
+              "missing_manifest_grant",
+              "missing_injected_secret"
+            ]
+          },
+          "internalToolCommandPolicy": {
+            "type": "string",
+            "enum": [
+              "observed_after_execution",
+              "requires_pre_execution_enforcement",
+              "not_applicable"
+            ]
+          },
+          "preExecutionCommandPolicy": {
+            "type": "string",
+            "enum": [
+              "pi_process_only",
+              "not_applicable"
+            ]
+          },
+          "enforcementGaps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

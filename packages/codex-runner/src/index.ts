@@ -18,6 +18,7 @@ import {
 } from "@patchpilot/policy";
 import {
   RootlessContainerSandbox,
+  resolveContainerRuntime,
   toContainerWorkspacePath,
   type ContainerSandboxConfig
 } from "./containerSandbox";
@@ -99,7 +100,8 @@ export class CodexRunError extends Error {
     public readonly testRun?: TestRun,
     public readonly egressPolicyEvidence?: EgressPolicyEvidence,
     public readonly secretBrokerEvidence?: SecretBrokerEvidence,
-    public readonly commandAuditEvents: CommandAuditEvidence[] = []
+    public readonly commandAuditEvents: CommandAuditEvidence[] = [],
+    public readonly securityPreflightEvidence?: PiSecurityPreflightEvidence
   ) {
     super(message);
     this.name = "CodexRunError";
@@ -171,6 +173,52 @@ interface PiExecResult {
 
 const verifiedPiVersion = "0.79.3";
 const requiredPiNodeEngine = ">=22.19.0";
+
+type PiSecurityPreflightMode = "production" | "local_unsafe" | "fake";
+type PiSecurityPreflightIsolationMode = "rootless_container" | "host_user";
+type PiSecurityPreflightEgressPolicy =
+  | "proxy_exact_host"
+  | "proxy_missing_provider_host"
+  | "disabled_explicit_local_degraded"
+  | "disabled_unapproved"
+  | "disabled_fake";
+type PiSecurityPreflightSecretBroker =
+  | "broker_injected"
+  | "not_required"
+  | "broker_disabled"
+  | "missing_manifest_grant"
+  | "missing_injected_secret";
+type PiSecurityPreflightInternalToolCommandPolicy =
+  | "observed_after_execution"
+  | "requires_pre_execution_enforcement"
+  | "not_applicable";
+type PiSecurityPreflightPreExecutionCommandPolicy = "pi_process_only" | "not_applicable";
+
+export interface PiSecurityPreflightEvidence {
+  mode: PiSecurityPreflightMode;
+  provider?: string;
+  providerHost?: string;
+  providerSecretId?: string;
+  providerSecretEnvVar?: string;
+  isolationMode: PiSecurityPreflightIsolationMode;
+  egressPolicy: PiSecurityPreflightEgressPolicy;
+  egressAllowedHosts: string[];
+  secretBroker: PiSecurityPreflightSecretBroker;
+  internalToolCommandPolicy: PiSecurityPreflightInternalToolCommandPolicy;
+  preExecutionCommandPolicy: PiSecurityPreflightPreExecutionCommandPolicy;
+  enforcementGaps: string[];
+}
+
+export type PiSecurityPreflightResult =
+  | { status: "passed"; evidence: PiSecurityPreflightEvidence }
+  | { status: "failed"; failureType: FailureType; reason: string; evidence?: PiSecurityPreflightEvidence };
+
+interface PiProviderProfile {
+  provider: string;
+  host: string;
+  secretId: string;
+  secretEnvVar: string;
+}
 
 export {
   RootlessContainerSandbox,
@@ -614,6 +662,22 @@ export class LocalPiRunner implements CodexRunner {
         egressPolicy: applyManifestToEgressPolicyConfig(config.security.egressPolicy, capabilityManifest)
       }
     };
+    const securityPreflight = await evaluatePiSecurityPreflight({
+      config: effectiveConfig,
+      capabilityManifest,
+      containerRuntimeResolver: resolveContainerRuntime
+    });
+    if (securityPreflight.status === "failed") {
+      throw new CodexRunError(
+        securityPreflight.reason,
+        securityPreflight.failureType,
+        undefined,
+        undefined,
+        undefined,
+        [],
+        securityPreflight.evidence
+      );
+    }
     const workspace = await this.workspaceManager.prepareWorkspace(context, {
       repositoryRoot: effectiveConfig.dev.repositoryRoot,
       workspaceRoot: effectiveConfig.dev.workspaceRoot,
@@ -757,6 +821,7 @@ export class LocalPiRunner implements CodexRunner {
       baseBranch: commit.baseBranch,
       baseCommit: commit.baseCommit,
       headCommit: commit.headCommit,
+      securityPreflightEvidence: securityPreflight.evidence,
       ...(egressPolicyEvidence ?? piEgressPolicyEvidence ? {
         egressPolicyEvidence: egressPolicyEvidence ?? piEgressPolicyEvidence
       } : {})
@@ -953,6 +1018,229 @@ export function buildPiCommandPolicyAllow(command: string) {
     `${normalized} --mode json`,
     `${normalized} --version`
   ]);
+}
+
+const piProviderProfiles: Record<string, PiProviderProfile> = {
+  openai: {
+    provider: "openai",
+    host: "api.openai.com",
+    secretId: "openai-api-key",
+    secretEnvVar: "OPENAI_API_KEY"
+  },
+  anthropic: {
+    provider: "anthropic",
+    host: "api.anthropic.com",
+    secretId: "anthropic-api-key",
+    secretEnvVar: "ANTHROPIC_API_KEY"
+  }
+};
+
+export async function evaluatePiSecurityPreflight(input: {
+  config: CodexRunnerConfig;
+  capabilityManifest?: CapabilityManifest;
+  containerRuntimeResolver?: (runtime: ContainerSandboxConfig["runtime"]) => Promise<string | undefined>;
+  env?: Record<string, string | undefined>;
+}): Promise<PiSecurityPreflightResult> {
+  const config = input.config;
+  const piConfig = resolvePiRunnerConfig(config);
+  const env = input.env ?? process.env;
+  const runtimeAllowedHosts = uniqueStrings(config.security.egressPolicy.allowedHosts);
+  const manifestAllowedHosts = uniqueStrings(input.capabilityManifest?.network.allow ?? []);
+  const allAllowedHosts = uniqueStrings([...runtimeAllowedHosts, ...manifestAllowedHosts]);
+
+  if (isFakePiMode(piConfig)) {
+    return {
+      status: "passed",
+      evidence: {
+        mode: "fake",
+        isolationMode: config.security.containerSandbox.enabled ? "rootless_container" : "host_user",
+        egressPolicy: config.security.egressPolicy.enabled ? "proxy_exact_host" : "disabled_fake",
+        egressAllowedHosts: runtimeAllowedHosts,
+        secretBroker: "not_required",
+        internalToolCommandPolicy: "not_applicable",
+        preExecutionCommandPolicy: "not_applicable",
+        enforcementGaps: []
+      }
+    };
+  }
+
+  const provider = (piConfig.provider ?? "").trim().toLowerCase();
+  if (!provider) {
+    return failPiSecurityPreflight("Pi provider is required for real Pi runs.", "policy_denied");
+  }
+
+  const profile = piProviderProfiles[provider];
+  if (!profile) {
+    return failPiSecurityPreflight(`Unsupported Pi provider: ${provider}.`, "policy_denied");
+  }
+
+  if (!input.capabilityManifest) {
+    return failPiSecurityPreflight("Capability Manifest is required before launching a real Pi run.", "policy_denied");
+  }
+  if (input.capabilityManifest.status !== "active") {
+    return failPiSecurityPreflight("Capability Manifest must be active before launching a real Pi run.", "policy_denied");
+  }
+
+  const allowLocalUnsafe = env.PATCHPILOT_PI_ALLOW_LOCAL_UNSAFE === "1";
+  const allowObservedInternalToolPolicy = env.PATCHPILOT_PI_ALLOW_OBSERVED_INTERNAL_TOOL_POLICY === "1";
+  const reducedIsolation = !config.security.containerSandbox.enabled || !config.security.egressPolicy.enabled;
+  const evidence = buildPiSecurityPreflightEvidence({
+    config,
+    profile,
+    mode: allowLocalUnsafe && reducedIsolation ? "local_unsafe" : "production",
+    egressAllowedHosts: runtimeAllowedHosts,
+    secretBroker: "broker_injected",
+    internalToolCommandPolicy: allowObservedInternalToolPolicy
+      ? "observed_after_execution"
+      : "requires_pre_execution_enforcement"
+  });
+
+  if (!config.security.containerSandbox.enabled) {
+    evidence.isolationMode = "host_user";
+    if (!allowLocalUnsafe) {
+      return failPiSecurityPreflight(
+        "Pi container sandbox is required for production or unattended real Pi runs.",
+        "policy_denied",
+        evidence
+      );
+    }
+  } else if (input.containerRuntimeResolver) {
+    const runtime = await input.containerRuntimeResolver(config.security.containerSandbox.runtime);
+    if (!runtime) {
+      return failPiSecurityPreflight(
+        `Pi container sandbox runtime is unavailable: ${config.security.containerSandbox.runtime}.`,
+        "environment_failed",
+        evidence
+      );
+    }
+  }
+
+  if (!config.security.egressPolicy.enabled) {
+    evidence.egressPolicy = allowLocalUnsafe ? "disabled_explicit_local_degraded" : "disabled_unapproved";
+    if (!allowLocalUnsafe) {
+      return failPiSecurityPreflight(
+        "Pi egress policy is required for production or unattended real Pi runs.",
+        "policy_denied",
+        evidence
+      );
+    }
+  }
+
+  if (config.security.egressPolicy.enabled) {
+    const broadHostPattern = allAllowedHosts.find(isBroadOrWildcardEgressPattern);
+    if (broadHostPattern) {
+      return failPiSecurityPreflight(
+        `Pi provider egress requires exact host mappings; wildcard or broad host mapping is denied: ${broadHostPattern}.`,
+        "policy_denied",
+        evidence
+      );
+    }
+
+    const runtimeHasProviderHost = runtimeAllowedHosts.includes(profile.host);
+    const manifestHasProviderHost = manifestAllowedHosts.includes(profile.host);
+    if (!runtimeHasProviderHost || !manifestHasProviderHost) {
+      evidence.egressPolicy = "proxy_missing_provider_host";
+      return failPiSecurityPreflight(
+        `Pi provider egress is missing exact host mapping for ${profile.host}.`,
+        "policy_denied",
+        evidence
+      );
+    }
+  }
+
+  if (
+    !input.capabilityManifest.secrets.requested.includes(profile.secretId) ||
+    !input.capabilityManifest.secrets.allow.includes(profile.secretId)
+  ) {
+    evidence.secretBroker = "missing_manifest_grant";
+    return failPiSecurityPreflight(
+      `Pi provider secret ${profile.secretId} is not authorized by the active Capability Manifest.`,
+      "policy_denied",
+      evidence
+    );
+  }
+  if (!config.security.secretBroker.enabled) {
+    evidence.secretBroker = "broker_disabled";
+    return failPiSecurityPreflight(
+      `Pi provider secret ${profile.secretId} requires Secret Broker injection before launch.`,
+      "policy_denied",
+      evidence
+    );
+  }
+  if (!config.security.secretEnv?.[profile.secretEnvVar]?.trim()) {
+    evidence.secretBroker = "missing_injected_secret";
+    return failPiSecurityPreflight(
+      `Pi provider secret ${profile.secretId} was not injected into ${profile.secretEnvVar} by the Secret Broker.`,
+      "policy_denied",
+      evidence
+    );
+  }
+
+  if (!allowObservedInternalToolPolicy) {
+    return failPiSecurityPreflight(
+      "Pi pre-execution command enforcement is required before launch; current Pi internal tool actions are observed after execution only.",
+      "policy_denied",
+      evidence
+    );
+  }
+
+  evidence.enforcementGaps = ["pi_internal_tool_pre_execution"];
+  return {
+    status: "passed",
+    evidence
+  };
+}
+
+function buildPiSecurityPreflightEvidence(input: {
+  config: CodexRunnerConfig;
+  profile: PiProviderProfile;
+  mode: PiSecurityPreflightMode;
+  egressAllowedHosts: string[];
+  secretBroker: PiSecurityPreflightSecretBroker;
+  internalToolCommandPolicy: PiSecurityPreflightInternalToolCommandPolicy;
+}): PiSecurityPreflightEvidence {
+  return {
+    mode: input.mode,
+    provider: input.profile.provider,
+    providerHost: input.profile.host,
+    providerSecretId: input.profile.secretId,
+    providerSecretEnvVar: input.profile.secretEnvVar,
+    isolationMode: input.config.security.containerSandbox.enabled ? "rootless_container" : "host_user",
+    egressPolicy: input.config.security.egressPolicy.enabled ? "proxy_exact_host" : "disabled_unapproved",
+    egressAllowedHosts: input.egressAllowedHosts,
+    secretBroker: input.secretBroker,
+    internalToolCommandPolicy: input.internalToolCommandPolicy,
+    preExecutionCommandPolicy: "pi_process_only",
+    enforcementGaps: input.internalToolCommandPolicy === "observed_after_execution"
+      ? ["pi_internal_tool_pre_execution"]
+      : []
+  };
+}
+
+function failPiSecurityPreflight(
+  reason: string,
+  failureType: FailureType,
+  evidence?: PiSecurityPreflightEvidence
+): PiSecurityPreflightResult {
+  return {
+    status: "failed",
+    failureType,
+    reason,
+    ...(evidence ? { evidence } : {})
+  };
+}
+
+function isBroadOrWildcardEgressPattern(hostPattern: string) {
+  const normalized = hostPattern.trim().toLowerCase();
+  return (
+    normalized.includes("*") ||
+    normalized === "0.0.0.0" ||
+    normalized === "0.0.0.0/0" ||
+    normalized === "::" ||
+    normalized === "::/0" ||
+    normalized === "all" ||
+    normalized === "internet"
+  );
 }
 
 function resolvePiRunnerConfig(config: CodexRunnerConfig): PiRunnerConfig {
