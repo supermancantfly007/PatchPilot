@@ -45,8 +45,8 @@ describe("LocalPullRequestAdapter", () => {
 
 describe("GitHubPullRequestAdapter", () => {
   it("pushes the local branch and creates a GitHub pull request", async () => {
-    const git = new FakeGitRunner();
-    const octokit = new FakeOctokit();
+    const git = new TestGitRunner();
+    const octokit = new TestOctokit();
     const adapter = new GitHubPullRequestAdapter({
       owner: "patchpilot-fixtures",
       repo: "delivery",
@@ -116,8 +116,8 @@ describe("GitHubPullRequestAdapter", () => {
   });
 
   it("updates an existing GitHub pull request by URL without changing the local record id", async () => {
-    const git = new FakeGitRunner();
-    const octokit = new FakeOctokit([
+    const git = new TestGitRunner();
+    const octokit = new TestOctokit([
       makeGitHubPullRequest({
         number: 7,
         html_url: "https://github.com/patchpilot-fixtures/delivery/pull/7"
@@ -153,8 +153,8 @@ describe("GitHubPullRequestAdapter", () => {
   });
 
   it("finds an open pull request by source branch when no existing record has a GitHub URL", async () => {
-    const git = new FakeGitRunner();
-    const octokit = new FakeOctokit([
+    const git = new TestGitRunner();
+    const octokit = new TestOctokit([
       makeGitHubPullRequest({
         number: 9,
         html_url: "https://github.com/patchpilot-fixtures/delivery/pull/9"
@@ -184,8 +184,8 @@ describe("GitHubPullRequestAdapter", () => {
     const adapter = new GitHubPullRequestAdapter({
       owner: "patchpilot-fixtures",
       repo: "delivery",
-      octokit: new FakeOctokit(),
-      git: new FakeGitRunner()
+      octokit: new TestOctokit(),
+      git: new TestGitRunner()
     });
 
     await expect(adapter.upsertPullRequest({ draft: makeDraft() }))
@@ -217,7 +217,7 @@ describe("GitHub App helpers", () => {
   });
 
   it("mints and caches installation access tokens through the GitHub App endpoint", async () => {
-    const requestClient = new FakeRequestClient();
+    const requestClient = new TestRequestClient();
     const provider = new GitHubAppInstallationTokenProvider({
       appId: "12345",
       privateKey: "-----BEGIN RSA PRIVATE KEY-----\\nfixture\\n-----END RSA PRIVATE KEY-----",
@@ -250,7 +250,7 @@ describe("GitHub App helpers", () => {
   });
 
   it("lists repositories accessible to a GitHub App installation", async () => {
-    const requestClient = new FakeRequestClient();
+    const requestClient = new TestRequestClient();
     const client = new GitHubAppInstallationRepositoryClient({
       installationId: 98765,
       token: "installation-token",
@@ -373,7 +373,7 @@ function makeDraft(overrides: Partial<PullRequestDraft> = {}): PullRequestDraft 
   };
 }
 
-class FakeGitRunner implements GitCommandRunner {
+class TestGitRunner implements GitCommandRunner {
   readonly pushes: Parameters<GitCommandRunner["pushBranch"]>[0][] = [];
 
   async pushBranch(input: Parameters<GitCommandRunner["pushBranch"]>[0]) {
@@ -382,7 +382,7 @@ class FakeGitRunner implements GitCommandRunner {
   }
 }
 
-class FakeOctokit implements GitHubOctokitClient {
+class TestOctokit implements GitHubOctokitClient {
   readonly calls = {
     pullsCreate: [] as unknown[],
     pullsUpdate: [] as unknown[],
@@ -463,7 +463,7 @@ class FakeOctokit implements GitHubOctokitClient {
   }
 }
 
-class FakeRequestClient implements GitHubRequestClient {
+class TestRequestClient implements GitHubRequestClient {
   readonly calls: Array<{ route: string; parameters?: Record<string, unknown> }> = [];
 
   async request<T>(route: string, parameters?: Record<string, unknown>) {

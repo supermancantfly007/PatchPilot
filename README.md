@@ -15,7 +15,7 @@ pnpm dev:team
 
 `pnpm dev` is an alias for `pnpm dev:team`.
 
-The defaults are enough for local boot. Use `.env.example` as a template when you need to export overrides, for example `PATCHPILOT_RUNNER=simulated pnpm dev:team` or `PATCHPILOT_RUNNER=codex pnpm dev:team`.
+The defaults are enough for local boot once the Codex CLI is installed and the target repository is a git workspace. Use `.env.example` as a template when you need to export overrides, for example `PATCHPILOT_RUNNER=codex pnpm dev:team`.
 
 Product state is stored through `@patchpilot/db`. By default the API uses a file-backed PGlite database under `PATCHPILOT_DATA_DIR` so local boot still does not require Docker. Set `PATCHPILOT_DATABASE_URL` to use a real Postgres database. `patchpilot-store.json` is retained as a legacy JSON import/export fixture, not as the runtime source of truth.
 
@@ -37,9 +37,9 @@ e2e:
   baseUrl: http://localhost:3000
 dev:
   runner: auto
+  repositoryRoot: .
   workspaceRoot: .patchpilot/worktrees
   previewUrl: http://localhost:3000
-  simulationDelayFactor: 1
 security:
   codexSandbox: workspace-write
   codexBypass: false
@@ -136,7 +136,7 @@ pnpm dev:web
 pnpm dev:worker
 ```
 
-The worker process polls the API snapshot, claims ready work items for idle agents, and starts runs through the API. The API process owns the run queue and executes the selected simulated or Codex runner after `/api/work-items/:id/start`.
+The worker process polls the API snapshot, claims ready work items for idle agents, and starts runs through the API. The API process owns the run queue and executes the Codex runner after `/api/work-items/:id/start`.
 
 ## Local CLI
 
@@ -145,7 +145,7 @@ The CLI can operate the happy path without the Web UI as long as the API is runn
 ```bash
 pnpm cli -- submit --input "Ship a CLI-controlled agent workflow" --template feature
 pnpm cli -- snapshot
-pnpm cli -- happy-path --input "Ship a CLI-controlled agent workflow" --runner simulated --out report.md
+pnpm cli -- happy-path --input "Ship a CLI-controlled agent workflow" --runner codex --out report.md
 ```
 
 Supported operations include requirement submission, PRD creation and approval, snapshot inspection, team start, one worker dispatch tick, PRD acceptance, and Markdown report export:
@@ -153,8 +153,8 @@ Supported operations include requirement submission, PRD creation and approval, 
 ```bash
 pnpm cli -- create-prd --requirement <requirement-id>
 pnpm cli -- approve-prd --prd <prd-id>
-pnpm cli -- start-team --prd <prd-id> --runner simulated
-pnpm cli -- worker-once --runner simulated
+pnpm cli -- start-team --prd <prd-id> --runner codex
+pnpm cli -- worker-once --runner codex
 pnpm cli -- accept-prd --prd <prd-id> --status accepted
 pnpm cli -- report --prd <prd-id> --out report.md
 ```
@@ -185,7 +185,7 @@ pnpm k8s:validate
 kubectl apply -k infra/k8s/worker-pool/nonprod
 ```
 
-The non-production overlay uses placeholder containers so the manifest shape can be deployed before a PatchPilot worker image is published.
+The non-production overlay uses temporary infrastructure containers so the manifest shape can be deployed before a PatchPilot worker image is published.
 
 ## What Works Now
 
@@ -196,28 +196,18 @@ The non-production overlay uses placeholder containers so the manifest shape can
 - Draft and approved interface contracts for HTTP APIs, AgentRun events, and shared delivery state
 - Server-sent progress events for planning, developing, testing, review, and acceptance
 - Local Codex runner in an isolated git worktree when `codex` and git are available
-- Simulated runner fallback for demos and CI tests
 - WorkspaceRun, TestCase, TestRun, local PullRequest, ReviewRecord, AuditEvent evidence records plus changed file list, risk summary, reviewer summary, and final acceptance
 - Rejected acceptance requeues the same work items as a new rework round, preserves the rejection reason, and creates fresh agent runs on the next team start
 - Bug reports that first go to the test agent for reproduction, then create a backend fix task for the developer agent
 - Failed agent runs are classified as transient, deterministic, test_failed, policy_denied, budget_exhausted, or environment_failed; failed TestRun evidence can be stored as a reported Defect linked to the run, work item, test run, and commit
-- Postgres/PGlite-backed product state with JSON fixture import/export for local demos and migrations
+- Postgres/PGlite-backed product state with JSON fixture import/export for local development and migrations
 
 ## Runner Modes
 
-PatchPilot defaults to `PATCHPILOT_RUNNER=auto`.
+PatchPilot defaults to `PATCHPILOT_RUNNER=auto`, which resolves to Codex execution.
 
-- `auto`: use local Codex when the Codex CLI and git worktree are available; otherwise use simulated execution.
+- `auto`: use local Codex execution and fail fast if the Codex CLI or git workspace is unavailable.
 - `codex`: force real local Codex execution in `.patchpilot/worktrees/<runId>`.
-- `simulated`: force the deterministic demo runner.
-
-Simulated runner environment:
-
-```bash
-PATCHPILOT_RUNNER=simulated
-PATCHPILOT_SIMULATION_DELAY_FACTOR=1
-PATCHPILOT_SIMULATED_FAILURE_TYPE=test_failed # optional, for failure/defect E2E fixtures
-```
 
 Worker environment:
 
@@ -266,7 +256,7 @@ PATCHPILOT_OTEL_SERVICE_NAME=patchpilot-api
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
-When enabled, the API emits AgentRun traces, metrics, and logs with `patchpilot.requirement.id`, `patchpilot.prd.id`, `patchpilot.workflow.id`, `patchpilot.work_item.id`, `patchpilot.agent_run.id`, and `patchpilot.test_run.id` attributes where those IDs exist in the MVP. The worker emits dispatch/tick telemetry with WorkItem and PRD correlation. `pnpm e2e:otel` starts a lightweight local OTLP HTTP test collector and proves one simulated run exports telemetry without requiring Docker.
+When enabled, the API emits AgentRun traces, metrics, and logs with `patchpilot.requirement.id`, `patchpilot.prd.id`, `patchpilot.workflow.id`, `patchpilot.work_item.id`, `patchpilot.agent_run.id`, and `patchpilot.test_run.id` attributes where those IDs exist in the MVP. The worker emits dispatch/tick telemetry with WorkItem and PRD correlation. `pnpm e2e:otel` starts a lightweight local OTLP HTTP test collector and proves one Codex run exports telemetry without requiring Docker.
 
 Prometheus/Grafana-compatible scrape endpoint:
 
@@ -281,6 +271,7 @@ Codex runner environment:
 
 ```bash
 PATCHPILOT_RUNNER=codex
+PATCHPILOT_REPOSITORY_ROOT=/absolute/path/to/the/project-repo
 PATCHPILOT_WORKSPACE_ROOT=.patchpilot/worktrees
 PATCHPILOT_TEST_COMMAND="pnpm -r --if-present test"
 PATCHPILOT_CODEX_TIMEOUT_MS=600000
@@ -301,7 +292,9 @@ PATCHPILOT_PREVIEW_URL=http://localhost:3000
 
 The Codex runner requires a working `codex` CLI, an authenticated local Codex session, and a git worktree-capable checkout. Codex runner variables are read by the API process; worker variables are read by the worker process.
 
-The Codex runner does not auto-merge or publish. It creates an isolated worktree, writes `PATCHPILOT_TASK.md`, runs `codex exec`, delegates the configured test command to `@patchpilot/testing`, optionally asks Codex for one repair pass, then returns evidence to the UI. TestRun evidence includes the command, workspace, runner/environment, timestamps, exit code, failure summary, log artifact id, retry count, and flaky signal.
+`PATCHPILOT_REPOSITORY_ROOT` is the git checkout PatchPilot should develop. It defaults to the repo containing `.patchpilot/config.yaml`, or the API process cwd when no config file is present. `PATCHPILOT_WORKSPACE_ROOT` is only the directory where isolated run worktrees are created.
+
+The Codex runner does not auto-merge or publish. It creates an isolated worktree from `PATCHPILOT_REPOSITORY_ROOT`, writes `PATCHPILOT_TASK.md`, runs `codex exec`, delegates the configured test command to `@patchpilot/testing`, optionally asks Codex for one repair pass, then returns evidence to the UI. TestRun evidence includes the command, workspace, runner/environment, timestamps, exit code, failure summary, log artifact id, retry count, and flaky signal.
 
 Set `security.containerSandbox.enabled=true` to run Codex and the configured test command through a Docker or Podman container. The sandbox runs as a non-root UID/GID, never uses `--privileged`, drops Linux capabilities, sets `no-new-privileges`, does not mount the Docker socket or host home, mounts only the worktree at `/workspace` with write access, uses a read-only root filesystem, bounds `/tmp` and container home with tmpfs, applies CPU/memory/pid limits, and enforces the existing Codex/test timeout plus a workspace disk-usage limit from the API process. The container image must already include the tools your configured commands need.
 
@@ -375,7 +368,7 @@ PATCHPILOT_GITHUB_BASE_BRANCH=main \
 pnpm --filter @patchpilot/pull-request-adapter test
 ```
 
-Use a disposable fixture repository or branch namespace for that integration; regular CI and local test runs use the deterministic fake adapter path and do not require GitHub credentials.
+Use a disposable fixture repository or branch namespace for that integration; regular CI and local test runs use the deterministic test adapter path and do not require GitHub credentials.
 
 ## Artifact Store
 

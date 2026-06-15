@@ -5329,7 +5329,6 @@
       "name": "agent_runner_kind",
       "schema": "public",
       "values": [
-        "simulated",
         "codex"
       ]
     },
@@ -5626,7 +5625,6 @@
       "name": "workspace_isolation",
       "schema": "public",
       "values": [
-        "simulated",
         "git_worktree"
       ]
     },

@@ -112,7 +112,7 @@ Rejected as an immediate runtime change for this ADR because the current MVP alr
 
 ### Use Codex MCP Internally For All Runs
 
-Codex-as-MCP is useful when another agent framework wants to call Codex as a tool. It also aligns with multi-agent orchestration demos.
+Codex-as-MCP is useful when another agent framework wants to call Codex as a tool. It also aligns with multi-agent orchestration validation.
 
 Rejected as the internal production path because PatchPilot is itself the delivery control plane. Routing every Work Item through MCP would add an extra tool-call mediation layer while weakening direct ownership of workspace lifecycle, Temporal activity idempotency, artifact capture, cancellation, and audit semantics.
 
@@ -131,7 +131,7 @@ Rejected because PatchPilot's product is delivery control, not reimplementing Co
 ## Consequences
 
 - `@patchpilot/codex-runner` remains the package boundary for Codex execution, but it needs a production contract that is broader than the current one-shot MVP helper.
-- The current CLI runner remains valid for local demos, smoke tests, CI-style runs, and fallback behavior while Temporal and the repository layer mature.
+- The current CLI runner remains valid for local validation, smoke tests, CI-style runs, and fallback behavior while Temporal and the repository layer mature.
 - A future SDK runner must have contract tests that prove event normalization, artifact capture, failure classification, cancellation, resume, and idempotent retry behavior match the CLI runner where the provider surfaces overlap.
 - Product state should store provider-neutral fields first, such as runner provider, thread/session ids, workspace path, branch, base/head commits, artifact ids, failure type, and cost/usage where available.
 - Capability Manifest and Secret Broker work must include Codex config and MCP tool access, not only shell commands and network egress.

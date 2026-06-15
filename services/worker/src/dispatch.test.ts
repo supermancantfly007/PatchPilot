@@ -377,7 +377,7 @@ function agentRun(input: {
     requirementId: "req_1",
     prdId: "prd_1",
     workItemId: input.workItemId,
-    runner: "simulated",
+    runner: "codex",
     status: input.status,
     currentStep: "understanding",
     timeline: [],

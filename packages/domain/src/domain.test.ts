@@ -11,8 +11,6 @@ import {
   createTestCasesForWorkItems,
   createWorkItems,
   emptySnapshot,
-  createInitialClarificationTurn,
-  generateClarificationQuestions,
   makeSimpleSummary,
   renderArtifactReferencesMarkdown,
   testCaseStatusFromTestRunStatus,
@@ -23,16 +21,6 @@ import {
 } from "./index";
 
 describe("domain helpers", () => {
-  it("creates grill-me style clarification prompts with recommended answers", () => {
-    const turn = createInitialClarificationTurn("做一个 agent 平台", "feature", "2026-06-09T00:00:00.000Z");
-    const legacyQuestions = generateClarificationQuestions("做一个 agent 平台", "feature");
-
-    expect(turn.speaker).toBe("agent");
-    expect(turn.message).toContain("用户可见结果");
-    expect(turn.recommendedAnswer).toContain("agent 平台");
-    expect(legacyQuestions[0]?.recommendedAnswer).toContain("agent 平台");
-  });
-
   it("advances the simple timeline in order", () => {
     const timeline = advanceTimeline(createTimeline(), "testing");
     expect(timeline.find((step) => step.key === "developing")?.status).toBe("done");
@@ -50,7 +38,14 @@ describe("domain helpers", () => {
       simpleSummary: makeSimpleSummary("构建一个可用 agent 平台", "feature"),
       clarificationQuestions: [],
       clarificationTurns: [
-        createInitialClarificationTurn("构建一个可用 agent 平台", "feature", "2026-06-09T00:00:00.000Z")
+        {
+          id: "turn_req_1_agent_0",
+          speaker: "agent",
+          message: "Codex CLI 使用 $grill-me 完成了需求确认。",
+          recommendedAnswer: "用户可以提交需求、确认 PRD、启动 agent、查看测试证据并验收。",
+          codexSessionId: "session_req_1",
+          createdAt: "2026-06-09T00:00:00.000Z"
+        }
       ],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -459,7 +454,7 @@ function acceptanceGateSnapshot(): PatchPilotSnapshot {
       requirementId: "req_1",
       prdId: "prd_1",
       workItemId: "wi_1",
-      runner: "simulated",
+      runner: "codex",
       status: "succeeded",
       currentStep: "confirming",
       timeline: completeTimeline(createTimeline()),
@@ -471,7 +466,7 @@ function acceptanceGateSnapshot(): PatchPilotSnapshot {
         changedFiles: ["services/api/src/store.ts"],
         tests: [testRun],
         reviewerSummary: "Approved.",
-        runner: "simulated"
+        runner: "codex"
       },
       costEstimateUsd: 0.42,
       startedAt: now,

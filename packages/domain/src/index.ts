@@ -43,7 +43,7 @@ export type AcceptanceStatus = "pending" | "accepted" | "rejected";
 
 export type TimelineStepKey = "understanding" | "planning" | "developing" | "testing" | "confirming";
 
-export type AgentRunnerKind = "simulated" | "codex";
+export type AgentRunnerKind = "codex";
 
 export type AgentRole = "product" | "frontend" | "backend" | "test" | "ops" | "reviewer";
 
@@ -171,18 +171,12 @@ export interface EgressPolicyEvidence {
 }
 
 export type SecretBrokerTokenEnvironment = "dev" | "ci";
-export type SecretBrokerSecretProviderKind = "env" | "local_fake" | "vault";
+export type SecretBrokerSecretProviderKind = "env" | "vault";
 
 export interface SecretBrokerEnvProviderConfig {
   kind: "env";
   sourceEnv: string;
   ttlSeconds?: number;
-}
-
-export interface SecretBrokerLocalFakeProviderConfig {
-  kind: "local_fake";
-  ttlSeconds?: number;
-  seedEnv?: string;
 }
 
 export interface SecretBrokerVaultProviderConfig {
@@ -201,7 +195,6 @@ export interface SecretBrokerVaultProviderConfig {
 
 export type SecretBrokerSecretProviderConfig =
   | SecretBrokerEnvProviderConfig
-  | SecretBrokerLocalFakeProviderConfig
   | SecretBrokerVaultProviderConfig;
 
 export interface SecretBrokerSecretConfig {
@@ -450,6 +443,7 @@ export interface ClarificationTurn {
   speaker: "agent" | "user";
   message: string;
   recommendedAnswer?: string;
+  codexSessionId?: string;
   createdAt: string;
 }
 
@@ -688,11 +682,12 @@ export interface AgentRunDiffSummary {
 }
 
 export interface RuntimeConfig {
-  configuredRunner: "auto" | AgentRunnerKind;
+  configuredRunner: AgentRunnerKind;
   activeRunner: AgentRunnerKind;
   codexAvailable: boolean;
   gitWorkspaceAvailable: boolean;
   testCommand: string;
+  repositoryRoot: string;
   workspaceRoot: string;
   previewUrl: string;
   configSource: "defaults" | "file";
@@ -716,8 +711,8 @@ export interface RuntimeConfig {
     baseUrl: string;
   };
   dev: {
-    runner: "auto" | AgentRunnerKind;
-    simulationDelayFactor: number;
+    runner: AgentRunnerKind;
+    repositoryRoot: string;
     workspaceRoot: string;
     previewUrl: string;
   };
@@ -812,7 +807,7 @@ export interface WorkspaceRun {
   repositoryFullName?: string;
   runner: AgentRunnerKind;
   status: WorkspaceRunStatus;
-  isolation: "simulated" | "git_worktree";
+  isolation: "git_worktree";
   path: string;
   createdAt: string;
   updatedAt: string;
@@ -1115,197 +1110,6 @@ export function completeTimeline(timeline: TimelineStep[]): TimelineStep[] {
   return timeline.map((step) => ({ ...step, status: "done" }));
 }
 
-export function generateClarificationQuestions(input: string, template: RequirementTemplate): ClarificationQuestion[] {
-  const base = input.trim().slice(0, 80) || "这个需求";
-  const questionsByTemplate: Record<RequirementTemplate, ClarificationQuestion[]> = {
-    feature: [
-      {
-        id: "goal",
-        question: "这个功能最重要的成功标准是什么？",
-        recommendedAnswer: `用户能顺利完成「${base}」并看到明确结果`
-      },
-      {
-        id: "scope",
-        question: "第一版有没有明确不做的内容？",
-        recommendedAnswer: "先做最小可用闭环，复杂配置和边缘场景延后"
-      },
-      {
-        id: "acceptance",
-        question: "你希望怎么确认它完成了？",
-        recommendedAnswer: "页面可操作、关键测试通过，并展示变更摘要"
-      }
-    ],
-    bug: [
-      {
-        id: "repro",
-        question: "这个问题稳定复现的步骤是什么？",
-        recommendedAnswer: "使用你提供的报错、截图或描述生成最小复现"
-      },
-      {
-        id: "expected",
-        question: "正确行为应该是什么？",
-        recommendedAnswer: "不再出现该错误，并保留原有正常流程"
-      },
-      {
-        id: "proof",
-        question: "修好后你希望看到什么证明？",
-        recommendedAnswer: "复现用例失败转通过，并给出测试结果"
-      }
-    ],
-    ui: [
-      {
-        id: "surface",
-        question: "主要想改善哪个页面或区域？",
-        recommendedAnswer: "优先改善用户第一眼看到和最常点击的区域"
-      },
-      {
-        id: "style",
-        question: "你希望视觉风格更接近什么？",
-        recommendedAnswer: "白色底、清爽、专业、按钮和状态清晰"
-      },
-      {
-        id: "acceptance",
-        question: "怎么判断这次 UI 改动成功？",
-        recommendedAnswer: "移动端和桌面端不拥挤，核心操作一眼可见"
-      }
-    ],
-    document: [
-      {
-        id: "priority",
-        question: "文档里最应该先落地的是哪一部分？",
-        recommendedAnswer: "先落地能形成可演示闭环的核心流程"
-      },
-      {
-        id: "constraints",
-        question: "有没有必须遵守的技术或业务限制？",
-        recommendedAnswer: "保持现有技术栈，避免高风险生产操作"
-      },
-      {
-        id: "acceptance",
-        question: "完成后谁来验收，验收什么？",
-        recommendedAnswer: "需求提交者验收核心行为，技术负责人看测试和风险"
-      }
-    ]
-  };
-
-  return questionsByTemplate[template];
-}
-
-export function createInitialClarificationTurn(
-  input: string,
-  template: RequirementTemplate,
-  now: string
-): ClarificationTurn {
-  const question = createGrillMeQuestion(input, template, []);
-  return {
-    id: `turn_${now.replace(/\W/g, "")}_agent_0`,
-    speaker: "agent",
-    message: question.question,
-    recommendedAnswer: question.recommendedAnswer,
-    createdAt: now
-  };
-}
-
-export function createGrillMeQuestion(
-  input: string,
-  template: RequirementTemplate,
-  turns: ClarificationTurn[]
-): ClarificationQuestion {
-  const answers = turns.filter((turn) => turn.speaker === "user");
-  const base = input.trim().slice(0, 90) || "这个需求";
-  const primaryOutcome: ClarificationQuestion = {
-    id: "primary_outcome",
-    question: "这次最重要的用户可见结果是什么？",
-    recommendedAnswer: `用户能完成「${base}」并看到明确的成功反馈`
-  };
-  const users: ClarificationQuestion = {
-    id: "users",
-    question: "第一版主要给谁用？他们在什么场景下打开它？",
-    recommendedAnswer: "先服务普通需求提交者，让他们不用理解工程细节也能启动和验收 agent 工作"
-  };
-  const boundaries: ClarificationQuestion = {
-    id: "boundaries",
-    question: "哪些事情第一版明确不做，避免 agent 误解范围？",
-    recommendedAnswer: "不自动合并、不自动发布、不访问生产密钥或生产数据"
-  };
-  const acceptanceSignal: ClarificationQuestion = {
-    id: "acceptance_signal",
-    question: "你验收时最想看到哪几类证据？",
-    recommendedAnswer: "需求摘要、执行过程、变更范围、测试结果、风险提示和可点击验收入口"
-  };
-  const failureHandling: ClarificationQuestion = {
-    id: "failure_handling",
-    question: "如果 agent 做失败了，用户应该看到什么、下一步能做什么？",
-    recommendedAnswer: "展示失败摘要、失败阶段、可复现日志，并允许重新提交或转成 bug 单"
-  };
-  const common: ClarificationQuestion[] = [
-    primaryOutcome,
-    users,
-    boundaries,
-    acceptanceSignal,
-    failureHandling
-  ];
-
-  const byTemplate: Record<RequirementTemplate, ClarificationQuestion[]> = {
-    feature: common,
-    ui: [
-      primaryOutcome,
-      {
-        id: "visual_style",
-        question: "这个界面应当给用户什么第一印象？",
-        recommendedAnswer: "白色底、清爽、按钮明确、状态清晰，普通用户不需要读说明也能继续"
-      },
-      {
-        id: "critical_path",
-        question: "页面上最核心的一条操作路径是什么？",
-        recommendedAnswer: "输入需求 -> 逐轮澄清 -> 确认 PRD -> 启动 agent -> 查看证据 -> 验收"
-      },
-      boundaries,
-      acceptanceSignal
-    ],
-    bug: [
-      {
-        id: "repro_loop",
-        question: "这个 bug 最稳定的复现步骤是什么？",
-        recommendedAnswer: "写出从打开页面/调用接口到看到错误的每一步，包含输入数据和实际错误"
-      },
-      {
-        id: "expected_vs_actual",
-        question: "正确行为和现在的错误行为分别是什么？",
-        recommendedAnswer: "正确行为是流程继续并展示成功反馈；错误行为是当前失败现象稳定出现"
-      },
-      {
-        id: "regression_signal",
-        question: "修复后用什么反馈循环证明 bug 不再复现？",
-        recommendedAnswer: "先加一个失败的集成测试或 E2E smoke，再修复到测试通过"
-      },
-      boundaries,
-      acceptanceSignal
-    ],
-    document: [
-      {
-        id: "source_priority",
-        question: "文档中哪一段必须先变成可运行能力？",
-        recommendedAnswer: "先落地能从需求输入走到验收结果的核心闭环"
-      },
-      primaryOutcome,
-      users,
-      boundaries,
-      acceptanceSignal
-    ]
-  };
-
-  const plan = byTemplate[template];
-  const next = plan[answers.length];
-  if (next) return next;
-
-  return {
-    id: `follow_up_${answers.length + 1}`,
-    question: "还有没有一个必须补充的边界、反例或验收细节？如果没有，就可以生成 PRD。",
-    recommendedAnswer: "没有更多补充，可以基于当前澄清记录生成 PRD"
-  };
-}
-
 export function makeSimpleSummary(input: string, template: RequirementTemplate): string {
   const label: Record<RequirementTemplate, string> = {
     feature: "新功能",
@@ -1454,7 +1258,7 @@ function createBaseWorkItems(prd: Prd, now: string, repositorySlug?: string): Wo
       scope: "补齐本地启动、环境变量、端口、中间件和 runner 模式说明，让团队能一键跑通。",
       nonGoals: ["不做生产 Kubernetes 部署", "不引入强制云服务", "不自动发布"],
       acceptanceCriteria: prd.acceptanceCriteria,
-      testSuggestions: ["验证 dev 脚本", "检查端口和 env 文档", "确认可选 Docker 中间件不影响本地模拟闭环"],
+      testSuggestions: ["验证 dev 脚本", "检查端口和 env 文档", "确认可选 Docker 中间件不影响本地 Codex 闭环"],
       ...(repositorySlug ? { dependsOn: [backendId] } : {}),
       version: 1,
       createdAt: now,
@@ -1791,12 +1595,8 @@ export function createBugRequirement(input: {
     status: "approved",
     simpleSummary: `Bug 修复：${input.title}`,
     artifactReferences: input.artifactReferences ?? [],
-    clarificationQuestions: generateClarificationQuestions(rawInput, "bug").map((question) => ({
-      ...question,
-      answer: question.recommendedAnswer
-    })),
+    clarificationQuestions: [],
     clarificationTurns: [
-      createInitialClarificationTurn(rawInput, "bug", input.now),
       {
         id: `turn_${input.now.replace(/\W/g, "")}_user_0`,
         speaker: "user",

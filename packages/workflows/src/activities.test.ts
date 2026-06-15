@@ -11,7 +11,8 @@ import {
   InMemoryRetrospectiveActivityStore,
   InMemoryTemporalCanaryActivityStore,
   InMemoryWorkItemExecutionActivityStore,
-  InMemoryWorkItemPlanningActivityStore
+  InMemoryWorkItemPlanningActivityStore,
+  type RequirementIntakeClarifier
 } from "./activities";
 import {
   createTimeline,
@@ -47,7 +48,7 @@ describe("Temporal canary activities", () => {
 
 describe("Requirement intake activities", () => {
   it("records a clarification answer and creates a PRD draft idempotently", async () => {
-    const store = new InMemoryRequirementIntakeActivityStore();
+    const store = new InMemoryRequirementIntakeActivityStore(testRequirementClarifier());
     const activities = createRequirementIntakeActivities(store);
     const started = await activities.startRequirementIntakeActivity({
       workflowId: "workflow-td-205",
@@ -57,7 +58,7 @@ describe("Requirement intake activities", () => {
     });
 
     expect(started.requirement.status).toBe("clarifying");
-    expect(started.currentQuestion?.question).toContain("用户可见结果");
+    expect(started.currentQuestion?.question).toContain("$grill-me");
 
     const recorded = await activities.recordRequirementClarificationAnswerActivity({
       workflowId: "workflow-td-205",
@@ -91,7 +92,7 @@ describe("Requirement intake activities", () => {
   });
 
   it("supports another clarification round before drafting the PRD", async () => {
-    const store = new InMemoryRequirementIntakeActivityStore();
+    const store = new InMemoryRequirementIntakeActivityStore(testRequirementClarifier());
     const activities = createRequirementIntakeActivities(store);
     const started = await activities.startRequirementIntakeActivity({
       workflowId: "workflow-td-205",
@@ -115,10 +116,38 @@ describe("Requirement intake activities", () => {
 
     expect(recorded.readyForPrd).toBe(false);
     expect(recorded.requirement.status).toBe("clarifying");
-    expect(recorded.nextQuestion?.id).toBe("visual_style");
+    expect(recorded.nextQuestion?.id).toBe("test_codex_followup_2");
     expect(recorded.requirement.clarificationTurns.at(-1)?.speaker).toBe("agent");
   });
 });
+
+function testRequirementClarifier(): RequirementIntakeClarifier {
+  let count = 0;
+  return {
+    async start(input) {
+      count += 1;
+      return {
+        question: {
+          id: "test_codex_initial",
+          question: `$grill-me clarified first question for ${input.requirementId}`,
+          recommendedAnswer: "Confirm the smallest useful user-visible outcome."
+        },
+        codexSessionId: `test-session-${input.requirementId}`
+      };
+    },
+    async continue(input) {
+      count += 1;
+      return {
+        question: {
+          id: `test_codex_followup_${count}`,
+          question: `Continue $grill-me from ${input.requirement.id}`,
+          recommendedAnswer: "Confirm the remaining boundary and acceptance evidence."
+        },
+        codexSessionId: `test-session-${input.requirement.id}`
+      };
+    }
+  };
+}
 
 describe("Work item planning activities", () => {
   it("creates vertical work items, test cases, and a contract baseline", async () => {
@@ -600,7 +629,7 @@ describe("Defect reproduction activities", () => {
       workItem: claim.workItem,
       agentId: claim.agentId,
       claimToken: claim.claimToken,
-      runner: "simulated",
+      runner: "codex",
       reproductionExpected: false
     });
     const recorded = await activities.recordDefectReproductionActivity({

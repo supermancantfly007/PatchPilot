@@ -18,6 +18,7 @@ export interface WorkspaceContext {
 }
 
 export interface WorkspaceManagerConfig {
+  repositoryRoot?: string;
   workspaceRoot: string;
   baseRef?: string;
   taskFileName?: string;
@@ -32,6 +33,7 @@ export interface PreparedWorkspace {
   baseRef: string;
   baseBranch: string;
   baseCommit: string;
+  repositoryRoot: string;
   status: "active";
   capabilityManifest?: CapabilityManifest;
 }
@@ -66,7 +68,7 @@ export interface WorkspaceManager {
     workspace: PreparedWorkspace,
     options: { message: string; capabilityManifest?: CapabilityManifest }
   ): Promise<WorkspaceCommit>;
-  cleanupWorkspace(workspace: Pick<PreparedWorkspace, "path">): Promise<void>;
+  cleanupWorkspace(workspace: Pick<PreparedWorkspace, "path"> & Partial<Pick<PreparedWorkspace, "repositoryRoot">>): Promise<void>;
 }
 
 export class GitWorkspaceManager implements WorkspaceManager {
@@ -79,22 +81,23 @@ export class GitWorkspaceManager implements WorkspaceManager {
     context: WorkspaceContext,
     config: WorkspaceManagerConfig
   ): Promise<PreparedWorkspace> {
+    const repositoryRoot = config.repositoryRoot ?? process.cwd();
     const root = config.workspaceRoot;
     await mkdir(root, { recursive: true });
 
     const workspacePath = join(root, buildWorkspaceName(context));
     const baseRef = config.baseRef || "HEAD";
-    const base = await resolveBaseInfo(baseRef, process.cwd(), config.capabilityManifest);
+    const base = await resolveBaseInfo(baseRef, repositoryRoot, config.capabilityManifest);
     const branchName = buildWorkspaceBranchName(context);
     const taskFilePath = join(workspacePath, config.taskFileName || "PATCHPILOT_TASK.md");
     let worktreeCreated = false;
     if (config.capabilityManifest) assertValidCapabilityManifest(config.capabilityManifest);
 
     try {
-      await ensureBranchAtRef(branchName, base.baseCommit, config.capabilityManifest);
+      await ensureBranchAtRef(branchName, base.baseCommit, config.capabilityManifest, repositoryRoot);
       const worktreeResult = await runGit(
         ["worktree", "add", workspacePath, branchName],
-        process.cwd(),
+        repositoryRoot,
         30000,
         config.capabilityManifest
       );
@@ -104,7 +107,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
       worktreeCreated = true;
       await writeFile(taskFilePath, redactSecrets(buildTaskMarkdown(context)).redacted);
     } catch (error) {
-      if (worktreeCreated) await this.cleanupWorkspace({ path: workspacePath });
+      if (worktreeCreated) await this.cleanupWorkspace({ path: workspacePath, repositoryRoot });
       throw error;
     }
 
@@ -116,6 +119,7 @@ export class GitWorkspaceManager implements WorkspaceManager {
       baseRef,
       baseBranch: base.baseBranch,
       baseCommit: base.baseCommit,
+      repositoryRoot,
       status: "active",
       ...(config.capabilityManifest ? { capabilityManifest: config.capabilityManifest } : {})
     };
@@ -205,8 +209,8 @@ export class GitWorkspaceManager implements WorkspaceManager {
     };
   }
 
-  async cleanupWorkspace(workspace: Pick<PreparedWorkspace, "path">) {
-    const result = await runGit(["worktree", "remove", "--force", workspace.path], process.cwd(), 30000);
+  async cleanupWorkspace(workspace: Pick<PreparedWorkspace, "path"> & Partial<Pick<PreparedWorkspace, "repositoryRoot">>) {
+    const result = await runGit(["worktree", "remove", "--force", workspace.path], workspace.repositoryRoot ?? process.cwd(), 30000);
     if (result.exitCode !== 0) {
       await rm(workspace.path, { recursive: true, force: true });
     }
@@ -263,17 +267,22 @@ async function resolveBaseInfo(baseRef: string, cwd: string, capabilityManifest?
   };
 }
 
-async function ensureBranchAtRef(branchName: string, ref: string, capabilityManifest?: CapabilityManifest) {
+async function ensureBranchAtRef(
+  branchName: string,
+  ref: string,
+  capabilityManifest?: CapabilityManifest,
+  repositoryRoot = process.cwd()
+) {
   const exists = await runGit(
     ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
-    process.cwd(),
+    repositoryRoot,
     5000,
     capabilityManifest
   );
   const args = exists.exitCode === 0
     ? ["branch", "-f", branchName, ref]
     : ["branch", branchName, ref];
-  const result = await runGit(args, process.cwd(), 30000, capabilityManifest);
+  const result = await runGit(args, repositoryRoot, 30000, capabilityManifest);
   if (result.exitCode !== 0) {
     throw new Error(`无法准备任务分支 ${branchName}：${tail(result.output, 1200)}`);
   }

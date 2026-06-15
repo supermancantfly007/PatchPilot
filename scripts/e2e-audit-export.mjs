@@ -23,8 +23,7 @@ const api = spawn("pnpm", ["--filter", "@patchpilot/api", "start"], {
     ...process.env,
     PORT: String(apiPort),
     PATCHPILOT_DATA_DIR: dataDir,
-    PATCHPILOT_RUNNER: "simulated",
-    PATCHPILOT_SIMULATION_DELAY_FACTOR: "0"
+    PATCHPILOT_RUNNER: "codex",
   },
   stdio: ["ignore", "pipe", "pipe"]
 });
@@ -54,7 +53,7 @@ try {
 
   const startedRun = await requestJson(`/api/work-items/${workItem.id}/start`, {
     method: "POST",
-    body: JSON.stringify({ runner: "simulated" })
+    body: JSON.stringify({ runner: "codex" })
   });
   const completedRun = await poll(async () => {
     const run = await requestJson(`/api/runs/${startedRun.id}`);

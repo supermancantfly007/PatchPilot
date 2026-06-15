@@ -23,8 +23,8 @@ e2e:
   timeoutMs: 90000
   baseUrl: http://fixture.local:4173
 dev:
-  runner: simulated
-  simulationDelayFactor: 0.25
+  runner: codex
+  repositoryRoot: .
   workspaceRoot: .patchpilot/worktrees-fixture
   previewUrl: http://fixture.local:3001
 security:
@@ -58,13 +58,6 @@ security:
         sourceEnv: PATCHPILOT_DEV_NPM_TOKEN
         environment: ci
         description: Fixture npm read-only token
-      - id: fake-package-token
-        envVar: PACKAGE_TOKEN
-        environment: ci
-        ttlSeconds: 120
-        provider:
-          kind: local_fake
-          seedEnv: PATCHPILOT_FAKE_SECRET_SEED
       - id: vault-db-token
         envVar: DATABASE_TOKEN
         environment: ci
@@ -128,8 +121,8 @@ pullRequest:
       expect(config.smoke.previewUrl).toBe("http://fixture.local:5173");
       expect(config.e2e.baseUrl).toBe("http://fixture.local:4173");
       expect(config.dev).toEqual({
-        runner: "simulated",
-        simulationDelayFactor: 0.25,
+        runner: "codex",
+        repositoryRoot: fixture.root,
         workspaceRoot: join(fixture.root, ".patchpilot", "worktrees-fixture"),
         previewUrl: "http://fixture.local:3001"
       });
@@ -170,16 +163,6 @@ pullRequest:
               provider: {
                 kind: "env",
                 sourceEnv: "PATCHPILOT_DEV_NPM_TOKEN"
-              }
-            },
-            {
-              id: "fake-package-token",
-              envVar: "PACKAGE_TOKEN",
-              environment: "ci",
-              ttlSeconds: 120,
-              provider: {
-                kind: "local_fake",
-                seedEnv: "PATCHPILOT_FAKE_SECRET_SEED"
               }
             },
             {
@@ -264,6 +247,7 @@ dev:
       expect(config.configSource).toBe("file");
       expect(config.configPath).toBe(fixture.configPath);
       expect(config.test.command).toBe("pnpm test:from-root-config");
+      expect(config.dev.repositoryRoot).toBe(fixture.root);
       expect(config.dev.workspaceRoot).toBe(join(fixture.root, ".patchpilot", "worktrees-from-root"));
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
@@ -288,7 +272,8 @@ security:
           PATCHPILOT_TEST_COMMAND: "pnpm test:from-env",
           PATCHPILOT_TEST_TIMEOUT_MS: "",
           PATCHPILOT_PREVIEW_URL: "http://from-env.local",
-          PATCHPILOT_RUNNER: "simulated",
+          PATCHPILOT_RUNNER: "codex",
+          PATCHPILOT_REPOSITORY_ROOT: "./target-repo",
           PATCHPILOT_CODEX_BYPASS: "true",
           PATCHPILOT_CONTAINER_SANDBOX_ENABLED: "true",
           PATCHPILOT_CONTAINER_SANDBOX_RUNTIME: "podman",
@@ -347,7 +332,8 @@ security:
 
       expect(config.test.command).toBe("pnpm test:from-env");
       expect(config.dev.previewUrl).toBe("http://from-env.local");
-      expect(config.dev.runner).toBe("simulated");
+      expect(config.dev.runner).toBe("codex");
+      expect(config.dev.repositoryRoot).toBe(join(fixture.root, "target-repo"));
       expect(config.security.codexBypass).toBe(true);
       expect(config.security.containerSandbox).toEqual({
         enabled: true,

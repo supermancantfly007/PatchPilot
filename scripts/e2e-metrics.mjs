@@ -19,8 +19,7 @@ const api = spawn("pnpm", ["--filter", "@patchpilot/api", "start"], {
     ...process.env,
     PORT: String(apiPort),
     PATCHPILOT_DATA_DIR: dataDir,
-    PATCHPILOT_RUNNER: "simulated",
-    PATCHPILOT_SIMULATION_DELAY_FACTOR: "0"
+    PATCHPILOT_RUNNER: "codex",
   },
   stdio: ["ignore", "pipe", "pipe"]
 });
@@ -39,7 +38,7 @@ try {
   const requirement = await requestJson("/api/requirements", {
     method: "POST",
     body: JSON.stringify({
-      rawInput: "Verify Prometheus metrics for one simulated PatchPilot run.",
+      rawInput: "Verify Prometheus metrics for one Codex PatchPilot run.",
       template: "feature"
     })
   });
@@ -50,7 +49,7 @@ try {
 
   const startedRun = await requestJson(`/api/work-items/${workItem.id}/start`, {
     method: "POST",
-    body: JSON.stringify({ runner: "simulated" })
+    body: JSON.stringify({ runner: "codex" })
   });
 
   const completedRun = await poll(async () => {
@@ -67,11 +66,11 @@ try {
   assert(metrics.contentType.includes("text/plain"), "metrics endpoint should return text/plain");
   assert(metrics.text.includes("# TYPE patchpilot_agent_run_duration_seconds histogram"), "run duration histogram should be exposed");
   assert(
-    metrics.text.includes('patchpilot_agent_run_duration_seconds_count{runner="simulated",status="succeeded"} 1'),
-    "completed simulated run should increment duration count"
+    metrics.text.includes('patchpilot_agent_run_duration_seconds_count{runner="codex",status="succeeded"} 1'),
+    "completed Codex run should increment duration count"
   );
   assert(
-    metrics.text.includes('patchpilot_agent_run_failures_total{runner="simulated",failure_type="test_failed"} 0'),
+    metrics.text.includes('patchpilot_agent_run_failures_total{runner="codex",failure_type="test_failed"} 0'),
     "failure reason metric should expose stable failure_type labels"
   );
   assert(
@@ -79,8 +78,8 @@ try {
     "accepted run should update queue depth"
   );
   assert(
-    metrics.text.includes('patchpilot_agent_run_cost_actual_usd{runner="simulated",status="succeeded"} 0.38'),
-    "run cost metric should include simulated actual cost"
+    metrics.text.includes('patchpilot_agent_run_cost_actual_usd{runner="codex",status="succeeded"} 0'),
+    "run cost metric should include Codex actual cost"
   );
   assert(metrics.text.includes("patchpilot_test_pass_rate_ratio 1"), "test pass rate should be one after passing evidence");
   assert(metrics.text.includes("patchpilot_acceptance_rate_ratio 1"), "acceptance rate should be one after acceptance");

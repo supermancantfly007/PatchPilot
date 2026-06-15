@@ -5,7 +5,6 @@ import {
   completeTimeline,
   createTimeline,
   createBugFixWorkItem,
-  createGrillMeQuestion,
   createPrd,
   createTestCasesForWorkItems,
   makeSimpleSummary,
@@ -19,6 +18,7 @@ import {
   type AuditEvent,
   type BugReport,
   type ClarificationQuestion,
+  type ClarificationTurn,
   type IntakeArtifactReference,
   type Prd,
   type PullRequestRecord,
@@ -132,6 +132,41 @@ interface RequirementIntakeState {
   prd?: Prd;
 }
 
+export interface RequirementIntakeClarifierStartInput {
+  requirementId: string;
+  rawInput: string;
+  template: StartRequirementIntakeActivityInput["template"];
+  artifactReferences: IntakeArtifactReference[];
+  turns: ClarificationTurn[];
+}
+
+export interface RequirementIntakeClarifierContinueInput {
+  requirement: Requirement;
+  answer: string;
+  turns: ClarificationTurn[];
+}
+
+export interface RequirementIntakeClarifierResult {
+  question: ClarificationQuestion;
+  codexSessionId?: string;
+  readyForPrd?: boolean;
+}
+
+export interface RequirementIntakeClarifier {
+  start(input: RequirementIntakeClarifierStartInput): Promise<RequirementIntakeClarifierResult>;
+  continue(input: RequirementIntakeClarifierContinueInput): Promise<RequirementIntakeClarifierResult>;
+}
+
+class MissingRequirementIntakeClarifier implements RequirementIntakeClarifier {
+  async start(): Promise<RequirementIntakeClarifierResult> {
+    throw new Error("Requirement intake clarifier is not configured. Wire a real Codex CLI $grill-me clarifier.");
+  }
+
+  async continue(): Promise<RequirementIntakeClarifierResult> {
+    throw new Error("Requirement intake clarifier is not configured. Wire a real Codex CLI $grill-me clarifier.");
+  }
+}
+
 export class InMemoryRequirementIntakeActivityStore implements RequirementIntakeActivityStore {
   readonly requirements = new Map<string, RequirementIntakeState>();
   readonly started = new Map<string, StartRequirementIntakeActivityResult>();
@@ -139,13 +174,22 @@ export class InMemoryRequirementIntakeActivityStore implements RequirementIntake
   readonly prdDrafts = new Map<string, DraftRequirementPrdActivityResult>();
   readonly confirmations = new Map<string, RecordRequirementPrdConfirmationActivityResult>();
 
+  constructor(private readonly clarifier: RequirementIntakeClarifier = new MissingRequirementIntakeClarifier()) {}
+
   async startIntake(input: StartRequirementIntakeActivityInput): Promise<StartRequirementIntakeActivityResult> {
     const existing = this.started.get(input.idempotencyKey);
     if (existing) return clone(existing);
 
     const now = new Date().toISOString();
     const requirementId = input.requirementId ?? stableId("req", input.idempotencyKey);
-    const initialQuestion = createGrillMeQuestion(input.rawInput, input.template, []);
+    const artifactReferences = prepareArtifactReferences(input.artifactReferences ?? [], requirementId, now);
+    const initialQuestion = await this.clarifier.start({
+      requirementId,
+      rawInput: input.rawInput,
+      template: input.template,
+      artifactReferences,
+      turns: []
+    });
     const requirement: Requirement = {
       id: requirementId,
       title: makeSimpleSummary(input.rawInput, input.template),
@@ -153,14 +197,15 @@ export class InMemoryRequirementIntakeActivityStore implements RequirementIntake
       template: input.template,
       status: "clarifying",
       simpleSummary: makeSimpleSummary(input.rawInput, input.template),
-      artifactReferences: prepareArtifactReferences(input.artifactReferences ?? [], requirementId, now),
-      clarificationQuestions: [initialQuestion],
+      artifactReferences,
+      clarificationQuestions: [initialQuestion.question],
       clarificationTurns: [
         {
           id: stableId("turn", `${input.idempotencyKey}:agent:0`),
           speaker: "agent",
-          message: initialQuestion.question,
-          recommendedAnswer: initialQuestion.recommendedAnswer,
+          message: initialQuestion.question.question,
+          recommendedAnswer: initialQuestion.question.recommendedAnswer,
+          ...(initialQuestion.codexSessionId ? { codexSessionId: initialQuestion.codexSessionId } : {}),
           createdAt: now
         }
       ],
@@ -201,27 +246,29 @@ export class InMemoryRequirementIntakeActivityStore implements RequirementIntake
     if (input.shouldDraftPrd) {
       state.requirement.status = "prd_draft";
     } else {
-      nextQuestion = createGrillMeQuestion(
-        state.requirement.rawInput,
-        state.requirement.template,
-        state.requirement.clarificationTurns
-      );
+      const clarified = await this.clarifier.continue({
+        requirement: clone(state.requirement),
+        answer,
+        turns: clone(state.requirement.clarificationTurns)
+      });
+      nextQuestion = clarified.question;
       state.requirement.clarificationTurns.push({
         id: stableId("turn", `${input.idempotencyKey}:agent`),
         speaker: "agent",
         message: nextQuestion.question,
         recommendedAnswer: nextQuestion.recommendedAnswer,
+        ...(clarified.codexSessionId ? { codexSessionId: clarified.codexSessionId } : {}),
         createdAt: now
       });
       state.requirement.clarificationQuestions.push(nextQuestion);
-      state.requirement.status = "clarifying";
+      state.requirement.status = clarified.readyForPrd ? "prd_draft" : "clarifying";
     }
 
     state.requirement.updatedAt = now;
     const result: RecordRequirementClarificationAnswerActivityResult = {
       requirement: clone(state.requirement),
       ...(nextQuestion ? { nextQuestion } : {}),
-      readyForPrd: input.shouldDraftPrd,
+      readyForPrd: state.requirement.status === "prd_draft",
       clarificationAnswerCount: countAnsweredQuestions(state.requirement)
     };
 
@@ -765,12 +812,9 @@ export class InMemoryWorkItemExecutionActivityStore implements WorkItemExecution
     }
 
     const now = new Date().toISOString();
-    const runner = input.runner ?? "codex";
+    const runner = "codex";
     const runId = stableId("run", `${input.workflowId}:${input.workItem.id}:agent-run`);
-    const workspacePath =
-      runner === "codex"
-        ? `${input.workspaceRoot ?? ".patchpilot/workspaces"}/${runId}`
-        : `simulated://${runId}`;
+    const workspacePath = `${input.workspaceRoot ?? ".patchpilot/workspaces"}/${runId}`;
     const runningWorkItem: WorkItem = {
       ...clone(input.workItem),
       status: "running",
@@ -804,7 +848,7 @@ export class InMemoryWorkItemExecutionActivityStore implements WorkItemExecution
       workItemId: input.workItem.id,
       runner,
       status: "active",
-      isolation: runner === "codex" ? "git_worktree" : "simulated",
+      isolation: "git_worktree",
       path: workspacePath,
       createdAt: now,
       updatedAt: now
@@ -962,8 +1006,8 @@ export class InMemoryWorkItemExecutionActivityStore implements WorkItemExecution
       commit: input.codex.headCommit,
       branch: input.codex.branchName,
       workspacePath: input.workspaceRun.path,
-      runner: input.agentRun.runner === "codex" ? "patchpilot-test-runner" : "simulated-test-runner",
-      environmentImage: input.agentRun.runner === "codex" ? "local" : "simulated",
+      runner: "patchpilot-test-runner",
+      environmentImage: "local",
       exitCode: 0,
       retryCount: 0,
       attempt: 1,
@@ -1558,13 +1602,10 @@ export class InMemoryDefectReproductionActivityStore implements DefectReproducti
     }
 
     const now = new Date().toISOString();
-    const runner = input.runner ?? "codex";
+    const runner = "codex";
     const reproduced = input.reproductionExpected ?? true;
     const runId = stableId("run", `${input.workflowId}:${input.workItem.id}:defect-reproduction`);
-    const workspacePath =
-      runner === "codex"
-        ? `${input.workspaceRoot ?? ".patchpilot/workspaces"}/${runId}`
-        : `simulated://${runId}`;
+    const workspacePath = `${input.workspaceRoot ?? ".patchpilot/workspaces"}/${runId}`;
     const branch = `patchpilot/diagnose-${slugSegment(input.bug.id)}`;
     const commit = stableId("head", `${runId}:${input.bug.id}:diagnose:${reproduced}`).replace(/^head_/, "head-");
     const testCase = normalizeDefectReproductionTestCase(
@@ -1591,8 +1632,8 @@ export class InMemoryDefectReproductionActivityStore implements DefectReproducti
       commit,
       branch,
       workspacePath,
-      runner: runner === "codex" ? "patchpilot-diagnose-runner" : "simulated-diagnose-runner",
-      environmentImage: runner === "codex" ? "local" : "simulated",
+      runner: "patchpilot-diagnose-runner",
+      environmentImage: "local",
       exitCode: reproduced ? 1 : null,
       failureSummary: reproduced ? input.bug.actualBehavior : "Reproduction steps did not produce the reported failure.",
       retryCount: 0,
@@ -1691,7 +1732,7 @@ export class InMemoryDefectReproductionActivityStore implements DefectReproducti
         makeRunEvent(runId, 5, "test.started", "Reproduction test activity started."),
         makeRunEvent(runId, 6, reproduced ? "test.failed" : "agent.progress", normalizedTestRun.summary)
       ],
-      costEstimateUsd: runner === "codex" ? 0.18 : 0.02,
+      costEstimateUsd: 0.18,
       startedAt: new Date(Date.parse(now) - durationMs).toISOString()
     };
     const workspaceRun: WorkspaceRun = {
@@ -1702,7 +1743,7 @@ export class InMemoryDefectReproductionActivityStore implements DefectReproducti
       workItemId: input.workItem.id,
       runner,
       status: "active",
-      isolation: runner === "codex" ? "git_worktree" : "simulated",
+      isolation: "git_worktree",
       path: workspacePath,
       createdAt: new Date(Date.parse(now) - durationMs).toISOString(),
       updatedAt: now

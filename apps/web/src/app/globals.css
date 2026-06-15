@@ -213,6 +213,11 @@ a {
   overflow: hidden;
 }
 
+.attachment-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .file-input {
   position: absolute;
   inset: 0;

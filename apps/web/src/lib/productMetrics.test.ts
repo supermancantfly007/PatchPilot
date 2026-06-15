@@ -3,7 +3,7 @@ import { createTimeline, emptySnapshot, type AgentRun, type AuditEvent, type Pat
 import { computeProductMetrics, formatDurationCompact, formatMetricPercent } from "./productMetrics";
 
 describe("product metrics", () => {
-  it("returns empty rates instead of static placeholder numbers", () => {
+  it("returns empty rates instead of static fallback numbers", () => {
     const metrics = computeProductMetrics(emptySnapshot());
 
     expect(metrics.requirementToPr.averageMs).toBeNull();
@@ -310,7 +310,7 @@ function agentRun(input: Partial<AgentRun> & Pick<AgentRun, "id" | "workItemId" 
   return {
     requirementId: "req_1",
     prdId: "prd_1",
-    runner: "simulated",
+    runner: "codex",
     currentStep: "confirming",
     timeline: createTimeline(),
     events: [],

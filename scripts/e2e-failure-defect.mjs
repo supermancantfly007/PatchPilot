@@ -19,9 +19,7 @@ const api = spawn("pnpm", ["--filter", "@patchpilot/api", "start"], {
     ...process.env,
     PORT: String(apiPort),
     PATCHPILOT_DATA_DIR: dataDir,
-    PATCHPILOT_RUNNER: "simulated",
-    PATCHPILOT_SIMULATION_DELAY_FACTOR: "0",
-    PATCHPILOT_SIMULATED_FAILURE_TYPE: "test_failed"
+    PATCHPILOT_RUNNER: "codex",
   },
   stdio: ["ignore", "pipe", "pipe"]
 });
@@ -51,11 +49,11 @@ try {
 
   const startedRun = await requestJson(`/api/work-items/${workItem.id}/start`, {
     method: "POST",
-    body: JSON.stringify({ runner: "simulated" })
+    body: JSON.stringify({ runner: "codex" })
   });
   assert(
     startedRun.status === "running" || startedRun.status === "failed",
-    "simulated run should start or fail immediately"
+    "Codex run should start or fail immediately"
   );
 
   const evidence = await poll(async () => {

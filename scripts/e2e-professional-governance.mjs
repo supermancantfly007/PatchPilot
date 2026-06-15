@@ -24,8 +24,7 @@ const api = spawn("pnpm", ["--filter", "@patchpilot/api", "start"], {
     ...process.env,
     PORT: String(apiPort),
     PATCHPILOT_DATA_DIR: dataDir,
-    PATCHPILOT_RUNNER: "simulated",
-    PATCHPILOT_SIMULATION_DELAY_FACTOR: "0",
+    PATCHPILOT_RUNNER: "codex",
     PATCHPILOT_BUDGET_RUN_USD: "0.2"
   },
   stdio: ["ignore", "pipe", "pipe"]
@@ -77,7 +76,7 @@ try {
 
   const pausedForApprove = await requestJson(`/api/work-items/${firstWorkItem.id}/start`, {
     method: "POST",
-    body: JSON.stringify({ runner: "simulated" })
+    body: JSON.stringify({ runner: "codex" })
   });
   assertEqual(pausedForApprove.status, "needs_approval", "first run should wait for budget approval");
   const approvalToApprove = await findApproval(pausedForApprove.budgetApprovalId);
@@ -108,7 +107,7 @@ try {
 
   const pausedForDeny = await requestJson(`/api/work-items/${secondWorkItem.id}/start`, {
     method: "POST",
-    body: JSON.stringify({ runner: "simulated" })
+    body: JSON.stringify({ runner: "codex" })
   });
   assertEqual(pausedForDeny.status, "needs_approval", "second run should wait for budget approval");
   const approvalToDeny = await findApproval(pausedForDeny.budgetApprovalId);

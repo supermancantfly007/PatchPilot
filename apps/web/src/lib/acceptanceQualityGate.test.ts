@@ -154,7 +154,7 @@ function acceptanceSnapshot(): PatchPilotSnapshot {
         requirementId: "req_1",
         prdId: "prd_1",
         workItemId: "wi_1",
-        runner: "simulated",
+        runner: "codex",
         status: "succeeded",
         currentStep: "confirming",
         timeline: [],
@@ -166,7 +166,7 @@ function acceptanceSnapshot(): PatchPilotSnapshot {
           changedFiles: ["services/api/src/store.ts"],
           tests: [],
           reviewerSummary: "Approved",
-          runner: "simulated"
+          runner: "codex"
         },
         costEstimateUsd: 0.42,
         startedAt: now,

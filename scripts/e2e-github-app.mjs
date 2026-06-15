@@ -1,7 +1,6 @@
 import { createHmac } from "node:crypto";
 
 process.env.NODE_ENV = "test";
-process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR = "0";
 process.env.PATCHPILOT_GITHUB_WEBHOOK_SECRET = "e2e-github-webhook-secret";
 
 const { buildServer } = await import("../services/api/src/server.ts");
@@ -117,7 +116,7 @@ try {
   const workItem = approval.workItems[0];
   assert(workItem?.id, "approved PRD should create a work item");
 
-  const run = await injectJson("POST", `/api/work-items/${workItem.id}/start`, { runner: "simulated" });
+  const run = await injectJson("POST", `/api/work-items/${workItem.id}/start`, { runner: "codex" });
   const completedRun = await pollRun(run.id);
   assertEqual(completedRun.status, "succeeded", "selected repository flow should complete a run");
 

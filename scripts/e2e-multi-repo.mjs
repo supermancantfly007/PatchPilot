@@ -1,5 +1,4 @@
 process.env.NODE_ENV = "test";
-process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR = "0";
 
 const { buildServer } = await import("../services/api/src/server.ts");
 const { PatchPilotStore } = await import("../services/api/src/store.ts");
@@ -64,7 +63,7 @@ try {
   const startTeam = await injectJson(
     "POST",
     `/api/prds/${prd.id}/start-team`,
-    { runner: "simulated" },
+    { runner: "codex" },
     authHeaders("maintainer", "multi-repo-maintainer")
   );
   assertEqual(startTeam.workItems.length, 8, "one PRD should create four work items per repository");
@@ -81,7 +80,7 @@ try {
   const workspaceRuns = snapshot.workspaceRuns.filter((workspace) => workspace.prdId === prd.id);
   const testCases = snapshot.testCases.filter((testCase) => testCase.prdId === prd.id);
   const testRuns = snapshot.testRuns.filter((testRun) => testRun.prdId === prd.id);
-  const executionTestRuns = testRuns.filter((testRun) => testRun.runner === "simulated-test-runner");
+  const executionTestRuns = testRuns.filter((testRun) => testRun.runner === "patchpilot-test-runner");
 
   assertEqual(workItems.length, 8, "snapshot should retain eight repo-scoped work items");
   assertSetEqual(

@@ -192,7 +192,7 @@ Audit Events are the product-state explanation. Raw provider webhooks, CI logs, 
 
 ### Let Agents Push Directly To Main
 
-This is fast and simple for demos.
+This is fast and simple for local validation.
 
 Rejected because it bypasses review, quality gates, branch protection, conflict ordering, rollback evidence, and human acceptance.
 

@@ -33,7 +33,7 @@ try {
 
   const run = await requestJson(`/api/work-items/${workItem.id}/start`, {
     method: "POST",
-    body: JSON.stringify({ runner: "simulated" })
+    body: JSON.stringify({ runner: "codex" })
   });
 
   const completed = await poll(async () => {
@@ -97,8 +97,7 @@ function startApi() {
       ...process.env,
       PORT: String(apiPort),
       PATCHPILOT_DATA_DIR: dataDir,
-      PATCHPILOT_RUNNER: "simulated",
-      PATCHPILOT_SIMULATION_DELAY_FACTOR: "0"
+      PATCHPILOT_RUNNER: "codex",
     },
     stdio: ["ignore", "pipe", "pipe"]
   });

@@ -16,7 +16,7 @@ const e2eAuthHeaders = {
 };
 let delegatedExecutorCalled = false;
 
-const fakeCodexRunner = {
+const policyProbeCodexRunner = {
   isAvailable: async () => true,
   isGitWorkspaceAvailable: async () => true,
   run: async (_context, _emit, config) => {
@@ -39,13 +39,13 @@ const fakeCodexRunner = {
         };
       }
     });
-    throw new Error("Expected command wrapper policy denial before fake runner completion.");
+    throw new Error("Expected command wrapper policy denial before runner completion.");
   }
 };
 
 const app = await buildServer({
   store: new PatchPilotStore({
-    codexRunner: fakeCodexRunner,
+    codexRunner: policyProbeCodexRunner,
     dataFilePath: false,
     repository: false
   })

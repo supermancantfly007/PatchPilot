@@ -98,6 +98,15 @@ describe("codex-runner", () => {
     expect(summary).toMatch(/^Codex 执行失败：x+$/);
   });
 
+  it("can summarize classified failures from parsed Codex stdout messages", () => {
+    const summary = summarizeCodexExecFailure({
+      stdoutRemainder: "Codex：unexpected status 502 Bad Gateway",
+      exitCode: 1
+    });
+
+    expect(classifyFailureMessage(summary)).toBe("transient");
+  });
+
   it("caps Codex exec timeout with the active capability manifest runtime limit", () => {
     const manifest = generateCapabilityManifest({
       testTimeoutMs: 15_000,
@@ -122,6 +131,8 @@ describe("codex-runner", () => {
   it("classifies structured runner failures", () => {
     expect(classifyFailureMessage("测试未通过：expected true")).toBe("test_failed");
     expect(classifyFailureMessage("request timed out after 60000ms")).toBe("transient");
+    expect(classifyFailureMessage("unexpected status 502 Bad Gateway")).toBe("transient");
+    expect(classifyFailureMessage("unexpected status 401 Unauthorized: Invalid API key")).toBe("environment_failed");
     expect(classifyFailureMessage("command not found: codex")).toBe("environment_failed");
     expect(classifyFailureMessage("sandbox policy denied write access")).toBe("policy_denied");
     expect(classifyFailureMessage("budget quota exceeded")).toBe("budget_exhausted");

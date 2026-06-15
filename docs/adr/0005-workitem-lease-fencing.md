@@ -108,7 +108,7 @@ Rejected acceptance and rework follow the same rule: preserve prior evidence, ma
 
 TD-203 database constraints are required but not sufficient on their own. The runtime repository must expose narrow transactional commands for Work Item claim, heartbeat, start, release, terminal completion, cancellation, rework, and stale recovery.
 
-Runtime code should not perform a read-modify-write of the entire product snapshot as the production concurrency mechanism. Snapshot import/export remains useful for fixtures, demos, compatibility, and `/api/snapshot` projections, but the production mutation path needs row-level transactions, conditional updates, version checks, constraints, and domain errors.
+Runtime code should not perform a read-modify-write of the entire product snapshot as the production concurrency mechanism. Snapshot import/export remains useful for fixtures, local development, compatibility, and `/api/snapshot` projections, but the production mutation path needs row-level transactions, conditional updates, version checks, constraints, and domain errors.
 
 Repository commands should use the database clock for `claimedAt`, `heartbeatAt`, `leaseExpiresAt`, and stale checks. This avoids inconsistent lease behavior across API workers with different local clocks.
 

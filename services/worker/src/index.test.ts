@@ -13,13 +13,13 @@ describe("worker runtime", () => {
         PATCHPILOT_API_BASE_URL: "http://localhost:4999/",
         PATCHPILOT_WORKER_INTERVAL_MS: "25",
         PATCHPILOT_WORKER_ONCE: "true",
-        PATCHPILOT_WORKER_RUNNER: "simulated"
+        PATCHPILOT_WORKER_RUNNER: "codex"
       })
     ).toEqual({
       apiBaseUrl: "http://localhost:4999",
       intervalMs: 25,
       once: true,
-      runner: "simulated"
+      runner: "codex"
     });
   });
 
@@ -38,14 +38,14 @@ describe("worker runtime", () => {
     );
 
     const result = await runWorkerTick(
-      { apiBaseUrl: "http://patchpilot.test", intervalMs: 1, once: true, runner: "simulated" },
+      { apiBaseUrl: "http://patchpilot.test", intervalMs: 1, once: true, runner: "codex" },
       { throwOnError: true }
     );
 
     expect(result).toEqual({ planned: 1, dispatched: 1, failed: 0, errors: [] });
     const startCall = calls.find((call) => call.url.endsWith("/api/work-items/wi_backend/start"));
     expect(JSON.parse(String(startCall?.init?.body))).toEqual({
-      runner: "simulated",
+      runner: "codex",
       claimToken: "claim-token-123"
     });
   });

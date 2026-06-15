@@ -327,7 +327,7 @@ Treat this ADR as production-enforced only when all of the following are true:
 9. Unredacted export, production data access, legal hold, and audit-chain break operations require Approval records and produce Audit Events.
 10. OpenTelemetry configuration documents shorter retention, redaction guarantees, correlation attributes, and the fact that telemetry is not the audit authority.
 11. Regression tests cover hash-chain tamper detection, redaction before artifact persistence, retention tombstones, export manifest verification, telemetry redaction, and incident-style post-persistence redaction handling.
-12. At least one E2E path completes a real or simulated Work Item and verifies AgentRunEvents, AuditEvents, artifact metadata, telemetry correlation, retention tier assignment, and export package creation.
+12. At least one E2E path completes a Codex Work Item and verifies AgentRunEvents, AuditEvents, artifact metadata, telemetry correlation, retention tier assignment, and export package creation.
 
 ## Non-Goals
 

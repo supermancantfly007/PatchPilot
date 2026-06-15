@@ -277,7 +277,7 @@ await worker.runUntil(async () => {
       prd: intakeResult.prd,
       workItem: executionWorkItem,
       testCases: planningResult.testCases,
-      runner: "simulated"
+      runner: "codex"
     },
     config
   );
@@ -483,7 +483,7 @@ await worker.runUntil(async () => {
       idempotencyKey: defectReproductionIdempotencyKey,
       bug: defectBug,
       reproductionWorkItem: defectReproductionWorkItem,
-      runner: "simulated",
+      runner: "codex",
       reproductionExpected: false
     },
     config

@@ -58,8 +58,6 @@ import {
   createBugFixWorkItem,
   createBugPrd,
   createBugRequirement,
-  createGrillMeQuestion,
-  createInitialClarificationTurn,
   createBugWorkItem,
   createDefaultAgents,
   evaluateAcceptanceQualityGate,
@@ -68,7 +66,6 @@ import {
   createTimeline,
   createWorkItems,
   emptySnapshot,
-  generateClarificationQuestions,
   makeSimpleSummary,
   normalizeAuditActor,
   testCaseStatusFromTestRunStatus,
@@ -130,6 +127,12 @@ import {
   createConfiguredGitHubAppRepositoryClient,
   createConfiguredPullRequestAdapter
 } from "./pullRequestAdapter";
+import {
+  LocalCodexClarifier,
+  codexClarificationTurn,
+  latestCodexSessionId,
+  type RequirementClarifier
+} from "./codexClarifier";
 
 const defaultDataFile = join(process.env.PATCHPILOT_DATA_DIR || join(process.cwd(), "data"), "patchpilot-store.json");
 const defaultPgliteDataDir = join(
@@ -141,9 +144,6 @@ const defaultClaimLeaseMs = 5 * 60 * 1000;
 const defaultRunCostEstimateUsd = 0.42;
 const budgetApprovalTtlMs = 24 * 60 * 60 * 1000;
 const contractApprovalTtlMs = 14 * 24 * 60 * 60 * 1000;
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const simulationDelay = (ms: number) =>
-  Math.max(0, Math.round(ms * readPatchPilotConfig().dev.simulationDelayFactor));
 const failureTypes = new Set<FailureType>([
   "transient",
   "deterministic",
@@ -232,6 +232,7 @@ export class PatchPilotStore {
   private snapshot: PatchPilotSnapshot = emptySnapshot();
   private loaded = false;
   private readonly codexRunner: CodexRunner;
+  private readonly clarifier: RequirementClarifier;
   private readonly artifactStore?: ArtifactStore;
   private readonly telemetry: PatchPilotTelemetry;
   private readonly pullRequestAdapter?: PullRequestAdapter;
@@ -245,6 +246,7 @@ export class PatchPilotStore {
   constructor(
     options: {
       codexRunner?: CodexRunner;
+      clarifier?: RequirementClarifier;
       dataFilePath?: string | false;
       artifactStore?: ArtifactStore;
       telemetry?: PatchPilotTelemetry;
@@ -255,6 +257,13 @@ export class PatchPilotStore {
     } = {}
   ) {
     this.codexRunner = options.codexRunner ?? new LocalCodexRunner();
+    const config = readPatchPilotConfig();
+    this.clarifier = options.clarifier ?? new LocalCodexClarifier({
+      repositoryRoot: config.dev.repositoryRoot,
+      codexTimeoutMs: config.budget.codexTimeoutMs,
+      codexSandbox: config.security.codexSandbox,
+      codexBypass: config.security.codexBypass
+    });
     this.artifactStore = options.artifactStore;
     this.telemetry = options.telemetry ?? getTelemetry({ serviceName: "patchpilot-api" });
     this.pullRequestAdapter = options.pullRequestAdapter;
@@ -614,6 +623,12 @@ export class PatchPilotStore {
     const id = `req_${randomUUID()}`;
     const rawInput = redactSecrets(input.rawInput).redacted;
     const artifactReferences = this.prepareIntakeArtifactReferences(input.artifactReferences ?? [], id, now);
+    const firstQuestion = await this.clarifier.start({
+      requirementId: id,
+      rawInput,
+      template: input.template,
+      turns: []
+    });
     const requirement: Requirement = {
       id,
       title: makeSimpleSummary(rawInput, input.template),
@@ -622,8 +637,18 @@ export class PatchPilotStore {
       status: "clarifying",
       simpleSummary: makeSimpleSummary(rawInput, input.template),
       artifactReferences,
-      clarificationQuestions: generateClarificationQuestions(rawInput, input.template),
-      clarificationTurns: [createInitialClarificationTurn(rawInput, input.template, now)],
+      clarificationQuestions: [{
+        id: `codex_${randomUUID()}`,
+        question: firstQuestion.message,
+        recommendedAnswer: firstQuestion.recommendedAnswer
+      }],
+      clarificationTurns: [codexClarificationTurn({
+        speaker: "agent",
+        message: firstQuestion.message,
+        recommendedAnswer: firstQuestion.recommendedAnswer,
+        codexSessionId: firstQuestion.codexSessionId,
+        now
+      })],
       createdAt: now,
       updatedAt: now
     };
@@ -674,21 +699,33 @@ export class PatchPilotStore {
       createdAt: now
     });
 
-    const nextQuestion = createGrillMeQuestion(
-      requirement.rawInput,
-      requirement.template,
-      requirement.clarificationTurns
-    );
+    const codexSessionId = latestCodexSessionId(requirement);
+    if (!codexSessionId) {
+      throw new DomainError("INVALID_STATE", "Requirement has no Codex clarification session");
+    }
+    const nextQuestion = await this.clarifier.continue({
+      requirementId,
+      rawInput: requirement.rawInput,
+      template: requirement.template,
+      turns: requirement.clarificationTurns,
+      codexSessionId,
+      userMessage: safeMessage
+    });
     requirement.clarificationTurns.push({
       id: `turn_${randomUUID()}`,
       speaker: "agent",
-      message: nextQuestion.question,
+      message: nextQuestion.message,
       recommendedAnswer: nextQuestion.recommendedAnswer,
+      codexSessionId: nextQuestion.codexSessionId ?? codexSessionId,
       createdAt: now
     });
     requirement.clarificationQuestions = [
       ...requirement.clarificationQuestions,
-      nextQuestion
+      {
+        id: `codex_${randomUUID()}`,
+        question: nextQuestion.message,
+        recommendedAnswer: nextQuestion.recommendedAnswer
+      }
     ];
     requirement.status = "clarifying";
     requirement.updatedAt = now;
@@ -1404,13 +1441,14 @@ export class PatchPilotStore {
   async getRuntimeConfig(): Promise<RuntimeConfig> {
     const config = readPatchPilotConfig();
     const codexAvailable = await this.codexRunner.isAvailable();
-    const gitWorkspaceAvailable = await this.codexRunner.isGitWorkspaceAvailable();
+    const gitWorkspaceAvailable = await this.codexRunner.isGitWorkspaceAvailable(config.dev.repositoryRoot);
     return {
       configuredRunner: config.dev.runner,
-      activeRunner: await this.resolveRunner(undefined, { codexAvailable, gitWorkspaceAvailable }),
+      activeRunner: "codex",
       codexAvailable,
       gitWorkspaceAvailable,
       testCommand: config.test.command,
+      repositoryRoot: config.dev.repositoryRoot,
       workspaceRoot: config.dev.workspaceRoot,
       previewUrl: config.dev.previewUrl,
       configSource: config.configSource,
@@ -1565,7 +1603,7 @@ export class PatchPilotStore {
         action: "workspace_run.created",
         targetType: "workspace_run",
         targetId: workspaceRun.id,
-        message: `已创建 ${workspaceRun.isolation === "git_worktree" ? "git worktree" : "模拟"}工作区。`,
+        message: "已创建 git worktree 工作区。",
         requirementId: run.requirementId,
         prdId: run.prdId,
         workItemId: workItem.id,
@@ -1749,12 +1787,7 @@ export class PatchPilotStore {
   private async executeRun(runId: string) {
     try {
       await this.load();
-      const run = this.findRun(runId);
-      if (run.runner === "codex") {
-        await this.executeCodexRun(runId);
-        return;
-      }
-      await this.simulateRun(runId);
+      await this.executeCodexRun(runId);
     } catch (error) {
       await this.markRunFailed(runId, error);
     }
@@ -1862,97 +1895,6 @@ export class PatchPilotStore {
     await this.save();
   }
 
-  private async simulateRun(runId: string) {
-    const simulatedFailureType = parseFailureType(process.env.PATCHPILOT_SIMULATED_FAILURE_TYPE);
-    const steps: Array<{
-      step: AgentRun["currentStep"];
-      type: AgentRunEvent["type"];
-      message: string;
-      wait: number;
-    }> = [
-      { step: "planning", type: "plan.created", message: "已生成垂直任务计划和验收清单", wait: 900 },
-      { step: "developing", type: "workspace.created", message: "已创建隔离 worktree，并开始模拟代码变更", wait: 1100 },
-      { step: "developing", type: "agent.progress", message: "Agent 已完成主要实现并整理变更摘要", wait: 1100 },
-      { step: "testing", type: "test.started", message: "正在运行目标测试和质量门检查", wait: 1000 },
-      ...(simulatedFailureType
-        ? []
-        : [
-            { step: "testing", type: "test.passed", message: "目标测试通过，未发现高风险问题", wait: 900 },
-            { step: "confirming", type: "review.completed", message: "Reviewer agent 已完成审查摘要，等待你确认", wait: 800 }
-          ] satisfies Array<{
-            step: AgentRun["currentStep"];
-            type: AgentRunEvent["type"];
-            message: string;
-            wait: number;
-          }>)
-    ];
-
-    try {
-      for (const item of steps) {
-        await delay(simulationDelay(item.wait));
-        await this.load();
-        const run = this.snapshot.agentRuns.find((candidate) => candidate.id === runId);
-        if (!run || run.status !== "running") return;
-        run.currentStep = item.step;
-        run.timeline = advanceTimeline(run.timeline, item.step);
-        this.pushRunEvent(run, item.type, item.message);
-        await this.save();
-      }
-
-      await this.load();
-      const run = this.findRun(runId);
-      const workItem = this.findWorkItem(run.workItemId);
-      if (simulatedFailureType) {
-        const testRun = simulatedFailureType === "test_failed"
-          ? this.makeSimulatedFailedTestRun(run, workItem)
-          : undefined;
-        throw createRunFailureError(
-          `模拟 ${failureTypeLabel(simulatedFailureType)} 失败${testRun ? `：${testRun.summary}` : ""}`,
-          simulatedFailureType,
-          testRun
-        );
-      }
-      const tests: TestRun[] = [this.makeSimulatedTestRun(workItem)];
-      const changedFiles = ["apps/web", "services/api", "packages/domain"];
-      run.timeline = completeTimeline(run.timeline);
-      run.currentStep = "confirming";
-      this.pushRunEvent(run, "acceptance.waiting", "执行完成，请查看证据摘要并确认");
-      run.result = {
-        summary: this.makeSimulatedSummary(workItem),
-        previewUrl: "http://localhost:3000",
-        riskLevel: "low",
-        changedFiles,
-        tests,
-        reviewerSummary: this.makeSimulatedReviewerSummary(workItem),
-        runner: "simulated",
-        agentMessages: ["模拟 agent 已完成实现摘要、测试证据和交付记录整理。"],
-        reasoningSummaries: ["模拟 runner 按 PRD 验收标准生成垂直交付证据。"],
-        toolCalls: [
-          {
-            id: `tool_simulated_${run.id}`,
-            name: "simulated_delivery",
-            status: "completed",
-            summary: "模拟生成代码变更、测试运行和 review 证据"
-          }
-        ],
-        diffSummary: buildRunDiffSummary(changedFiles),
-        testOutputSummary: summarizeRunTestOutput(tests)
-      };
-      run.costActualUsd = 0.38;
-      run.endedAt = new Date().toISOString();
-      workItem.status = "review";
-      workItem.updatedAt = run.endedAt;
-      this.completeAgentAssignment(workItem.id, run.endedAt);
-      await this.recordCompletedRunEvidence(run, workItem, tests, run.endedAt, "succeeded");
-      run.status = "succeeded";
-      this.telemetry.endAgentRun(run, "succeeded");
-      this.completeBugIfNeeded(workItem, run.endedAt);
-      await this.save();
-    } catch (error) {
-      await this.markRunFailed(runId, error);
-    }
-  }
-
   private async markRunFailed(runId: string, error: unknown) {
     await this.load();
     const run = this.snapshot.agentRuns.find((item) => item.id === runId);
@@ -2036,15 +1978,19 @@ export class PatchPilotStore {
     override?: AgentRun["runner"],
     availability?: { codexAvailable: boolean; gitWorkspaceAvailable: boolean }
   ): Promise<AgentRun["runner"]> {
-    if (override) return override;
-    if (process.env.NODE_ENV === "test") return "simulated";
-    const configured = readPatchPilotConfig().dev.runner;
-    if (configured === "simulated" || configured === "codex") return configured;
+    if (override) return "codex";
+    const config = readPatchPilotConfig();
     const checks = availability || {
       codexAvailable: await this.codexRunner.isAvailable(),
-      gitWorkspaceAvailable: await this.codexRunner.isGitWorkspaceAvailable()
+      gitWorkspaceAvailable: await this.codexRunner.isGitWorkspaceAvailable(config.dev.repositoryRoot)
     };
-    return checks.codexAvailable && checks.gitWorkspaceAvailable ? "codex" : "simulated";
+    if (!checks.codexAvailable) {
+      throw new DomainError("INVALID_STATE", "Codex CLI is required but is not available");
+    }
+    if (!checks.gitWorkspaceAvailable) {
+      throw new DomainError("INVALID_STATE", "A git workspace is required for Codex execution");
+    }
+    return "codex";
   }
 
   private findRequirement(id: string) {
@@ -2306,7 +2252,7 @@ export class PatchPilotStore {
       action: "workspace_run.created",
       targetType: "workspace_run",
       targetId: workspaceRun.id,
-      message: `已为恢复执行创建 ${workspaceRun.isolation === "git_worktree" ? "git worktree" : "模拟"}工作区。`,
+      message: "已为恢复执行创建 git worktree 工作区。",
       requirementId: run.requirementId,
       prdId: run.prdId,
       workItemId: run.workItemId,
@@ -2728,10 +2674,8 @@ export class PatchPilotStore {
     this.snapshot.requirements = this.snapshot.requirements.map((item) => ({
       ...item,
       artifactReferences: this.normalizeStoredIntakeArtifactReferences(item.artifactReferences, item.id, item.createdAt || now),
-      clarificationTurns:
-        item.clarificationTurns && item.clarificationTurns.length > 0
-          ? item.clarificationTurns
-          : [createInitialClarificationTurn(item.rawInput, item.template, item.createdAt || now)]
+      clarificationQuestions: item.clarificationQuestions ?? [],
+      clarificationTurns: item.clarificationTurns ?? []
     }));
     this.snapshot.workItems = this.snapshot.workItems.map((item) => ({
       ...item,
@@ -3098,8 +3042,8 @@ export class PatchPilotStore {
       ...(workItem.repositoryFullName ? { repositoryFullName: workItem.repositoryFullName } : {}),
       runner: run.runner,
       status: "active",
-      isolation: run.runner === "codex" ? "git_worktree" : "simulated",
-      path: run.runner === "codex" ? join(workspaceRoot, run.id) : `simulated://${run.id}`,
+      isolation: "git_worktree",
+      path: join(workspaceRoot, run.id),
       createdAt: now,
       updatedAt: now
     };
@@ -3123,7 +3067,7 @@ export class PatchPilotStore {
       workItemTestCases[0];
     const normalizedTests: TestRun[] = tests.map((test) => {
       const logArtifactId = test.logArtifactId || `artifact_test_log_${test.id}`;
-      const workspacePath = test.workspacePath || options.workspacePath || run.result?.workspacePath || `simulated://${run.id}`;
+      const workspacePath = test.workspacePath || options.workspacePath || run.result?.workspacePath || join(readPatchPilotConfig().dev.workspaceRoot, run.id);
       return redactJsonValue({
         ...test,
         testCaseId: test.testCaseId || testCase?.id,
@@ -3134,8 +3078,8 @@ export class PatchPilotStore {
         ...(workItem.repositoryFullName ? { repositoryFullName: workItem.repositoryFullName } : {}),
         startedAt: test.startedAt || new Date(new Date(endedAt).getTime() - test.durationMs).toISOString(),
         endedAt: test.endedAt || endedAt,
-        runner: test.runner || (run.runner === "codex" ? "patchpilot-test-runner" : "simulated-test-runner"),
-        environmentImage: test.environmentImage || (run.runner === "codex" ? "local" : "simulated"),
+        runner: test.runner || "patchpilot-test-runner",
+        environmentImage: test.environmentImage || "local",
         workspacePath,
         commit: run.result?.headCommit || test.commit,
         branch: run.result?.branchName || test.branch,
@@ -4852,91 +4796,6 @@ export class PatchPilotStore {
       .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0];
   }
 
-  private makeSimulatedFailedTestRun(run: AgentRun, workItem: WorkItem): TestRun {
-    const branch = `simulated/${slugSegment(workItem.id)}`;
-    return {
-      id: `test_${randomUUID()}`,
-      runId: run.id,
-      prdId: run.prdId,
-      workItemId: workItem.id,
-      ...(workItem.repositoryId ? { repositoryId: workItem.repositoryId } : {}),
-      ...(workItem.repositoryFullName ? { repositoryFullName: workItem.repositoryFullName } : {}),
-      status: "failed",
-      command: "npm test --workspaces --if-present",
-      summary: "模拟测试失败：断言发现交付结果不满足验收标准",
-      durationMs: 760,
-      commit: `simulated-${run.id.replace(/^run_/, "").slice(0, 12)}`,
-      branch,
-      failureSummary: "expected delivery evidence to satisfy acceptance criteria",
-      exitCode: 1,
-      retryCount: 0,
-      attempt: 1,
-      maxAttempts: 1,
-      flakySignal: false,
-      runner: "simulated-test-runner",
-      environmentImage: "simulated",
-      workspacePath: `simulated://${run.id}`,
-      logArtifactId: `artifact_test_log_${run.id}`,
-      artifactIds: [`artifact_test_log_${run.id}`]
-    };
-  }
-
-  private makeSimulatedTestRun(workItem: WorkItem): TestRun {
-    if (workItem.sourceBugId && workItem.role === "test") {
-      return {
-        id: `test_${randomUUID()}`,
-        ...(workItem.repositoryId ? { repositoryId: workItem.repositoryId } : {}),
-        ...(workItem.repositoryFullName ? { repositoryFullName: workItem.repositoryFullName } : {}),
-        status: "passed",
-        command: "pnpm test -- --bug-repro",
-        summary: "测试 agent 已根据复现步骤确认问题，并整理回归测试建议",
-        durationMs: 1320
-      };
-    }
-
-    if (workItem.sourceBugId) {
-      return {
-        id: `test_${randomUUID()}`,
-        ...(workItem.repositoryId ? { repositoryId: workItem.repositoryId } : {}),
-        ...(workItem.repositoryFullName ? { repositoryFullName: workItem.repositoryFullName } : {}),
-        status: "passed",
-        command: "pnpm test -- --bug-regression",
-        summary: "开发修复后的回归检查通过，bug 不再复现",
-        durationMs: 1760
-      };
-    }
-
-    return {
-      id: `test_${randomUUID()}`,
-      ...(workItem.repositoryId ? { repositoryId: workItem.repositoryId } : {}),
-      ...(workItem.repositoryFullName ? { repositoryFullName: workItem.repositoryFullName } : {}),
-      status: "passed",
-      command: "npm test --workspaces --if-present",
-      summary: "领域规则和 UI smoke 检查通过",
-      durationMs: 1840
-    };
-  }
-
-  private makeSimulatedSummary(workItem: WorkItem) {
-    if (workItem.sourceBugId && workItem.role === "test") {
-      return "测试 agent 已复现 bug，记录最小复现路径，并生成开发修复任务。";
-    }
-    if (workItem.sourceBugId) {
-      return "开发 agent 已根据复现证据完成模拟修复，回归检查通过，等待验收。";
-    }
-    return "已完成一次从需求确认到执行证据的模拟交付闭环。真实 CodexRunner 可以替换当前模拟 runner。";
-  }
-
-  private makeSimulatedReviewerSummary(workItem: WorkItem) {
-    if (workItem.sourceBugId && workItem.role === "test") {
-      return "复现证据完整，已把失败现象、期望行为和回归建议交给开发 agent。";
-    }
-    if (workItem.sourceBugId) {
-      return "修复结果覆盖复现路径，回归检查通过，未发现高风险变更。";
-    }
-    return "变更符合 MVP 普通模式目标：白色底、模板入口、进度展示、完成证据和验收入口齐备。";
-  }
-
   private completeBugIfNeeded(workItem: WorkItem, now: string) {
     if (!workItem.sourceBugId) return;
     const bug = this.snapshot.bugs.find((item) => item.id === workItem.sourceBugId);
@@ -5759,14 +5618,6 @@ function buildRunDiffSummary(
   };
 }
 
-function summarizeRunTestOutput(tests: TestRun[]) {
-  if (!tests.length) return "No test output captured.";
-  return redactSecrets(tests.map((test) => {
-    const failure = test.failureSummary ? ` Failure: ${test.failureSummary}` : "";
-    return `${test.status}: ${test.command} (${test.durationMs}ms). ${test.summary}${failure}`;
-  }).join("\n")).redacted;
-}
-
 function renderTestLog(test: TestRun) {
   return [
     `TestRun: ${test.id}`,
@@ -5910,11 +5761,6 @@ function createRunFailureError(
   if (egressPolicyEvidence) error.egressPolicyEvidence = redactJsonValue(egressPolicyEvidence);
   if (secretBrokerEvidence) error.secretBrokerEvidence = redactJsonValue(secretBrokerEvidence);
   return error;
-}
-
-function parseFailureType(value: string | undefined) {
-  const normalized = value?.trim();
-  return isFailureType(normalized) ? normalized : undefined;
 }
 
 function isFailureType(value: unknown): value is FailureType {

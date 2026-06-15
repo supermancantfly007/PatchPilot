@@ -4,12 +4,12 @@ import { buildReport, parseCliArgs, summarizeSnapshot } from "./index";
 
 describe("PatchPilot CLI", () => {
   it("parses command options and flags", () => {
-    expect(parseCliArgs(["happy-path", "--input", "ship it", "--template=feature", "--runner", "simulated", "--json"])).toEqual({
+    expect(parseCliArgs(["happy-path", "--input", "ship it", "--template=feature", "--runner", "codex", "--json"])).toEqual({
       command: "happy-path",
       options: {
         input: "ship it",
         template: "feature",
-        runner: "simulated",
+        runner: "codex",
         json: true
       },
       positionals: []
@@ -128,7 +128,7 @@ const snapshot: PatchPilotSnapshot = {
       requirementId: "req_1",
       prdId: "prd_1",
       workItemId: "wi_1",
-      runner: "simulated",
+      runner: "codex",
       status: "succeeded",
       currentStep: "confirming",
       timeline: [],
@@ -141,7 +141,7 @@ const snapshot: PatchPilotSnapshot = {
       requirementId: "req_1",
       prdId: "prd_1",
       workItemId: "wi_2",
-      runner: "simulated",
+      runner: "codex",
       status: "succeeded",
       currentStep: "confirming",
       timeline: [],

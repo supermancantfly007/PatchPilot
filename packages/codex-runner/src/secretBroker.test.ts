@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { generateCapabilityManifest } from "@patchpilot/policy";
 import {
-  LocalFakeSecretProvider,
   createSecretBrokerProviderRegistry,
   requestedSecretIdsForWorkItem,
   resolveSecretBrokerGrants,
@@ -161,82 +160,6 @@ describe("secret broker", () => {
     expect(resolution.authorized).toBe(false);
     expect(resolution.env).toEqual({});
     expect(resolution.evidence.denied).toEqual([{ id: "npm-read-token", reason: "not_configured" }]);
-  });
-
-  it("issues deterministic local fake grants with rotation and revocation evidence", async () => {
-    const localFake = new LocalFakeSecretProvider();
-    const providers = createSecretBrokerProviderRegistry({ localFake });
-    const config: SecretBrokerRuntimeConfig = {
-      ...baseConfig,
-      allowedSecrets: [
-        {
-          id: "package-fixture-token",
-          envVar: "PACKAGE_TOKEN",
-          environment: "ci",
-          provider: {
-            kind: "local_fake",
-            ttlSeconds: 30
-          }
-        }
-      ]
-    };
-
-    const first = await resolveSecretBrokerGrants({
-      config,
-      workItem: workItem({ requiredCapabilities: ["secret:package-fixture-token"] }),
-      providers,
-      now
-    });
-    expect(first.authorized).toBe(true);
-    expect(first.env.PACKAGE_TOKEN).toMatch(/^patchpilot_fake_package-fixture-token_1_/u);
-    expect(first.evidence.injected[0]).toMatchObject({
-      id: "package-fixture-token",
-      provider: "local_fake",
-      issuedAt: "2026-06-10T12:00:00.000Z",
-      expiresAt: "2026-06-10T12:00:30.000Z",
-      rotationSupported: true,
-      revocationSupported: true
-    });
-    expect(JSON.stringify(first.evidence)).not.toContain(first.env.PACKAGE_TOKEN);
-
-    const rotation = await rotateSecretBrokerSecret({
-      config,
-      secretId: "package-fixture-token",
-      providers,
-      now: new Date("2026-06-10T12:00:10.000Z")
-    });
-    expect(rotation).toMatchObject({
-      id: "package-fixture-token",
-      provider: "local_fake",
-      action: "rotate",
-      status: "succeeded",
-      rotationVersion: "2"
-    });
-
-    const second = await resolveSecretBrokerGrants({
-      config,
-      workItem: workItem({ requiredCapabilities: ["secret:package-fixture-token"] }),
-      providers,
-      now: new Date("2026-06-10T12:00:11.000Z")
-    });
-    expect(second.env.PACKAGE_TOKEN).toMatch(/^patchpilot_fake_package-fixture-token_2_/u);
-    expect(second.env.PACKAGE_TOKEN).not.toBe(first.env.PACKAGE_TOKEN);
-
-    const revoked = await revokeSecretBrokerGrants({
-      config,
-      grants: second.grants,
-      providers,
-      now: new Date("2026-06-10T12:00:12.000Z")
-    });
-    expect(revoked).toEqual([
-      expect.objectContaining({
-        id: "package-fixture-token",
-        provider: "local_fake",
-        action: "revoke",
-        status: "succeeded",
-        leaseId: second.grants[0]?.leaseId
-      })
-    ]);
   });
 
   it("resolves Vault-compatible grants through broker authorization and supports adapter rotation/revocation", async () => {

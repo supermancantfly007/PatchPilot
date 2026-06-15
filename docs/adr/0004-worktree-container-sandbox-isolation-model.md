@@ -164,4 +164,4 @@ Treat the rootless container path as production-enforceable only when all of the
 - This ADR does not decide network egress allowlists; see `TD-212` and ADR-0009.
 - This ADR does not decide Secret Broker behavior; see `TD-213` and ADR-0009.
 - This ADR does not decide Work Item lease, fencing, or branch conflict behavior; see ADR-0005 and ADR-0007.
-- This ADR does not change current local MVP defaults or require container sandboxing for purely simulated runs.
+- This ADR does not change current local MVP defaults or require container sandboxing for Codex worktree runs.

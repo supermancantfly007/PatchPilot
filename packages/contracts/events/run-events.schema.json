@@ -781,7 +781,6 @@
           "runner": {
             "type": "string",
             "enum": [
-              "simulated",
               "codex"
             ]
           },
@@ -1220,6 +1219,7 @@
           "codexAvailable",
           "gitWorkspaceAvailable",
           "testCommand",
+          "repositoryRoot",
           "workspaceRoot",
           "previewUrl",
           "configSource",
@@ -1236,15 +1236,12 @@
           "configuredRunner": {
             "type": "string",
             "enum": [
-              "auto",
-              "simulated",
               "codex"
             ]
           },
           "activeRunner": {
             "type": "string",
             "enum": [
-              "simulated",
               "codex"
             ]
           },
@@ -1255,6 +1252,9 @@
             "type": "boolean"
           },
           "testCommand": {
+            "type": "string"
+          },
+          "repositoryRoot": {
             "type": "string"
           },
           "workspaceRoot": {
@@ -1379,7 +1379,7 @@
         "additionalProperties": false,
         "required": [
           "runner",
-          "simulationDelayFactor",
+          "repositoryRoot",
           "workspaceRoot",
           "previewUrl"
         ],
@@ -1387,13 +1387,11 @@
           "runner": {
             "type": "string",
             "enum": [
-              "auto",
-              "simulated",
               "codex"
             ]
           },
-          "simulationDelayFactor": {
-            "type": "number"
+          "repositoryRoot": {
+            "type": "string"
           },
           "workspaceRoot": {
             "type": "string"
@@ -1597,7 +1595,6 @@
             "type": "string",
             "enum": [
               "env",
-              "local_fake",
               "vault"
             ]
           },
@@ -1631,9 +1628,6 @@
           },
           "ttlSeconds": {
             "type": "number"
-          },
-          "seedEnv": {
-            "type": "string"
           },
           "rotatePath": {
             "type": "string"
@@ -2641,7 +2635,6 @@
           "runner": {
             "type": "string",
             "enum": [
-              "simulated",
               "codex"
             ]
           },
@@ -2926,7 +2919,6 @@
           "runner": {
             "type": "string",
             "enum": [
-              "simulated",
               "codex"
             ]
           },
@@ -3170,7 +3162,6 @@
             "type": "string",
             "enum": [
               "env",
-              "local_fake",
               "vault"
             ]
           },
@@ -3232,7 +3223,6 @@
             "type": "string",
             "enum": [
               "env",
-              "local_fake",
               "vault"
             ]
           }
@@ -3256,7 +3246,6 @@
             "type": "string",
             "enum": [
               "env",
-              "local_fake",
               "vault"
             ]
           },
@@ -3340,7 +3329,6 @@
           "runner": {
             "type": "string",
             "enum": [
-              "simulated",
               "codex"
             ]
           },
@@ -3358,7 +3346,6 @@
           "isolation": {
             "type": "string",
             "enum": [
-              "simulated",
               "git_worktree"
             ]
           },

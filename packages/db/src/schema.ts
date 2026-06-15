@@ -37,7 +37,7 @@ export const workItemStatus = pgEnum("work_item_status", [
 ]);
 export const agentRole = pgEnum("agent_role", ["product", "frontend", "backend", "test", "ops", "reviewer"]);
 export const agentStatus = pgEnum("agent_status", ["idle", "busy", "offline"]);
-export const agentRunnerKind = pgEnum("agent_runner_kind", ["simulated", "codex"]);
+export const agentRunnerKind = pgEnum("agent_runner_kind", ["codex"]);
 export const agentRunStatus = pgEnum("agent_run_status", [
   "queued",
   "running",
@@ -87,7 +87,7 @@ export const workspaceRunStatus = pgEnum("workspace_run_status", [
   "failed",
   "destroyed"
 ]);
-export const workspaceIsolation = pgEnum("workspace_isolation", ["simulated", "git_worktree"]);
+export const workspaceIsolation = pgEnum("workspace_isolation", ["git_worktree"]);
 export const pullRequestProvider = pgEnum("pull_request_provider", ["local", "github"]);
 export const pullRequestStatus = pgEnum("pull_request_status", [
   "draft",

@@ -1,6 +1,6 @@
 "use client";
 
-import type { InterfaceContract, Prd, Requirement, RuntimeConfig, WorkItem } from "@patchpilot/domain";
+import type { InterfaceContract, Prd, Requirement, WorkItem } from "@patchpilot/domain";
 import { ArrowRight, Bot, CheckCircle2, ClipboardList, RefreshCw, Send, UserRound } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -20,12 +20,10 @@ export default function RequirementConfirmPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [config, setConfig] = useState<RuntimeConfig | null>(null);
 
   useEffect(() => {
     setLoading(true);
     setError(null);
-    void api.getConfig().then(setConfig).catch(() => setConfig(null));
     void api
       .getRequirement(id)
       .then((bundle) => {
@@ -209,16 +207,10 @@ export default function RequirementConfirmPage() {
                     </StatusNotice>
                   ) : null}
                   <StatusNotice
-                    title={
-                      config?.activeRunner === "codex"
-                        ? "下一步会启动本地 Codex agent team"
-                        : "下一步会启动本地模拟执行"
-                    }
-                    tone={config?.activeRunner === "codex" ? "info" : "warning"}
+                    title="下一步会启动本地 Codex agent team"
+                    tone="info"
                   >
-                    {config?.activeRunner === "codex"
-                      ? "平台会为团队任务创建隔离 worktree，让 Codex 开发、测试并返回证据；不会自动合并或发布。"
-                      : "它会启动团队任务并展示计划、测试、审查和验收证据，但当前 runner 不会真实修改仓库文件。"}
+                    平台会为团队任务创建隔离 worktree，让 Codex 开发、测试并返回证据；不会自动合并或发布。
                   </StatusNotice>
                   <div className="question-card" style={{ background: "white" }}>
                     <strong>要做什么</strong>

@@ -14,7 +14,6 @@ import { runWorkerTick } from "@patchpilot/worker";
 
 const defaultApiBaseUrl = "http://localhost:4000";
 const templates = ["feature", "bug", "ui", "document"] as const;
-const runners = ["simulated", "codex"] as const;
 const acceptanceStatuses = ["accepted", "rejected"] as const;
 
 type CliAcceptanceStatus = (typeof acceptanceStatuses)[number];
@@ -429,8 +428,8 @@ function parseTemplate(value: string): RequirementTemplate {
 
 function parseRunner(value: string | undefined): AgentRunnerKind | undefined {
   if (!value) return undefined;
-  if (runners.includes(value as AgentRunnerKind)) return value as AgentRunnerKind;
-  throw new Error(`Invalid runner "${value}". Expected one of: ${runners.join(", ")}`);
+  if (value === "codex") return value;
+  throw new Error(`Invalid runner "${value}". Expected: codex`);
 }
 
 function parseAcceptanceStatus(value: string): CliAcceptanceStatus {
@@ -479,11 +478,11 @@ function helpText() {
     "  create-prd --requirement <requirement-id>",
     "  approve-prd --prd <prd-id>",
     "  snapshot [--json]",
-    "  start-team --prd <prd-id> [--runner simulated|codex]",
-    "  worker-once [--runner simulated|codex]",
+    "  start-team --prd <prd-id> [--runner codex]",
+    "  worker-once [--runner codex]",
     "  accept-prd --prd <prd-id> [--status accepted|rejected] [--reason <text>]",
     "  report [--prd <prd-id>] [--requirement <requirement-id>] [--out report.md]",
-    "  happy-path --input <text> [--template feature|bug|ui|document] [--runner simulated|codex] [--out report.md]",
+    "  happy-path --input <text> [--template feature|bug|ui|document] [--runner codex] [--out report.md]",
     "",
     "Global options:",
     "  --api <url>   API base URL, default http://localhost:4000",

@@ -71,7 +71,6 @@ export interface SecretBrokerProvider {
 
 export interface SecretBrokerProviderRegistry {
   env?: SecretBrokerProvider;
-  local_fake?: SecretBrokerProvider;
   vault?: SecretBrokerProvider;
 }
 
@@ -261,11 +260,9 @@ export async function revokeSecretBrokerGrants(input: {
 
 export function createSecretBrokerProviderRegistry(input: {
   fetch?: VaultFetch;
-  localFake?: LocalFakeSecretProvider;
 } = {}): SecretBrokerProviderRegistry {
   return {
     env: new EnvSecretProvider(),
-    local_fake: input.localFake ?? new LocalFakeSecretProvider(),
     vault: new VaultSecretProvider(input.fetch)
   };
 }
@@ -293,67 +290,6 @@ export class EnvSecretProvider implements SecretBrokerProvider {
       renewable: false,
       rotationSupported: false,
       revocationSupported: false
-    };
-  }
-}
-
-export class LocalFakeSecretProvider implements SecretBrokerProvider {
-  readonly kind = "local_fake" as const;
-  private readonly versions = new Map<string, number>();
-  private readonly grantCounters = new Map<string, number>();
-  private readonly revokedLeaseIds = new Set<string>();
-
-  async read(input: SecretBrokerProviderReadInput): Promise<SecretBrokerProviderGrant> {
-    const provider = localFakeProviderConfigForSecret(input.secret);
-    const version = this.versions.get(input.secret.id) ?? 1;
-    const counter = (this.grantCounters.get(input.secret.id) ?? 0) + 1;
-    this.grantCounters.set(input.secret.id, counter);
-    const seed = provider.seedEnv ? input.env[provider.seedEnv] || "patchpilot-local-fake" : "patchpilot-local-fake";
-    const issuedAt = input.now.toISOString();
-    const value = `patchpilot_fake_${input.secret.id}_${version}_${sha256(`${seed}:${input.secret.id}:${version}`).slice(0, 24)}`;
-    const leaseId = `local-fake:${input.secret.id}:${version}:${counter}:${secretValueFingerprint(value).slice(7, 19)}`;
-    if (this.revokedLeaseIds.has(leaseId)) {
-      throw new SecretBrokerProviderError("provider_revoked", "Local fake grant has been revoked.", this.kind);
-    }
-    const ttlSeconds = ttlSecondsForSecret(input.secret, provider);
-    return {
-      value,
-      leaseId,
-      issuedAt,
-      expiresAt: addSeconds(input.now, ttlSeconds),
-      ttlSeconds,
-      renewable: false,
-      rotationSupported: true,
-      revocationSupported: true,
-      providerAuditId: `local-fake:${input.secret.id}:${version}`
-    };
-  }
-
-  async rotate(input: SecretBrokerProviderOperationInput): Promise<SecretBrokerGrantOperationEvidence> {
-    const nextVersion = (this.versions.get(input.secret.id) ?? 1) + 1;
-    this.versions.set(input.secret.id, nextVersion);
-    return {
-      id: input.secret.id,
-      provider: this.kind,
-      action: "rotate",
-      status: "succeeded",
-      occurredAt: input.now.toISOString(),
-      rotationVersion: String(nextVersion),
-      providerAuditId: `local-fake:${input.secret.id}:${nextVersion}`
-    };
-  }
-
-  async revoke(input: SecretBrokerProviderOperationInput): Promise<SecretBrokerGrantOperationEvidence> {
-    if (!input.leaseId) return unsupportedOperation(input.secret.id, this.kind, "revoke", input.now);
-    this.revokedLeaseIds.add(input.leaseId);
-    return {
-      id: input.secret.id,
-      provider: this.kind,
-      action: "revoke",
-      status: "succeeded",
-      occurredAt: input.now.toISOString(),
-      leaseId: input.leaseId,
-      providerAuditId: `local-fake:revoke:${input.leaseId}`
     };
   }
 }
@@ -507,14 +443,6 @@ function envProviderConfigForSecret(secret: SecretBrokerSecretConfig) {
   const provider = providerConfigForSecret(secret);
   if (!provider || provider.kind !== "env") {
     throw new SecretBrokerProviderError("not_configured", "Secret is not configured for env provider.", "env");
-  }
-  return provider;
-}
-
-function localFakeProviderConfigForSecret(secret: SecretBrokerSecretConfig) {
-  const provider = providerConfigForSecret(secret);
-  if (!provider || provider.kind !== "local_fake") {
-    throw new SecretBrokerProviderError("not_configured", "Secret is not configured for local fake provider.", "local_fake");
   }
   return provider;
 }

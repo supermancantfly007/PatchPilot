@@ -59,6 +59,7 @@ export interface CodexRunnerConfig {
     maxRepairAttempts: number;
   };
   dev: {
+    repositoryRoot: string;
     workspaceRoot: string;
     previewUrl: string;
   };
@@ -137,7 +138,6 @@ export {
 } from "./containerSandbox";
 export {
   EnvSecretProvider,
-  LocalFakeSecretProvider,
   SecretBrokerProviderError,
   VaultSecretProvider,
   createSecretBrokerProviderRegistry,
@@ -202,6 +202,7 @@ export class LocalCodexRunner implements CodexRunner {
       }
     };
     const workspace = await this.workspaceManager.prepareWorkspace(context, {
+      repositoryRoot: effectiveConfig.dev.repositoryRoot,
       workspaceRoot: effectiveConfig.dev.workspaceRoot,
       capabilityManifest
     });
@@ -453,6 +454,7 @@ async function runCodexExec(
   let emitted = 0;
   let pendingEmit = Promise.resolve();
   const capture = emptyCodexCapture();
+  const recentMessages: string[] = [];
 
   child.stdout.on("data", (chunk: Buffer) => {
     stdoutBuffer += chunk.toString("utf8");
@@ -463,6 +465,10 @@ async function runCodexExec(
       if (event.sessionId) sessionId = event.sessionId;
       recordCodexCapture(capture, event);
       const message = event.message;
+      if (message) {
+        recentMessages.push(message);
+        if (recentMessages.length > 20) recentMessages.shift();
+      }
       if (message && emitted < 30) {
         emitted += 1;
         pendingEmit = pendingEmit.then(() =>
@@ -492,7 +498,7 @@ async function runCodexExec(
       stderr: sandboxCompletion?.diskLimitExceeded
         ? `${commandResult.stderr}\nContainer sandbox workspace disk quota exceeded.`
         : commandResult.stderr,
-      stdoutRemainder: stdoutBuffer,
+      stdoutRemainder: [stdoutBuffer.trim(), ...recentMessages].filter(Boolean).join("\n"),
       exitCode: commandResult.exitCode
     }, redactionOptions);
     throw new CodexRunError(
@@ -562,6 +568,10 @@ export function parseCodexEvent(line: string, options: SecretRedactionOptions = 
         ? event.session_id
         : typeof event.sessionId === "string"
           ? event.sessionId
+          : typeof event.thread_id === "string"
+            ? event.thread_id
+            : typeof event.threadId === "string"
+              ? event.threadId
           : undefined;
     const agentMessage = extractAgentMessage(event, item, type);
     const reasoningSummary = extractReasoningSummary(event, item, type);
@@ -604,6 +614,10 @@ export function summarizeCodexExecFailure(input: {
 export function classifyFailureMessage(message: string): FailureType {
   const normalized = message.toLowerCase();
   if (/budget|quota|cost|余额|预算|额度/u.test(normalized)) return "budget_exhausted";
+  if (/401|unauthorized|invalid api key|authentication|auth failed|未授权|认证|鉴权/u.test(normalized)) {
+    return "environment_failed";
+  }
+  if (/502|503|504|bad gateway|service unavailable|gateway timeout/u.test(normalized)) return "transient";
   if (/policy|denied|approval|sandbox|permission|not allowed|unauthorized|拒绝|权限|策略/u.test(normalized)) {
     return "policy_denied";
   }

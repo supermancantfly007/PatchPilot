@@ -156,7 +156,7 @@ export const claimSchema = z.object({
 });
 
 export const startRunSchema = z.object({
-  runner: z.enum(["simulated", "codex"]).optional(),
+  runner: z.literal("codex").optional(),
   claimToken: z.string().trim().min(1).optional()
 }).default({});
 
@@ -1764,7 +1764,7 @@ const isoDate = { type: "string", format: "date-time" };
 const markdown = { type: "string" };
 const requirementTemplate = enumSchema(["feature", "bug", "ui", "document"]);
 const acceptanceStatus = enumSchema(["accepted", "rejected"]);
-const runnerKind = enumSchema(["simulated", "codex"]);
+const runnerKind = enumSchema(["codex"]);
 const agentRole = enumSchema(["product", "frontend", "backend", "test", "ops", "reviewer"]);
 const runStatus = enumSchema(["queued", "running", "needs_approval", "succeeded", "failed", "cancelled"]);
 const workItemStatus = enumSchema(["proposed", "ready", "claimed", "running", "review", "blocked", "done", "cancelled"]);
@@ -2079,11 +2079,12 @@ export const openApiSchemas = {
     artifactReferences: arrayOf(schemaRef("IntakeArtifactReferenceInput"))
   }, ["title", "description", "reproductionSteps", "expectedBehavior", "actualBehavior"]),
   RuntimeConfig: objectSchema({
-    configuredRunner: enumSchema(["auto", "simulated", "codex"]),
+    configuredRunner: runnerKind,
     activeRunner: runnerKind,
     codexAvailable: { type: "boolean" },
     gitWorkspaceAvailable: { type: "boolean" },
     testCommand: { type: "string" },
+    repositoryRoot: { type: "string" },
     workspaceRoot: { type: "string" },
     previewUrl: { type: "string" },
     configSource: enumSchema(["defaults", "file"]),
@@ -2096,7 +2097,7 @@ export const openApiSchemas = {
     security: schemaRef("RuntimeSecurityConfig"),
     budget: schemaRef("RuntimeBudgetConfig"),
     artifacts: schemaRef("RuntimeArtifactsConfig")
-  }, ["configuredRunner", "activeRunner", "codexAvailable", "gitWorkspaceAvailable", "testCommand", "workspaceRoot", "previewUrl", "configSource", "setup", "test", "smoke", "e2e", "dev", "security", "budget", "artifacts"]),
+  }, ["configuredRunner", "activeRunner", "codexAvailable", "gitWorkspaceAvailable", "testCommand", "repositoryRoot", "workspaceRoot", "previewUrl", "configSource", "setup", "test", "smoke", "e2e", "dev", "security", "budget", "artifacts"]),
   RuntimeSetupConfig: objectSchema({
     commands: arrayOf({ type: "string" })
   }),
@@ -2116,8 +2117,8 @@ export const openApiSchemas = {
     baseUrl: { type: "string" }
   }),
   RuntimeDevConfig: objectSchema({
-    runner: enumSchema(["auto", "simulated", "codex"]),
-    simulationDelayFactor: { type: "number" },
+    runner: runnerKind,
+    repositoryRoot: { type: "string" },
     workspaceRoot: { type: "string" },
     previewUrl: { type: "string" }
   }),
@@ -2165,7 +2166,7 @@ export const openApiSchemas = {
     provider: schemaRef("RuntimeSecretBrokerProviderConfig")
   }, ["id", "envVar", "environment"]),
   RuntimeSecretBrokerProviderConfig: objectSchema({
-    kind: enumSchema(["env", "local_fake", "vault"]),
+    kind: enumSchema(["env", "vault"]),
     sourceEnv: { type: "string" },
     address: { type: "string" },
     tokenEnv: { type: "string" },
@@ -2175,7 +2176,6 @@ export const openApiSchemas = {
     kvVersion: { type: "number", enum: [1, 2] },
     namespaceEnv: { type: "string" },
     ttlSeconds: { type: "number" },
-    seedEnv: { type: "string" },
     rotatePath: { type: "string" },
     revokePath: { type: "string" }
   }, ["kind"]),
@@ -2503,7 +2503,7 @@ export const openApiSchemas = {
     envVar: { type: "string" },
     sourceEnv: { type: "string" },
     environment: enumSchema(["dev", "ci"]),
-    provider: enumSchema(["env", "local_fake", "vault"]),
+    provider: enumSchema(["env", "vault"]),
     leaseId: { type: "string" },
     issuedAt: isoDate,
     expiresAt: isoDate,
@@ -2535,11 +2535,11 @@ export const openApiSchemas = {
       "provider_read_failed",
       "provider_revoked"
     ]),
-    provider: enumSchema(["env", "local_fake", "vault"])
+    provider: enumSchema(["env", "vault"])
   }, ["id", "reason"]),
   SecretBrokerGrantOperationEvidence: looseObjectSchema({
     id: { type: "string" },
-    provider: enumSchema(["env", "local_fake", "vault"]),
+    provider: enumSchema(["env", "vault"]),
     action: enumSchema(["rotate", "revoke"]),
     status: enumSchema(["succeeded", "unsupported", "failed"]),
     occurredAt: isoDate,
@@ -2558,7 +2558,7 @@ export const openApiSchemas = {
     repositoryFullName: { type: "string" },
     runner: runnerKind,
     status: enumSchema(["preparing", "ready", "active", "archived", "failed", "destroyed"]),
-    isolation: enumSchema(["simulated", "git_worktree"]),
+    isolation: enumSchema(["git_worktree"]),
     path: { type: "string" },
     createdAt: isoDate,
     updatedAt: isoDate

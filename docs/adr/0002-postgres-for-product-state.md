@@ -31,7 +31,7 @@ Use PostgreSQL, accessed through the Drizzle repository layer, as PatchPilot's p
 
 Product state includes Requirements, PRD versions, Work Items, Interface Contracts, Test Cases, Test Runs, Defects, Agents, Agent Runs, Workspace Runs, Pull Request records, Review records when represented in the repository layer, Approvals, Audit Events, Artifact metadata, Capability Manifests, budgets, repository/project/organization records, and query projections served by the Control Plane API.
 
-The current JSON-backed `PatchPilotStore` remains the authoritative runtime store only for the local MVP until `TD-202` lands. During that transition, code that needs product state should keep using the existing store boundary rather than introducing another persistence mechanism. `TD-202` must replace that boundary with a Postgres repository while preserving JSON import/export for fixtures, local demos, and migration support.
+The current JSON-backed `PatchPilotStore` remains the authoritative runtime store only for the local MVP until `TD-202` lands. During that transition, code that needs product state should keep using the existing store boundary rather than introducing another persistence mechanism. `TD-202` must replace that boundary with a Postgres repository while preserving JSON import/export for fixtures, local development, and migration support.
 
 The local `.scratch/` Markdown tracker remains the source of truth for this repo's agent planning artifacts, such as `.scratch/agent-platform/PRD.md`, `.scratch/agent-platform/TECHNICAL_DESIGN.md`, `.scratch/agent-platform/TODO.md`, and local issue files. Markdown mode can also remain an explicit import/export surface for work items and run reports. It must not silently sync with the runtime repository, and it must not become a second live source of truth for Web/API/worker product state.
 
@@ -74,7 +74,7 @@ Rejected as the product-state source because PatchPilot must own agent-specific 
 ## Consequences
 
 - `TD-202` should migrate the API store boundary from `patchpilot-store.json` to a Postgres repository backed by the `packages/db` schema and migrations.
-- The repository layer must preserve JSON fixture import/export so existing local demos, CI fixtures, and migration tests can keep working.
+- The repository layer must preserve JSON fixture import/export so existing local development flows, CI fixtures, and migration tests can keep working.
 - Runtime code should not add new direct `.scratch` Markdown reads or writes for Web/API/worker product state; Markdown remains planning plus explicit import/export.
 - State transitions that touch multiple product facts must be implemented as transactions in the Postgres repository.
 - Work Item claim, heartbeat, release, and completion paths should use Postgres constraints, indexes, row locks or optimistic version checks, and claim-token fencing.
@@ -90,7 +90,7 @@ Rejected as the product-state source because PatchPilot must own agent-specific 
 
 1. The Control Plane API and worker use a repository abstraction whose production implementation is Postgres.
 2. API tests run against an isolated test database or equivalent Postgres-compatible test engine.
-3. JSON snapshot fixture import/export exists for local demos, regression fixtures, and migration support.
+3. JSON snapshot fixture import/export exists for local development, regression fixtures, and migration support.
 4. Existing `/api/snapshot`, SSE, CLI, worker, acceptance, budget, approval, audit verification, and defect flows keep their current product behavior.
 5. Work Item claims and state transitions are fenced by repository-level concurrency controls.
 6. Audit Events are written transactionally with the state changes they describe where practical.

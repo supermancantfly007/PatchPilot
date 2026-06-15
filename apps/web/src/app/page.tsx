@@ -7,7 +7,6 @@ import type {
   PatchPilotSnapshot,
   Requirement,
   RequirementTemplate,
-  RuntimeConfig,
   WorkItem
 } from "@patchpilot/domain";
 import {
@@ -175,14 +174,10 @@ export default function HomePage() {
   const [linkLabel, setLinkLabel] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [snapshot, setSnapshot] = useState<PatchPilotSnapshot | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
 
   useEffect(() => {
-    void api.getConfig().then(setConfig).catch(() => {
-      setConfig(null);
-    });
     void api
       .getSnapshot()
       .then((nextSnapshot) => {
@@ -212,21 +207,6 @@ export default function HomePage() {
         },
         createdAt: now
       }))
-    ].slice(0, 12));
-  }
-
-  function addPlaceholderArtifact(kind: Extract<IntakeArtifactReference["kind"], "screenshot" | "recording">) {
-    const count = artifactReferences.filter((reference) => reference.kind === kind).length + 1;
-    const label = kind === "screenshot" ? `待补充截图 ${count}` : `待补充录屏 ${count}`;
-    setArtifactReferences((current) => [
-      ...current,
-      {
-        id: makeClientId(),
-        kind,
-        label,
-        metadata: { source: "composer_placeholder" },
-        createdAt: new Date().toISOString()
-      }
     ].slice(0, 12));
   }
 
@@ -376,24 +356,38 @@ export default function HomePage() {
                 type="file"
               />
             </label>
-            <button
-              className="button secondary"
-              disabled={artifactReferences.length >= 12}
-              onClick={() => addPlaceholderArtifact("screenshot")}
-              type="button"
-            >
+            <label className="button secondary attachment-button" aria-disabled={artifactReferences.length >= 12}>
               <Image size={17} />
               截图
-            </button>
-            <button
-              className="button secondary"
-              disabled={artifactReferences.length >= 12}
-              onClick={() => addPlaceholderArtifact("recording")}
-              type="button"
-            >
+              <input
+                accept="image/*"
+                aria-label="添加截图文件"
+                className="file-input"
+                disabled={artifactReferences.length >= 12}
+                multiple
+                onChange={(event) => {
+                  addFiles(event.target.files);
+                  event.target.value = "";
+                }}
+                type="file"
+              />
+            </label>
+            <label className="button secondary attachment-button" aria-disabled={artifactReferences.length >= 12}>
               <Video size={17} />
               录屏
-            </button>
+              <input
+                accept="video/*"
+                aria-label="添加录屏文件"
+                className="file-input"
+                disabled={artifactReferences.length >= 12}
+                multiple
+                onChange={(event) => {
+                  addFiles(event.target.files);
+                  event.target.value = "";
+                }}
+                type="file"
+              />
+            </label>
           </div>
           <div className="link-input-row">
             <input
@@ -602,7 +596,7 @@ export default function HomePage() {
                 recentRuns.map((run) => (
                   <Link className="dashboard-row" href={`/runs/${run.id}`} key={run.id}>
                     <span>
-                      <strong>{run.runner === "codex" ? "本地 Codex" : "模拟执行"}</strong>
+                      <strong>本地 Codex</strong>
                       <small>{formatShortDate(run.startedAt)}</small>
                     </span>
                     <span className={`status-pill ${statusTone(run.status)}`}>{runStatusLabels[run.status]}</span>
@@ -655,11 +649,9 @@ export default function HomePage() {
       <section className="evidence-grid" style={{ marginTop: 28 }}>
         <div className="metric execution-mode">
           <span className="muted">当前模式</span>
-          <strong>{config?.activeRunner === "codex" ? "本地 Codex" : "模拟执行"}</strong>
+          <strong>本地 Codex</strong>
           <small>
-            {config?.activeRunner === "codex"
-              ? "会在隔离 worktree 中调用本机 Codex 执行，并收集测试证据。"
-              : "会走完整验收闭环，但不会真实修改仓库。"}
+            会在隔离 worktree 中调用本机 Codex 执行，并收集测试证据。
           </small>
         </div>
         <div className="metric">

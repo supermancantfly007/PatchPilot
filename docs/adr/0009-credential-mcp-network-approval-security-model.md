@@ -195,7 +195,7 @@ Security artifacts must follow ADR-0008 redaction and retention rules. If a cred
 
 ### Inherit Operator Credentials And Codex Config
 
-This is convenient for local demos because Codex, Git, package managers, and MCP tools can reuse whatever the developer already configured.
+This is convenient for local validation because Codex, Git, package managers, and MCP tools can reuse whatever the developer already configured.
 
 Rejected for production because it leaks personal credentials, makes runs non-reproducible, bypasses product approvals, hides MCP tool access, and prevents reliable audit export. Local development may use personal setup to authenticate Codex itself, but unattended production uses platform-owned configuration and brokered credentials.
 

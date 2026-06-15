@@ -71,7 +71,7 @@ describe("PatchPilot telemetry", () => {
       requirementId: "req_1",
       prdId: "prd_1",
       workItemId: "wi_1",
-      runner: "simulated",
+      runner: "codex",
       status: "running",
       currentStep: "planning",
       costEstimateUsd: 0.42,

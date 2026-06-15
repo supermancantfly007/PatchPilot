@@ -200,7 +200,7 @@ function isTruthy(value: string | undefined) {
 }
 
 function parseRunner(value: string | undefined): AgentRunnerKind | undefined {
-  return value === "simulated" || value === "codex" ? value : undefined;
+  return value === "codex" ? value : undefined;
 }
 
 function sleep(ms: number) {

@@ -26,8 +26,8 @@ type DeliveryRun = {
   result: AgentRunResult;
 };
 
-function runnerLabel(runner: AgentRun["runner"]) {
-  return runner === "codex" ? "本地 Codex runner" : "本地 MVP 模拟执行";
+function runnerLabel(_runner: AgentRun["runner"]) {
+  return "本地 Codex runner";
 }
 
 const roleOrder: WorkItem["role"][] = ["backend", "frontend", "test", "ops", "reviewer", "product"];
@@ -366,11 +366,9 @@ export default function AcceptancePage() {
               ) : null}
               <StatusNotice
                 title={`当前结果来自${runnerLabel(run.runner)}`}
-                tone={run.runner === "codex" ? "success" : "warning"}
+                tone="success"
               >
-                {run.runner === "codex"
-                  ? "这是隔离 worktree 中的真实 Codex 执行证据；接受后仍需按仓库规则合并。"
-                  : "它用于验证端到端验收体验，不代表真实仓库变更。"}
+                这是隔离 worktree 中的真实 Codex 执行证据；接受后仍需按仓库规则合并。
               </StatusNotice>
               {error ? (
                 <StatusNotice title="验收提交没有成功" tone="error">

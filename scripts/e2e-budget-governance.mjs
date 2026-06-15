@@ -19,8 +19,7 @@ const api = spawn("pnpm", ["--filter", "@patchpilot/api", "start"], {
     ...process.env,
     PORT: String(apiPort),
     PATCHPILOT_DATA_DIR: dataDir,
-    PATCHPILOT_RUNNER: "simulated",
-    PATCHPILOT_SIMULATION_DELAY_FACTOR: "0",
+    PATCHPILOT_RUNNER: "codex",
     PATCHPILOT_BUDGET_RUN_USD: "0.2"
   },
   stdio: ["ignore", "pipe", "pipe"]
@@ -51,7 +50,7 @@ try {
 
   const pausedRun = await requestJson(`/api/work-items/${workItem.id}/start`, {
     method: "POST",
-    body: JSON.stringify({ runner: "simulated" })
+    body: JSON.stringify({ runner: "codex" })
   });
   assertEqual(pausedRun.status, "needs_approval", "over-budget run should pause for approval");
   assertEqual(pausedRun.budgetUsd, 0.2, "run should record the effective budget");

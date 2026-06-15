@@ -1,6 +1,6 @@
 CREATE TYPE "public"."agent_role" AS ENUM('product', 'frontend', 'backend', 'test', 'ops', 'reviewer');--> statement-breakpoint
 CREATE TYPE "public"."agent_run_status" AS ENUM('queued', 'running', 'needs_approval', 'succeeded', 'failed', 'cancelled');--> statement-breakpoint
-CREATE TYPE "public"."agent_runner_kind" AS ENUM('simulated', 'codex');--> statement-breakpoint
+CREATE TYPE "public"."agent_runner_kind" AS ENUM('codex');--> statement-breakpoint
 CREATE TYPE "public"."agent_status" AS ENUM('idle', 'busy', 'offline');--> statement-breakpoint
 CREATE TYPE "public"."approval_kind" AS ENUM('prd_approval', 'budget_exceeded', 'dangerous_operation', 'breaking_contract', 'network_allowlist_change', 'secret_grant', 'production_data_access');--> statement-breakpoint
 CREATE TYPE "public"."approval_risk_level" AS ENUM('low', 'medium', 'high', 'critical');--> statement-breakpoint
@@ -27,7 +27,7 @@ CREATE TYPE "public"."test_case_status" AS ENUM('draft', 'ready', 'passed', 'fai
 CREATE TYPE "public"."test_run_status" AS ENUM('queued', 'running', 'passed', 'failed', 'blocked', 'skipped');--> statement-breakpoint
 CREATE TYPE "public"."timeline_step_key" AS ENUM('understanding', 'planning', 'developing', 'testing', 'confirming');--> statement-breakpoint
 CREATE TYPE "public"."work_item_status" AS ENUM('proposed', 'ready', 'claimed', 'running', 'review', 'blocked', 'done', 'cancelled');--> statement-breakpoint
-CREATE TYPE "public"."workspace_isolation" AS ENUM('simulated', 'git_worktree');--> statement-breakpoint
+CREATE TYPE "public"."workspace_isolation" AS ENUM('git_worktree');--> statement-breakpoint
 CREATE TYPE "public"."workspace_run_status" AS ENUM('preparing', 'ready', 'active', 'archived', 'failed', 'destroyed');--> statement-breakpoint
 CREATE TABLE "agent_runs" (
 	"id" text PRIMARY KEY NOT NULL,

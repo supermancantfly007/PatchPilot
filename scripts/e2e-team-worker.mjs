@@ -1,8 +1,13 @@
 import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const apiBaseUrl = process.env.PATCHPILOT_E2E_API_BASE_URL || "http://localhost:4000";
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+const externalApiBaseUrl = process.env.PATCHPILOT_E2E_API_BASE_URL;
+const apiPort = Number(process.env.PATCHPILOT_E2E_TEAM_PORT || 4200 + (process.pid % 1000));
+const apiBaseUrl = externalApiBaseUrl || `http://localhost:${apiPort}`;
 const expectedRoles = ["backend", "frontend", "test", "ops"];
 const expectedGeneratedContractTests = 16;
 const expectedContractRegistryTests = 3;
@@ -12,6 +17,7 @@ const e2eAuthHeaders = {
   "x-patchpilot-role": "maintainer"
 };
 
+await withApiServer(async () => {
 const requirement = await requestJson("/api/requirements", {
   method: "POST",
   body: JSON.stringify({
@@ -191,6 +197,57 @@ assertEqual(reworked.executionOnlyTestRuns.length, expectedRoles.length * 2, "re
 await assertAuditChainValid();
 
 console.log("PatchPilot team worker E2E passed");
+});
+
+async function withApiServer(run) {
+  if (externalApiBaseUrl) {
+    await run();
+    return;
+  }
+
+  const dataDir = await mkdtemp(join(tmpdir(), "patchpilot-team-e2e-"));
+  const api = spawn("pnpm", ["--filter", "@patchpilot/api", "start"], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      PORT: String(apiPort),
+      PATCHPILOT_DATA_DIR: dataDir,
+      PATCHPILOT_RUNNER: "codex",
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  let apiOutput = "";
+  api.stdout.on("data", (chunk) => {
+    apiOutput += chunk.toString("utf8");
+  });
+  api.stderr.on("data", (chunk) => {
+    apiOutput += chunk.toString("utf8");
+  });
+
+  try {
+    await waitForHealth(api, () => apiOutput);
+    await run();
+  } finally {
+    api.kill("SIGTERM");
+    await waitForExit(api);
+    await rm(dataDir, { recursive: true, force: true });
+  }
+}
+
+async function waitForHealth(api, readApiOutput) {
+  await poll(async () => {
+    if (api.exitCode !== null) {
+      throw new Error(`API exited before health check\n${readApiOutput()}`);
+    }
+    try {
+      const health = await requestJson("/health");
+      return health.ok ? health : undefined;
+    } catch (_error) {
+      return undefined;
+    }
+  }, 20000);
+}
 
 async function runWorkerOnce() {
   await new Promise((resolve, reject) => {
@@ -260,4 +317,12 @@ function latestRunsByWorkItem(runs) {
     if (!current || run.startedAt > current.startedAt) byWorkItem.set(run.workItemId, run);
   }
   return [...byWorkItem.values()];
+}
+
+async function waitForExit(child) {
+  if (child.exitCode !== null) return;
+  await Promise.race([
+    new Promise((resolve) => child.once("exit", resolve)),
+    new Promise((resolve) => setTimeout(resolve, 3000))
+  ]);
 }

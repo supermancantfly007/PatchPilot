@@ -156,11 +156,11 @@ describe("PatchPilot Drizzle schema", () => {
         'contract_1', 'proj_1', 'req_1', 'prd_1_v1', 'HTTP API', 'http', 'draft', 1, 'API', 'backend', '# API'
       );
       insert into agent_runs (id, project_id, requirement_id, prd_version_id, work_item_id, agent_id, runner, status)
-        values ('run_1', 'proj_1', 'req_1', 'prd_1_v1', 'wi_1', 'agent_backend', 'simulated', 'queued');
+        values ('run_1', 'proj_1', 'req_1', 'prd_1_v1', 'wi_1', 'agent_backend', 'codex', 'queued');
       insert into workspace_runs (
         id, project_id, requirement_id, prd_version_id, work_item_id, agent_run_id, runner, status, isolation, path
       ) values (
-        'workspace_1', 'proj_1', 'req_1', 'prd_1_v1', 'wi_1', 'run_1', 'simulated', 'preparing', 'simulated', '/tmp/patchpilot'
+        'workspace_1', 'proj_1', 'req_1', 'prd_1_v1', 'wi_1', 'run_1', 'codex', 'preparing', 'git_worktree', '/tmp/patchpilot'
       );
       insert into pull_requests (
         id, project_id, provider, status, title, requirement_id, prd_version_id, work_item_id, agent_run_id,
@@ -295,7 +295,7 @@ describe("PatchPilot Drizzle schema", () => {
         '2026-06-10T00:01:00.000Z'
       );
       insert into agent_runs (id, project_id, requirement_id, prd_version_id, work_item_id, agent_id, runner, status)
-        values ('run_1', 'proj_1', 'req_1', 'prd_1_v1', 'wi_claimed', 'agent_backend', 'simulated', 'queued');
+        values ('run_1', 'proj_1', 'req_1', 'prd_1_v1', 'wi_claimed', 'agent_backend', 'codex', 'queued');
     `);
 
     await expect(
@@ -346,13 +346,13 @@ describe("PatchPilot Drizzle schema", () => {
     await expect(
       db.query(`
         insert into agent_runs (id, project_id, requirement_id, prd_version_id, work_item_id, agent_id, runner, status)
-        values ('run_duplicate_active', 'proj_1', 'req_1', 'prd_1_v1', 'wi_claimed', 'agent_backend', 'simulated', 'running')
+        values ('run_duplicate_active', 'proj_1', 'req_1', 'prd_1_v1', 'wi_claimed', 'agent_backend', 'codex', 'running')
       `)
     ).rejects.toThrow();
 
     await db.exec(`
       insert into agent_runs (id, project_id, requirement_id, prd_version_id, work_item_id, agent_id, runner, status)
-        values ('run_failed_retry', 'proj_1', 'req_1', 'prd_1_v1', 'wi_claimed', 'agent_backend', 'simulated', 'failed');
+        values ('run_failed_retry', 'proj_1', 'req_1', 'prd_1_v1', 'wi_claimed', 'agent_backend', 'codex', 'failed');
       insert into pull_requests (
         id, project_id, provider, status, title, requirement_id, prd_version_id, work_item_id, agent_run_id,
         branch_name, base_branch, url, body_markdown, reviewer_summary, test_summary

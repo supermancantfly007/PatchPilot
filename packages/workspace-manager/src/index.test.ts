@@ -74,6 +74,29 @@ describe("GitWorkspaceManager", () => {
     }
   });
 
+  it("prepares a worktree from an explicit repository root without changing process cwd", async () => {
+    const fixture = await createGitFixture();
+    const manager = new GitWorkspaceManager();
+
+    try {
+      const workspace = await manager.prepareWorkspace(makeContext({ runId: "run_explicit_repo" }), {
+        repositoryRoot: fixture.repo,
+        workspaceRoot: fixture.workspaceRoot
+      });
+
+      expect(workspace.repositoryRoot).toBe(fixture.repo);
+      expect(workspace.path).toBe(join(fixture.workspaceRoot, "run_explicit_repo"));
+      expect(workspace.baseBranch).toBe("main");
+      const currentBranch = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], workspace.path);
+      expect(currentBranch.stdout.trim()).toBe(workspace.branchName);
+
+      await manager.cleanupWorkspace(workspace);
+      expect(existsSync(workspace.path)).toBe(false);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("cleans up a partially-created worktree when task materialization fails", async () => {
     const fixture = await createGitFixture();
     const previousCwd = process.cwd();
@@ -93,6 +116,27 @@ describe("GitWorkspaceManager", () => {
       expect(worktrees.stdout).not.toContain(workspacePath);
     } finally {
       process.chdir(previousCwd);
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans up partial explicit-repository worktrees without relying on process cwd", async () => {
+    const fixture = await createGitFixture();
+    const manager = new GitWorkspaceManager();
+    const context = makeContext({ runId: "run_explicit_cleanup" });
+    const workspacePath = join(fixture.workspaceRoot, "run_explicit_cleanup");
+
+    try {
+      await expect(manager.prepareWorkspace(context, {
+        repositoryRoot: fixture.repo,
+        workspaceRoot: fixture.workspaceRoot,
+        taskFileName: "missing-parent/PATCHPILOT_TASK.md"
+      })).rejects.toThrow();
+
+      expect(existsSync(workspacePath)).toBe(false);
+      const worktrees = await runGit(["worktree", "list", "--porcelain"], fixture.repo);
+      expect(worktrees.stdout).not.toContain(workspacePath);
+    } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
   });

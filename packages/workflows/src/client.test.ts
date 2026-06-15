@@ -227,7 +227,7 @@ describe("Temporal client helpers", () => {
         testSuggestions: ["Run /diagnose"],
         version: 1
       },
-      runner: "simulated" as const
+      runner: "codex" as const
     };
 
     expect(defectReproductionWorkflowId(input.idempotencyKey)).toMatch(

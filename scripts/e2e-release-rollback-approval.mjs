@@ -1,5 +1,4 @@
 process.env.NODE_ENV = "test";
-process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR = "0";
 
 const { buildServer } = await import("../services/api/src/server.ts");
 const { PatchPilotStore } = await import("../services/api/src/store.ts");
@@ -20,7 +19,7 @@ try {
   const startTeam = await injectJson(
     "POST",
     `/api/prds/${prd.id}/start-team`,
-    { runner: "simulated" },
+    { runner: "codex" },
     maintainerAuth
   );
   assertEqual(startTeam.runs.length, 4, "release E2E should start the full agent team");

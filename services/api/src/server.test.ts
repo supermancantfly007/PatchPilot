@@ -27,9 +27,111 @@ import {
 } from "@patchpilot/domain";
 import { buildServer } from "./server";
 import { PatchPilotStore } from "./store";
+import type { RequirementClarifier } from "./codexClarifier";
 
-process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR = "0";
 delete process.env.PATCHPILOT_RUNNER;
+
+const testClarifier: RequirementClarifier = {
+  async start(input) {
+    const base = input.rawInput.trim().slice(0, 80) || "这个需求";
+    return {
+      message: `请确认这次需求最重要的用户可见结果是什么：${base}`,
+      recommendedAnswer: `用户可以完成「${base}」并看到明确的成功反馈。`,
+      readyForPrd: false,
+      codexSessionId: `test-codex-session-${input.requirementId}`
+    };
+  },
+  async continue(input) {
+    return {
+      message: "这些信息是否已经足够生成 PRD？",
+      recommendedAnswer: "足够，请基于当前澄清记录生成 PRD。",
+      readyForPrd: true,
+      codexSessionId: input.codexSessionId
+    };
+  }
+};
+
+const testCodexRunner: CodexRunner = {
+  isAvailable: async () => true,
+  isGitWorkspaceAvailable: async () => true,
+  run: async (context, emit) => {
+    await emit({
+      step: "developing",
+      type: "codex.output",
+      message: `Test Codex runner completed ${context.workItem.id}`
+    });
+    const safeRunId = context.runId.replace(/[^a-zA-Z0-9_-]/gu, "_");
+    const branchName = `patchpilot/${context.workItem.id}`;
+    const headCommit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const workspacePath = `/tmp/patchpilot/test-codex/${safeRunId}`;
+    return {
+      summary: `Test Codex runner completed ${context.workItem.title}.`,
+      previewUrl: "http://test-preview.local",
+      riskLevel: "low",
+      changedFiles: ["services/api/src/store.ts"],
+      tests: [
+        {
+          id: `test_${safeRunId}`,
+          status: "passed",
+          command: "pnpm test -- --run test-codex",
+          summary: "test Codex test passed",
+          durationMs: 10,
+          runner: "patchpilot-test-runner",
+          environmentImage: "local",
+          workspacePath,
+          branch: branchName,
+          commit: headCommit
+        }
+      ],
+      reviewerSummary: "Test reviewer approved the Codex runner result.",
+      runner: "codex",
+      agentMessages: ["Test Codex agent reported completion."],
+      reasoningSummaries: ["Test Codex inspected the assigned work item."],
+      toolCalls: [
+        {
+          id: `tool_${safeRunId}`,
+          name: "exec_command",
+          status: "completed",
+          summary: "Ran test Codex test command",
+          command: "pnpm test -- --run test-codex",
+          exitCode: 0,
+          durationMs: 10
+        }
+      ],
+      diffSummary: {
+        changedFileCount: 1,
+        changedFiles: ["services/api/src/store.ts"],
+        hasChanges: true,
+        branchName,
+        baseBranch: "main",
+        baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        headCommit
+      },
+      testOutputSummary: "passed: test Codex test (10ms).",
+      workspacePath,
+      branchName,
+      baseBranch: "main",
+      baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      headCommit,
+      codexSessionId: `test-codex-run-${safeRunId}`
+    };
+  }
+};
+
+function createTestStore(options: ConstructorParameters<typeof PatchPilotStore>[0] = {}) {
+  return new PatchPilotStore({
+    codexRunner: testCodexRunner,
+    clarifier: testClarifier,
+    ...options
+  });
+}
+
+async function buildTestServer(options: Parameters<typeof buildServer>[0] = {}) {
+  return buildServer({
+    ...options,
+    store: options.store ?? createTestStore({ telemetry: options.telemetry })
+  });
+}
 
 function authHeaders(role: "submitter" | "maintainer" | "reviewer" | "admin", userId = `test-${role}`) {
   return {
@@ -40,7 +142,7 @@ function authHeaders(role: "submitter" | "maintainer" | "reviewer" | "admin", us
 
 describe("PatchPilot API", () => {
   it("creates a requirement and PRD draft", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
     const create = await app.inject({
       method: "POST",
       url: "/api/requirements",
@@ -70,7 +172,7 @@ describe("PatchPilot API", () => {
   });
 
   it("records intake artifact references for requirements and bugs", async () => {
-    const app = await buildServer({ store: new PatchPilotStore() });
+    const app = await buildTestServer({ store: createTestStore() });
     const artifactReferences = [
       {
         kind: "file",
@@ -162,7 +264,7 @@ describe("PatchPilot API", () => {
   });
 
   it("rejects link artifact references without valid URLs", async () => {
-    const app = await buildServer({ store: new PatchPilotStore() });
+    const app = await buildTestServer({ store: createTestStore() });
 
     const missingUrl = await app.inject({
       method: "POST",
@@ -190,7 +292,7 @@ describe("PatchPilot API", () => {
   });
 
   it("rejects blank requirement input", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
     const response = await app.inject({
       method: "POST",
       url: "/api/requirements",
@@ -221,8 +323,8 @@ describe("PatchPilot API", () => {
       }
     ];
     await writeFile(dataFilePath, JSON.stringify(fixture, null, 2));
-    const store = new PatchPilotStore({ dataFilePath });
-    const app = await buildServer({ store });
+    const store = createTestStore({ dataFilePath });
+    const app = await buildTestServer({ store });
 
     try {
       await expect(store.getPersistenceInfo()).resolves.toMatchObject({ kind: "postgres", engine: "pglite" });
@@ -250,7 +352,7 @@ describe("PatchPilot API", () => {
   });
 
   it("returns 404 for unknown resources", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
     const response = await app.inject({ method: "GET", url: "/api/runs/missing" });
 
     expect(response.statusCode).toBe(404);
@@ -258,13 +360,13 @@ describe("PatchPilot API", () => {
   });
 
   it("returns runtime configuration for the workbench", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
     const response = await app.inject({ method: "GET", url: "/api/config" });
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      configuredRunner: "auto",
-      activeRunner: "simulated",
+      configuredRunner: "codex",
+      activeRunner: "codex",
       testCommand: expect.any(String),
       workspaceRoot: expect.any(String)
     });
@@ -273,9 +375,9 @@ describe("PatchPilot API", () => {
     await app.close();
   });
 
-  it("serves Prometheus metrics for a simulated run", async () => {
-    const app = await buildServer({ store: new PatchPilotStore() });
-    const startedRun = await startSimulatedRun(app, "验证 /metrics 暴露稳定的运行、队列、成本、测试和验收指标");
+  it("serves Prometheus metrics for a Codex run", async () => {
+    const app = await buildTestServer({ store: createTestStore() });
+    const startedRun = await startCodexRun(app, "验证 /metrics 暴露稳定的运行、队列、成本、测试和验收指标");
     const completedRun = await pollRun(app, startedRun.id);
     expect(completedRun.status).toBe("succeeded");
 
@@ -290,10 +392,10 @@ describe("PatchPilot API", () => {
     expect(metrics.statusCode).toBe(200);
     expect(metrics.headers["content-type"]).toContain("text/plain");
     expect(metrics.body).toContain(`# TYPE ${prometheusMetricNames.runDurationSeconds} histogram`);
-    expect(metrics.body).toContain('patchpilot_agent_run_duration_seconds_count{runner="simulated",status="succeeded"} 1');
-    expect(metrics.body).toContain('patchpilot_agent_run_failures_total{runner="simulated",failure_type="test_failed"} 0');
+    expect(metrics.body).toContain('patchpilot_agent_run_duration_seconds_count{runner="codex",status="succeeded"} 1');
+    expect(metrics.body).toContain('patchpilot_agent_run_failures_total{runner="codex",failure_type="test_failed"} 0');
     expect(metrics.body).toContain('patchpilot_work_item_queue_depth{role="backend",status="done"} 1');
-    expect(metrics.body).toContain('patchpilot_agent_run_cost_actual_usd{runner="simulated",status="succeeded"} 0.38');
+    expect(metrics.body).toContain('patchpilot_agent_run_cost_actual_usd{runner="codex",status="succeeded"} 0');
     expect(metrics.body).toContain("patchpilot_test_pass_rate_ratio 1");
     expect(metrics.body).toContain('patchpilot_acceptance_decisions_total{status="accepted"} 1');
     expect(metrics.body).toContain("patchpilot_acceptance_rate_ratio 1");
@@ -301,7 +403,7 @@ describe("PatchPilot API", () => {
   });
 
   it("creates, approves, denies, and expires approval records", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
     const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     const past = new Date(Date.now() - 1000).toISOString();
     const kinds = [
@@ -443,7 +545,7 @@ describe("PatchPilot API", () => {
   });
 
   it("requires audited manual approval gates for release and rollback", async () => {
-    const app = await buildServer({ store: new PatchPilotStore() });
+    const app = await buildTestServer({ store: createTestStore() });
     const create = await app.inject({
       method: "POST",
       url: "/api/requirements",
@@ -459,7 +561,7 @@ describe("PatchPilot API", () => {
       method: "POST",
       url: `/api/prds/${prd.id}/start-team`,
       headers: authHeaders("maintainer"),
-      payload: { runner: "simulated" }
+      payload: { runner: "codex" }
     });
     expect(startTeam.statusCode).toBe(201);
     expect(startTeam.json().runs).toHaveLength(4);
@@ -633,8 +735,8 @@ describe("PatchPilot API", () => {
   });
 
   it("protects secret-sensitive and production-data work item starts", async () => {
-    const store = new PatchPilotStore();
-    const app = await buildServer({ store });
+    const store = createTestStore();
+    const app = await buildTestServer({ store });
 
     try {
       const secretWorkItem = await createApprovedWorkItem(app, "验证 secret capability start 需要 reviewer 权限");
@@ -643,7 +745,7 @@ describe("PatchPilot API", () => {
       const anonymousSecretStart = await app.inject({
         method: "POST",
         url: `/api/work-items/${secretWorkItem.id}/start`,
-        payload: { runner: "simulated" }
+        payload: { runner: "codex" }
       });
       expect(anonymousSecretStart.statusCode).toBe(401);
 
@@ -651,7 +753,7 @@ describe("PatchPilot API", () => {
         method: "POST",
         url: `/api/work-items/${secretWorkItem.id}/start`,
         headers: authHeaders("maintainer"),
-        payload: { runner: "simulated" }
+        payload: { runner: "codex" }
       });
       expect(maintainerSecretStart.statusCode).toBe(403);
 
@@ -659,7 +761,7 @@ describe("PatchPilot API", () => {
         method: "POST",
         url: `/api/work-items/${secretWorkItem.id}/start`,
         headers: authHeaders("reviewer"),
-        payload: { runner: "simulated" }
+        payload: { runner: "codex" }
       });
       expect(reviewerSecretStart.statusCode).toBe(201);
       await pollRun(app, reviewerSecretStart.json().id);
@@ -671,7 +773,7 @@ describe("PatchPilot API", () => {
         method: "POST",
         url: `/api/work-items/${productionWorkItem.id}/start`,
         headers: authHeaders("reviewer"),
-        payload: { runner: "simulated" }
+        payload: { runner: "codex" }
       });
       expect(reviewerProductionStart.statusCode).toBe(403);
 
@@ -679,7 +781,7 @@ describe("PatchPilot API", () => {
         method: "POST",
         url: `/api/work-items/${productionWorkItem.id}/start`,
         headers: authHeaders("admin"),
-        payload: { runner: "simulated" }
+        payload: { runner: "codex" }
       });
       expect(adminProductionStart.statusCode).toBe(201);
       await pollRun(app, adminProductionStart.json().id);
@@ -694,7 +796,7 @@ describe("PatchPilot API", () => {
         method: "POST",
         url: `/api/prds/${secretTeamPrd.id}/start-team`,
         headers: authHeaders("maintainer"),
-        payload: { runner: "simulated" }
+        payload: { runner: "codex" }
       });
       expect(maintainerSecretTeamStart.statusCode).toBe(403);
 
@@ -702,7 +804,7 @@ describe("PatchPilot API", () => {
         method: "POST",
         url: `/api/prds/${secretTeamPrd.id}/start-team`,
         headers: authHeaders("reviewer"),
-        payload: { runner: "simulated" }
+        payload: { runner: "codex" }
       });
       expect(reviewerSecretTeamStart.statusCode).toBe(201);
     } finally {
@@ -711,8 +813,8 @@ describe("PatchPilot API", () => {
   });
 
   it("routes breaking contract registry diffs through Approval before promotion", async () => {
-    const store = new PatchPilotStore();
-    const app = await buildServer({ store });
+    const store = createTestStore();
+    const app = await buildTestServer({ store });
 
     try {
       const baselinePrd = await createApprovedPrd(app, "建立一个旧版 API 契约基线");
@@ -862,8 +964,8 @@ describe("PatchPilot API", () => {
   });
 
   it("upgrades approved PRDs from registry-only contract evidence to provider and consumer TestRuns", async () => {
-    const store = new PatchPilotStore();
-    const app = await buildServer({ store });
+    const store = createTestStore();
+    const app = await buildTestServer({ store });
 
     try {
       const prd = await createApprovedPrd(app, "升级已有 PRD 的契约测试证据");
@@ -917,7 +1019,7 @@ describe("PatchPilot API", () => {
   });
 
   it("writes formal audit events and verifies the hash chain", async () => {
-    const app = await buildServer({ store: new PatchPilotStore() });
+    const app = await buildTestServer({ store: createTestStore() });
     await createApprovedWorkItem(app, "验证正式审计事件包含 before/after/hash chain 字段");
 
     const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
@@ -955,11 +1057,11 @@ describe("PatchPilot API", () => {
   });
 
   it("exports a redacted PRD audit package with linked evidence, retention, and WORM metadata", async () => {
-    const app = await buildServer({ store: new PatchPilotStore() });
+    const app = await buildTestServer({ store: createTestStore() });
     const rawEmail = "alice.audit@example.com";
     const rawPhone = "+1 415-555-0134";
     const rawAccount = "customer_AUDIT123456";
-    const startedRun = await startSimulatedRun(
+    const startedRun = await startCodexRun(
       app,
       `管理员需要导出 ${rawEmail} ${rawPhone} ${rawAccount} 的 PRD 审计证据。`
     );
@@ -1097,7 +1199,7 @@ describe("PatchPilot API", () => {
       }
     ];
     await writeFile(dataFilePath, JSON.stringify(legacySnapshot, null, 2));
-    const app = await buildServer({ store: new PatchPilotStore({ dataFilePath }) });
+    const app = await buildTestServer({ store: createTestStore({ dataFilePath }) });
 
     try {
       const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
@@ -1132,14 +1234,14 @@ describe("PatchPilot API", () => {
     const restoreBudgetEnv = setBudgetEnv({
       PATCHPILOT_BUDGET_RUN_USD: "0.2"
     });
-    const app = await buildServer({ store: new PatchPilotStore() });
+    const app = await buildTestServer({ store: createTestStore() });
 
     try {
       const workItem = await createApprovedWorkItem(app, "验证超预算 agent run 会暂停等待审批");
       const start = await app.inject({
         method: "POST",
         url: `/api/work-items/${workItem.id}/start`,
-        payload: { runner: "simulated" }
+        payload: { runner: "codex" }
       });
       expect(start.statusCode).toBe(201);
       const run = start.json();
@@ -1176,14 +1278,14 @@ describe("PatchPilot API", () => {
     const restoreBudgetEnv = setBudgetEnv({
       PATCHPILOT_BUDGET_RUN_USD: "0.2"
     });
-    const app = await buildServer({ store: new PatchPilotStore() });
+    const app = await buildTestServer({ store: createTestStore() });
 
     try {
       const workItem = await createApprovedWorkItem(app, "验证预算审批通过后继续执行原 run");
       const start = await app.inject({
         method: "POST",
         url: `/api/work-items/${workItem.id}/start`,
-        payload: { runner: "simulated" }
+        payload: { runner: "codex" }
       });
       expect(start.statusCode).toBe(201);
       const pausedRun = start.json();
@@ -1215,7 +1317,7 @@ describe("PatchPilot API", () => {
   });
 
   it("links Linear issues and lets external status changes block or trigger WorkItems", async () => {
-    const app = await buildServer({ store: new PatchPilotStore() });
+    const app = await buildTestServer({ store: createTestStore() });
 
     try {
       const workItem = await createApprovedWorkItem(app, "同步一个 Linear issue 到 PatchPilot WorkItem");
@@ -1299,7 +1401,7 @@ describe("PatchPilot API", () => {
       const blockedStart = await app.inject({
         method: "POST",
         url: `/api/work-items/${workItem.id}/start`,
-        payload: { runner: "simulated" }
+        payload: { runner: "codex" }
       });
       expect(blockedStart.statusCode).toBe(409);
 
@@ -1332,7 +1434,7 @@ describe("PatchPilot API", () => {
       const start = await app.inject({
         method: "POST",
         url: `/api/work-items/${workItem.id}/start`,
-        payload: { runner: "simulated" }
+        payload: { runner: "codex" }
       });
       expect(start.statusCode).toBe(201);
       const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
@@ -1345,7 +1447,7 @@ describe("PatchPilot API", () => {
   });
 
   it("syncs Jira Defects while preserving PatchPilot as the terminal-state authority", async () => {
-    const app = await buildServer({ store: new PatchPilotStore() });
+    const app = await buildTestServer({ store: createTestStore() });
 
     try {
       const createBug = await app.inject({
@@ -1484,25 +1586,25 @@ describe("PatchPilot API", () => {
 
   it("syncs and selects GitHub App repositories with maintainer RBAC", async () => {
     const repositories = [
-      fakeGitHubAppRepository({
+      testGitHubAppRepository({
         id: "repo_github_4242_patchpilot_fixtures_delivery",
         githubRepositoryId: "987654321",
         name: "delivery",
         permissions: { admin: false, maintain: false, push: true }
       }),
-      fakeGitHubAppRepository({
+      testGitHubAppRepository({
         id: "repo_github_4242_patchpilot_fixtures_docs",
         githubRepositoryId: "987654322",
         name: "docs",
         permissions: { admin: false, maintain: false, push: false }
       })
     ];
-    const store = new PatchPilotStore({
+    const store = createTestStore({
       githubAppRepositoryClient: {
         listRepositories: async () => repositories
       }
     });
-    const app = await buildServer({ store });
+    const app = await buildTestServer({ store });
 
     try {
       const anonymousList = await app.inject({
@@ -1575,13 +1677,13 @@ describe("PatchPilot API", () => {
 
   it("fans one GitHub-selected PRD out into multiple repository work items and PRs", async () => {
     const repositories = [
-      fakeGitHubAppRepository({
+      testGitHubAppRepository({
         id: "repo_github_4242_patchpilot_fixtures_delivery",
         githubRepositoryId: "987654321",
         name: "delivery",
         permissions: { admin: false, maintain: false, push: true }
       }),
-      fakeGitHubAppRepository({
+      testGitHubAppRepository({
         id: "repo_github_4242_patchpilot_fixtures_docs",
         githubRepositoryId: "987654322",
         name: "docs",
@@ -1589,7 +1691,7 @@ describe("PatchPilot API", () => {
       })
     ];
     const upserts: UpsertPullRequestInput[] = [];
-    const fakePullRequestAdapter: PullRequestAdapter = {
+    const testPullRequestAdapter: PullRequestAdapter = {
       provider: "github",
       upsertPullRequest: async (input) => {
         upserts.push(input);
@@ -1607,13 +1709,13 @@ describe("PatchPilot API", () => {
       readChecks: async () => ({ status: "passed", totalCount: 0, runs: [] }),
       writeReviewerComment: async () => undefined
     };
-    const store = new PatchPilotStore({
+    const store = createTestStore({
       githubAppRepositoryClient: {
         listRepositories: async () => repositories
       },
-      pullRequestAdapter: fakePullRequestAdapter
+      pullRequestAdapter: testPullRequestAdapter
     });
-    const app = await buildServer({ store });
+    const app = await buildTestServer({ store });
 
     try {
       const list = await app.inject({
@@ -1654,7 +1756,7 @@ describe("PatchPilot API", () => {
         method: "POST",
         url: `/api/prds/${prd.id}/start-team`,
         headers: authHeaders("maintainer", "repo-maintainer"),
-        payload: { runner: "simulated" }
+        payload: { runner: "codex" }
       });
       expect(startTeam.statusCode).toBe(201);
       expect(startTeam.json().workItems).toHaveLength(8);
@@ -1679,7 +1781,7 @@ describe("PatchPilot API", () => {
       const prdTestRuns = snapshot.testRuns.filter((testRun: { prdId: string; runner?: string }) =>
         testRun.prdId === prd.id
       );
-      const prdExecutionTestRuns = prdTestRuns.filter((testRun: { runner?: string }) => testRun.runner === "simulated-test-runner");
+      const prdExecutionTestRuns = prdTestRuns.filter((testRun: { runner?: string }) => testRun.runner === "patchpilot-test-runner");
 
       expect(prdWorkItems).toHaveLength(8);
       expect(new Set(prdWorkItems.map((workItem: { repositoryId?: string }) => workItem.repositoryId))).toEqual(
@@ -1709,10 +1811,10 @@ describe("PatchPilot API", () => {
   });
 
   it("rejects GitHub App repository selection without PR-capable repository permissions", async () => {
-    const store = new PatchPilotStore({
+    const store = createTestStore({
       githubAppRepositoryClient: {
         listRepositories: async () => [
-          fakeGitHubAppRepository({
+          testGitHubAppRepository({
             id: "repo_github_4242_patchpilot_fixtures_readonly",
             githubRepositoryId: "987654323",
             name: "readonly",
@@ -1721,7 +1823,7 @@ describe("PatchPilot API", () => {
         ]
       }
     });
-    const app = await buildServer({ store });
+    const app = await buildTestServer({ store });
 
     try {
       const list = await app.inject({
@@ -1769,7 +1871,7 @@ describe("PatchPilot API", () => {
       ],
       sender: { login: "patchpilot-fixtures" }
     };
-    const app = await buildServer({ store: new PatchPilotStore() });
+    const app = await buildTestServer({ store: createTestStore() });
 
     try {
       const rejected = await app.inject({
@@ -1829,14 +1931,14 @@ describe("PatchPilot API", () => {
       PATCHPILOT_BUDGET_RUN_USD: "0.5",
       PATCHPILOT_BUDGET_SOFT_THRESHOLD_RATIO: "0.8"
     });
-    const app = await buildServer({ store: new PatchPilotStore() });
+    const app = await buildTestServer({ store: createTestStore() });
 
     try {
       const workItem = await createApprovedWorkItem(app, "验证预算软阈值只告警不暂停");
       const start = await app.inject({
         method: "POST",
         url: `/api/work-items/${workItem.id}/start`,
-        payload: { runner: "simulated" }
+        payload: { runner: "codex" }
       });
       expect(start.statusCode).toBe(201);
       expect(start.json()).toMatchObject({
@@ -1890,7 +1992,7 @@ artifacts:
       "utf8"
     );
 
-    const app = await buildServer();
+    const app = await buildTestServer();
 
     try {
       process.env.PATCHPILOT_CONFIG_PATH = configPath;
@@ -1935,13 +2037,11 @@ artifacts:
   });
 
   it("streams the current run, incremental updates, and closes after a terminal status", async () => {
-    const app = await buildServer();
-    const previousDelayFactor = process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR;
-    process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR = "0.5";
+    const app = await buildTestServer();
 
     try {
       const baseUrl = await listenOnRandomPort(app);
-      const run = await startSimulatedRun(app, "验证 SSE 首包、增量更新和终态关闭");
+      const run = await startCodexRun(app, "验证 SSE 首包、增量更新和终态关闭");
 
       const frames = await collectSseFrames(`${baseUrl}/api/runs/${run.id}/events`, 7000);
       const runFrames = frames.filter((frame) => frame.event === "message");
@@ -1949,26 +2049,20 @@ artifacts:
       const firstPayload = payloads[0];
       const terminalPayload = payloads.at(-1);
 
-      expect(firstPayload).toMatchObject({
-        id: run.id,
-        status: "running",
-        currentStep: "understanding"
-      });
-      expect(firstPayload?.events).toHaveLength(1);
-      expect(firstPayload?.events[0]?.type).toBe("requirement.understood");
+      expect(firstPayload?.id).toBe(run.id);
+      expect(["running", "succeeded"]).toContain(firstPayload?.status);
+      expect(firstPayload?.events.some((event) => event.type === "requirement.understood")).toBe(true);
       expect(payloads.length).toBeGreaterThanOrEqual(2);
       expect(Math.max(...payloads.map((payload) => payload.events.length))).toBeGreaterThan(1);
       expect(terminalPayload?.status).toBe("succeeded");
       expect(terminalPayload?.events.at(-1)?.type).toBe("acceptance.waiting");
     } finally {
-      if (previousDelayFactor === undefined) delete process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR;
-      else process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR = previousDelayFactor;
       await app.close();
     }
   });
 
   it("streams an SSE error envelope for a missing run and then closes", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
 
     try {
       const baseUrl = await listenOnRandomPort(app);
@@ -1985,7 +2079,7 @@ artifacts:
   });
 
   it("makes starting the same work item idempotent", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
     const create = await app.inject({
       method: "POST",
       url: "/api/requirements",
@@ -2019,7 +2113,7 @@ artifacts:
   });
 
   it("runs the full requirement to acceptance lifecycle", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
     const create = await app.inject({
       method: "POST",
       url: "/api/requirements",
@@ -2056,23 +2150,25 @@ artifacts:
     const start = await app.inject({
       method: "POST",
       url: `/api/work-items/${workItem.id}/start`,
-      payload: { runner: "simulated" }
+      payload: { runner: "codex" }
     });
     expect(start.statusCode).toBe(201);
     const run = start.json();
-    expect(run.runner).toBe("simulated");
+    expect(run.runner).toBe("codex");
     const snapshotWhileRunning = await app.inject({ method: "GET", url: "/api/snapshot" });
     const runningWorkItem = snapshotWhileRunning.json().workItems.find((item: { id: string }) => item.id === workItem.id);
-    expect(runningWorkItem.status).toBe("running");
-    expect(runningWorkItem.assignedAgentId).toBeTruthy();
-    expect(runningWorkItem.claimToken).toEqual(expect.any(String));
-    expect(runningWorkItem.leaseExpiresAt).toEqual(expect.any(String));
-    expect(runningWorkItem.heartbeatAt).toEqual(expect.any(String));
+    expect(["running", "review"]).toContain(runningWorkItem.status);
+    if (runningWorkItem.status === "running") {
+      expect(runningWorkItem.assignedAgentId).toBeTruthy();
+      expect(runningWorkItem.claimToken).toEqual(expect.any(String));
+      expect(runningWorkItem.leaseExpiresAt).toEqual(expect.any(String));
+      expect(runningWorkItem.heartbeatAt).toEqual(expect.any(String));
+    }
     expect(runningWorkItem.version).toBeGreaterThan(1);
 
     const completedRun = await pollRun(app, run.id);
     expect(completedRun.status).toBe("succeeded");
-    expect(completedRun.result.runner).toBe("simulated");
+    expect(completedRun.result.runner).toBe("codex");
     expect(completedRun.result.tests[0].status).toBe("passed");
     const snapshotAfterRun = await app.inject({ method: "GET", url: "/api/snapshot" });
     const completedTestCase = snapshotAfterRun
@@ -2101,10 +2197,10 @@ artifacts:
 
   it("emits correlated OpenTelemetry signals for a completed run", async () => {
     const telemetry = createInMemoryTelemetry("patchpilot-api-test");
-    const app = await buildServer({ telemetry });
+    const app = await buildTestServer({ telemetry });
 
     try {
-      const run = await startSimulatedRun(app, "验证一次 run 会写入可关联的 OpenTelemetry trace");
+      const run = await startCodexRun(app, "验证一次 run 会写入可关联的 OpenTelemetry trace");
       const completedRun = await pollRun(app, run.id);
       await telemetry.forceFlush();
 
@@ -2141,14 +2237,14 @@ artifacts:
   });
 
   it("blocks accepted decisions when the acceptance quality gate is unmet", async () => {
-    const store = new PatchPilotStore();
-    const app = await buildServer({ store });
+    const store = createTestStore();
+    const app = await buildTestServer({ store });
     const workItem = await createApprovedWorkItem(app, "验证验收质量门会阻止失败证据被接受");
 
     const start = await app.inject({
       method: "POST",
       url: `/api/work-items/${workItem.id}/start`,
-      payload: { runner: "simulated" }
+      payload: { runner: "codex" }
     });
     expect(start.statusCode).toBe(201);
     const run = await pollRun(app, start.json().id);
@@ -2156,7 +2252,7 @@ artifacts:
 
     const mutableSnapshot = (store as unknown as { snapshot: PatchPilotSnapshot }).snapshot;
     const testCase = mutableSnapshot.testCases.find((item) => item.workItemId === workItem.id);
-    if (!testCase) throw new Error("Expected simulated run to create TestCase evidence");
+    if (!testCase) throw new Error("Expected Codex run to create TestCase evidence");
     testCase.status = "failed";
 
     const acceptance = await app.inject({
@@ -2182,7 +2278,7 @@ artifacts:
   });
 
   it("fences concurrent work item claims and requires the current claim token to start", async () => {
-    const app = await buildServer({ store: new PatchPilotStore() });
+    const app = await buildTestServer({ store: createTestStore() });
     const workItem = await createApprovedWorkItem(app, "验证并发领取同一工作项不会双重成功");
 
     const [backendClaim, reviewerClaim] = await Promise.all([
@@ -2212,14 +2308,14 @@ artifacts:
     const rejectedStart = await app.inject({
       method: "POST",
       url: `/api/work-items/${workItem.id}/start`,
-      payload: { runner: "simulated", claimToken: "stale-token" }
+      payload: { runner: "codex", claimToken: "stale-token" }
     });
     expect(rejectedStart.statusCode).toBe(409);
 
     const start = await app.inject({
       method: "POST",
       url: `/api/work-items/${workItem.id}/start`,
-      payload: { runner: "simulated", claimToken }
+      payload: { runner: "codex", claimToken }
     });
     expect(start.statusCode).toBe(201);
 
@@ -2227,7 +2323,7 @@ artifacts:
   });
 
   it("allows an expired claim lease to be recovered by another agent", async () => {
-    const app = await buildServer({ store: new PatchPilotStore() });
+    const app = await buildTestServer({ store: createTestStore() });
     const workItem = await createApprovedWorkItem(app, "验证过期 lease 可以回收");
 
     const firstClaim = await app.inject({
@@ -2261,7 +2357,7 @@ artifacts:
 
   it("uses an injected CodexRunner implementation for codex runs", async () => {
     let capturedRunId = "";
-    const fakeCodexRunner: CodexRunner = {
+    const testCodexRunner: CodexRunner = {
       isAvailable: async () => true,
       isGitWorkspaceAvailable: async () => true,
       run: async (context, emit) => {
@@ -2269,33 +2365,33 @@ artifacts:
         await emit({
           step: "developing",
           type: "codex.output",
-          message: "Fake Codex runner produced a change"
+          message: "Test Codex runner produced a change"
         });
         return {
-          summary: "Fake Codex runner completed the injected task.",
-          previewUrl: "http://fake-preview.local",
+          summary: "Test Codex runner completed the injected task.",
+          previewUrl: "http://test-preview.local",
           riskLevel: "low",
           changedFiles: ["packages/codex-runner/src/index.ts"],
           tests: [
             {
-              id: "test_fake_codex",
+              id: "test_test_codex",
               status: "passed",
-              command: "fake test",
-              summary: "fake test passed",
+              command: "test test",
+              summary: "test test passed",
               durationMs: 12
             }
           ],
-          reviewerSummary: "Fake reviewer approved the injected runner result.",
+          reviewerSummary: "Test reviewer approved the injected runner result.",
           runner: "codex",
-          agentMessages: ["Fake Codex agent reported completion."],
-          reasoningSummaries: ["Fake Codex inspected the capture path."],
+          agentMessages: ["Test Codex agent reported completion."],
+          reasoningSummaries: ["Test Codex inspected the capture path."],
           toolCalls: [
             {
-              id: "tool_fake_test",
+              id: "tool_test_test",
               name: "exec_command",
               status: "completed",
-              summary: "Ran the fake test command",
-              command: "fake test",
+              summary: "Ran the test test command",
+              command: "test test",
               exitCode: 0,
               durationMs: 12
             }
@@ -2304,22 +2400,22 @@ artifacts:
             changedFileCount: 1,
             changedFiles: ["packages/codex-runner/src/index.ts"],
             hasChanges: true,
-            branchName: "patchpilot/wi_fake-codex-runner",
+            branchName: "patchpilot/wi_test-codex-runner",
             baseBranch: "main",
             baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
           },
-          testOutputSummary: "passed: fake test (12ms). fake test passed",
-          workspacePath: "fake://workspace",
-          branchName: "patchpilot/wi_fake-codex-runner",
+          testOutputSummary: "passed: test test (12ms). test test passed",
+          workspacePath: "test://workspace",
+          branchName: "patchpilot/wi_test-codex-runner",
           baseBranch: "main",
           baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          codexSessionId: "fake-session"
+          codexSessionId: "test-session"
         };
       }
     };
-    const app = await buildServer({ store: new PatchPilotStore({ codexRunner: fakeCodexRunner }) });
+    const app = await buildTestServer({ store: createTestStore({ codexRunner: testCodexRunner }) });
     const create = await app.inject({
       method: "POST",
       url: "/api/requirements",
@@ -2344,41 +2440,41 @@ artifacts:
     expect(completedRun.status).toBe("succeeded");
     expect(completedRun.result).toMatchObject({
       runner: "codex",
-      workspacePath: "fake://workspace",
-      branchName: "patchpilot/wi_fake-codex-runner",
+      workspacePath: "test://workspace",
+      branchName: "patchpilot/wi_test-codex-runner",
       baseBranch: "main",
       baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      codexSessionId: "fake-session",
+      codexSessionId: "test-session",
       changedFiles: ["packages/codex-runner/src/index.ts"],
       toolCalls: [
         {
-          id: "tool_fake_test",
+          id: "tool_test_test",
           name: "exec_command",
           status: "completed",
-          command: "fake test"
+          command: "test test"
         }
       ],
       diffSummary: {
         changedFileCount: 1,
         hasChanges: true
       },
-      testOutputSummary: "passed: fake test (12ms). fake test passed"
+      testOutputSummary: "passed: test test (12ms). test test passed"
     });
-    expect(completedRun.events.some((event: { message: string }) => event.message.includes("Fake Codex runner"))).toBe(true);
+    expect(completedRun.events.some((event: { message: string }) => event.message.includes("Test Codex runner"))).toBe(true);
 
     const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
-    const testRun = snapshot.json().testRuns.find((test: { id: string }) => test.id === "test_fake_codex");
+    const testRun = snapshot.json().testRuns.find((test: { id: string }) => test.id === "test_test_codex");
     expect(testRun).toMatchObject({
       status: "passed",
       runId: start.json().id,
-      workspacePath: "fake://workspace",
-      branch: "patchpilot/wi_fake-codex-runner",
+      workspacePath: "test://workspace",
+      branch: "patchpilot/wi_test-codex-runner",
       commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     });
     const pullRequest = snapshot.json().pullRequests.find((item: { runId: string }) => item.runId === start.json().id);
     expect(pullRequest).toMatchObject({
-      branchName: "patchpilot/wi_fake-codex-runner",
+      branchName: "patchpilot/wi_test-codex-runner",
       baseBranch: "main",
       baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -2386,8 +2482,8 @@ artifacts:
     expect(pullRequest.bodyMarkdown).toContain("## Git");
     expect(pullRequest.bodyMarkdown).toContain("## Diff 摘要");
     expect(pullRequest.bodyMarkdown).toContain("## 工具调用");
-    expect(pullRequest.bodyMarkdown).toContain("exec_command (fake test)");
-    expect(pullRequest.bodyMarkdown).toContain("Branch: patchpilot/wi_fake-codex-runner");
+    expect(pullRequest.bodyMarkdown).toContain("exec_command (test test)");
+    expect(pullRequest.bodyMarkdown).toContain("Branch: patchpilot/wi_test-codex-runner");
     expect(pullRequest.bodyMarkdown).toContain("Commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 
     const traceArtifact = snapshot.json().artifacts.find((artifact: ArtifactRecord) => artifact.id === `artifact_trace_${start.json().id}`);
@@ -2395,17 +2491,17 @@ artifacts:
     const traceContent = JSON.parse(await readFile(fileURLToPath(traceArtifact.uri), "utf8"));
     const diffContent = JSON.parse(await readFile(fileURLToPath(diffArtifact.uri), "utf8"));
     expect(traceContent.capture).toMatchObject({
-      codexSessionId: "fake-session",
-      agentMessages: ["Fake Codex agent reported completion."],
-      reasoningSummaries: ["Fake Codex inspected the capture path."],
+      codexSessionId: "test-session",
+      agentMessages: ["Test Codex agent reported completion."],
+      reasoningSummaries: ["Test Codex inspected the capture path."],
       toolCalls: [
         {
-          id: "tool_fake_test",
-          command: "fake test",
+          id: "tool_test_test",
+          command: "test test",
           status: "completed"
         }
       ],
-      testOutputSummary: "passed: fake test (12ms). fake test passed"
+      testOutputSummary: "passed: test test (12ms). test test passed"
     });
     expect(diffContent.diffSummary).toMatchObject({
       changedFileCount: 1,
@@ -2418,7 +2514,7 @@ artifacts:
   it("uses an injected GitHub PullRequest adapter while keeping PullRequestRecord compatibility", async () => {
     const upserts: UpsertPullRequestInput[] = [];
     const comments: WriteReviewerCommentInput[] = [];
-    const fakePullRequestAdapter: PullRequestAdapter = {
+    const testPullRequestAdapter: PullRequestAdapter = {
       provider: "github",
       upsertPullRequest: async (input) => {
         upserts.push(input);
@@ -2451,34 +2547,34 @@ artifacts:
         };
       }
     };
-    const fakeCodexRunner: CodexRunner = {
+    const testCodexRunner: CodexRunner = {
       isAvailable: async () => true,
       isGitWorkspaceAvailable: async () => true,
       run: async () => ({
-        summary: "Fake Codex runner completed the GitHub PR task.",
-        previewUrl: "http://fake-preview.local",
+        summary: "Test Codex runner completed the GitHub PR task.",
+        previewUrl: "http://test-preview.local",
         riskLevel: "low",
         changedFiles: ["services/api/src/store.ts"],
         tests: [
           {
-            id: "test_fake_github_pr_adapter",
+            id: "test_test_github_pr_adapter",
             status: "passed",
-            command: "fake adapter e2e",
-            summary: "fake adapter e2e passed",
+            command: "test adapter e2e",
+            summary: "test adapter e2e passed",
             durationMs: 8
           }
         ],
-        reviewerSummary: "Fake reviewer approved the GitHub PR adapter result.",
+        reviewerSummary: "Test reviewer approved the GitHub PR adapter result.",
         runner: "codex",
-        agentMessages: ["Fake Codex agent reported GitHub PR readiness."],
-        reasoningSummaries: ["Fake Codex inspected PR adapter evidence."],
+        agentMessages: ["Test Codex agent reported GitHub PR readiness."],
+        reasoningSummaries: ["Test Codex inspected PR adapter evidence."],
         toolCalls: [
           {
-            id: "tool_fake_adapter_test",
+            id: "tool_test_adapter_test",
             name: "exec_command",
             status: "completed",
-            summary: "Ran fake adapter e2e",
-            command: "fake adapter e2e",
+            summary: "Ran test adapter e2e",
+            command: "test adapter e2e",
             exitCode: 0,
             durationMs: 8
           }
@@ -2487,24 +2583,24 @@ artifacts:
           changedFileCount: 1,
           changedFiles: ["services/api/src/store.ts"],
           hasChanges: true,
-          branchName: "patchpilot/wi_fake-github-pr-adapter",
+          branchName: "patchpilot/wi_test-github-pr-adapter",
           baseBranch: "main",
           baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           headCommit: "cccccccccccccccccccccccccccccccccccccccc"
         },
-        testOutputSummary: "passed: fake adapter e2e (8ms). fake adapter e2e passed",
-        workspacePath: "/tmp/patchpilot/fake-github-worktree",
-        branchName: "patchpilot/wi_fake-github-pr-adapter",
+        testOutputSummary: "passed: test adapter e2e (8ms). test adapter e2e passed",
+        workspacePath: "/tmp/patchpilot/test-github-worktree",
+        branchName: "patchpilot/wi_test-github-pr-adapter",
         baseBranch: "main",
         baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         headCommit: "cccccccccccccccccccccccccccccccccccccccc",
-        codexSessionId: "fake-github-session"
+        codexSessionId: "test-github-session"
       })
     };
-    const app = await buildServer({
-      store: new PatchPilotStore({
-        codexRunner: fakeCodexRunner,
-        pullRequestAdapter: fakePullRequestAdapter
+    const app = await buildTestServer({
+      store: createTestStore({
+        codexRunner: testCodexRunner,
+        pullRequestAdapter: testPullRequestAdapter
       })
     });
     const create = await app.inject({
@@ -2527,15 +2623,15 @@ artifacts:
     expect(completedRun.status).toBe("succeeded");
 
     expect(upserts).toHaveLength(1);
-    expect(upserts[0]?.workspacePath).toBe("/tmp/patchpilot/fake-github-worktree");
+    expect(upserts[0]?.workspacePath).toBe("/tmp/patchpilot/test-github-worktree");
     expect(upserts[0]?.draft).toMatchObject({
-      branchName: "patchpilot/wi_fake-github-pr-adapter",
+      branchName: "patchpilot/wi_test-github-pr-adapter",
       baseBranch: "main",
       baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       headCommit: "cccccccccccccccccccccccccccccccccccccccc"
     });
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("Fake reviewer approved the GitHub PR adapter result.");
+    expect(comments[0]?.body).toContain("Test reviewer approved the GitHub PR adapter result.");
 
     const snapshot = (await app.inject({ method: "GET", url: "/api/snapshot" })).json();
     const pullRequest = snapshot.pullRequests.find((item: { runId: string }) => item.runId === start.json().id);
@@ -2544,7 +2640,7 @@ artifacts:
       provider: "github",
       status: "ready_for_review",
       url: "https://github.com/patchpilot-fixtures/delivery/pull/42",
-      branchName: "patchpilot/wi_fake-github-pr-adapter",
+      branchName: "patchpilot/wi_test-github-pr-adapter",
       headCommit: "cccccccccccccccccccccccccccccccccccccccc"
     });
     const reviewRecord = snapshot.reviewRecords.find((item: { runId: string }) => item.runId === start.json().id);
@@ -2567,16 +2663,16 @@ artifacts:
     let runnerCalled = false;
     let app: Awaited<ReturnType<typeof buildServer>> | undefined;
     try {
-      const fakeCodexRunner: CodexRunner = {
+      const testCodexRunner: CodexRunner = {
         isAvailable: async () => true,
         isGitWorkspaceAvailable: async () => true,
         run: async () => {
           runnerCalled = true;
-          return fakeCodexRunResult();
+          return testCodexRunResult();
         }
       };
-      const store = new PatchPilotStore({ codexRunner: fakeCodexRunner });
-      app = await buildServer({ store });
+      const store = createTestStore({ codexRunner: testCodexRunner });
+      app = await buildTestServer({ store });
       const workItem = await createApprovedWorkItem(app, "验证未授权 secret 请求会失败");
       await setWorkItemCapabilities(store, workItem.id, ["secret:github-ci-token"]);
 
@@ -2636,16 +2732,16 @@ artifacts:
     let capturedSecretEnv: Record<string, string> | undefined;
     let app: Awaited<ReturnType<typeof buildServer>> | undefined;
     try {
-      const fakeCodexRunner: CodexRunner = {
+      const testCodexRunner: CodexRunner = {
         isAvailable: async () => true,
         isGitWorkspaceAvailable: async () => true,
         run: async (_context, _emit, config) => {
           capturedSecretEnv = config.security.secretEnv;
-          return fakeCodexRunResult("test_secret_broker_authorized");
+          return testCodexRunResult("test_secret_broker_authorized");
         }
       };
-      const store = new PatchPilotStore({ codexRunner: fakeCodexRunner });
-      app = await buildServer({ store });
+      const store = createTestStore({ codexRunner: testCodexRunner });
+      app = await buildTestServer({ store });
       const workItem = await createApprovedWorkItem(app, "验证授权 secret 注入可追踪");
       await setWorkItemCapabilities(store, workItem.id, ["secret:github-ci-token"]);
 
@@ -2723,7 +2819,7 @@ artifacts:
     });
     let app: Awaited<ReturnType<typeof buildServer>> | undefined;
     try {
-      const fakeCodexRunner: CodexRunner = {
+      const testCodexRunner: CodexRunner = {
         isAvailable: async () => true,
         isGitWorkspaceAvailable: async () => true,
         run: async (_context, emit) => {
@@ -2734,7 +2830,7 @@ artifacts:
           });
           return {
             summary: `summary contains ${fixtureSecret} and ${brokerSecret}`,
-            previewUrl: `http://fake-preview.local?token=${fixtureSecret}`,
+            previewUrl: `http://test-preview.local?token=${fixtureSecret}`,
             riskLevel: "low",
             changedFiles: [`src/${fixtureSecret}.ts`],
             tests: [
@@ -2771,17 +2867,17 @@ artifacts:
               headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             },
             testOutputSummary: `passed with ${fixtureSecret} ${brokerSecret}`,
-            workspacePath: `fake://${fixtureSecret}`,
+            workspacePath: `test://${fixtureSecret}`,
             branchName: `patchpilot/${fixtureSecret}`,
             baseBranch: "main",
             baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            codexSessionId: "fake-session"
+            codexSessionId: "test-session"
           };
         }
       };
-      const store = new PatchPilotStore({ codexRunner: fakeCodexRunner });
-      app = await buildServer({ store });
+      const store = createTestStore({ codexRunner: testCodexRunner });
+      app = await buildTestServer({ store });
       const workItem = await createApprovedWorkItem(app, "验证 secret redaction acceptance");
       await setWorkItemCapabilities(store, workItem.id, ["secret:github-ci-token"]);
 
@@ -2824,14 +2920,14 @@ artifacts:
 
   it("classifies failed codex test runs and creates defect evidence", async () => {
     const failedTestRun: TestRun = {
-      id: "test_fake_codex_failed",
+      id: "test_test_codex_failed",
       status: "failed",
-      command: "pnpm test -- --run fake failure",
-      summary: "1 fake assertion failed",
+      command: "pnpm test -- --run test failure",
+      summary: "1 test assertion failed",
       durationMs: 91,
       commit: "cccccccccccccccccccccccccccccccccccccccc",
-      branch: "patchpilot/fake-failing-branch",
-      failureSummary: "expected fake result to pass",
+      branch: "patchpilot/test-failing-branch",
+      failureSummary: "expected test result to pass",
       exitCode: 1,
       retryCount: 0,
       attempt: 1,
@@ -2839,23 +2935,23 @@ artifacts:
       flakySignal: false,
       runner: "patchpilot-test-runner",
       environmentImage: "local",
-      workspacePath: "fake://failed-workspace",
-      logArtifactId: "artifact_test_log_fake_failure",
-      artifactIds: ["artifact_test_log_fake_failure"]
+      workspacePath: "test://failed-workspace",
+      logArtifactId: "artifact_test_log_test_failure",
+      artifactIds: ["artifact_test_log_test_failure"]
     };
-    const fakeCodexRunner: CodexRunner = {
+    const testCodexRunner: CodexRunner = {
       isAvailable: async () => true,
       isGitWorkspaceAvailable: async () => true,
       run: async (_context, emit) => {
         await emit({
           step: "testing",
           type: "test.failed",
-          message: "Fake Codex runner test failed"
+          message: "Test Codex runner test failed"
         });
-        throw new CodexRunError("测试未通过：1 fake assertion failed", "test_failed", failedTestRun);
+        throw new CodexRunError("测试未通过：1 test assertion failed", "test_failed", failedTestRun);
       }
     };
-    const app = await buildServer({ store: new PatchPilotStore({ codexRunner: fakeCodexRunner }) });
+    const app = await buildTestServer({ store: createTestStore({ codexRunner: testCodexRunner }) });
     const workItem = await createApprovedWorkItem(app, "验证失败分类和 defect 沉淀");
 
     const start = await app.inject({
@@ -2869,7 +2965,7 @@ artifacts:
     expect(failedRun).toMatchObject({
       status: "failed",
       failureType: "test_failed",
-      failureSummary: "测试未通过：1 fake assertion failed"
+      failureSummary: "测试未通过：1 test assertion failed"
     });
 
     const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
@@ -2893,7 +2989,7 @@ artifacts:
       runId: failedRun.id,
       workItemId: workItem.id,
       commit: "cccccccccccccccccccccccccccccccccccccccc",
-      branch: "patchpilot/fake-failing-branch",
+      branch: "patchpilot/test-failing-branch",
       testCaseId: testCase.id
     });
     expect(testCase).toMatchObject({
@@ -2904,7 +3000,7 @@ artifacts:
     });
     expect(workspace).toMatchObject({
       status: "failed",
-      path: "fake://failed-workspace"
+      path: "test://failed-workspace"
     });
     expect(defect).toMatchObject({
       status: "reported",
@@ -2916,7 +3012,7 @@ artifacts:
       sourceTestRunId: failedTestRun.id,
       sourceFailureType: "test_failed",
       sourceCommit: "cccccccccccccccccccccccccccccccccccccccc",
-      sourceBranch: "patchpilot/fake-failing-branch"
+      sourceBranch: "patchpilot/test-failing-branch"
     });
     expect(new Set(failedArtifacts.map((artifact: ArtifactRecord) => artifact.kind))).toEqual(
       new Set(["log", "test_report", "trace", "diff", "preview_metadata"])
@@ -2977,14 +3073,14 @@ artifacts:
         }
       ]
     };
-    const fakeCodexRunner: CodexRunner = {
+    const testCodexRunner: CodexRunner = {
       isAvailable: async () => true,
       isGitWorkspaceAvailable: async () => true,
       run: async (_context, emit) => {
         await emit({
           step: "developing",
           type: "codex.output",
-          message: "Fake Codex runner attempted prohibited metadata egress"
+          message: "Test Codex runner attempted prohibited metadata egress"
         });
         throw new CodexRunError(
           "Codex 执行失败：PatchPilot egress policy denied http://169.254.169.254/latest/meta-data",
@@ -2994,7 +3090,7 @@ artifacts:
         );
       }
     };
-    const app = await buildServer({ store: new PatchPilotStore({ codexRunner: fakeCodexRunner }) });
+    const app = await buildTestServer({ store: createTestStore({ codexRunner: testCodexRunner }) });
     const workItem = await createApprovedWorkItem(app, "验证 egress policy deny audit");
 
     const start = await app.inject({
@@ -3038,7 +3134,7 @@ artifacts:
 
   it("writes audit evidence when the command wrapper denies a bypass attempt", async () => {
     let delegatedExecutorCalled = false;
-    const fakeCodexRunner: CodexRunner = {
+    const testCodexRunner: CodexRunner = {
       isAvailable: async () => true,
       isGitWorkspaceAvailable: async () => true,
       run: async (_context, _emit, config) => {
@@ -3060,10 +3156,10 @@ artifacts:
             };
           }
         });
-        return fakeCodexRunResult("test_command_wrapper_denied");
+        return testCodexRunResult("test_command_wrapper_denied");
       }
     };
-    const app = await buildServer({ store: new PatchPilotStore({ codexRunner: fakeCodexRunner }) });
+    const app = await buildTestServer({ store: createTestStore({ codexRunner: testCodexRunner }) });
     const workItem = await createApprovedWorkItem(app, "验证 command wrapper deny audit");
 
     const start = await app.inject({
@@ -3110,7 +3206,7 @@ artifacts:
   });
 
   it("starts the whole agent team for a PRD", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
     const create = await app.inject({
       method: "POST",
       url: "/api/requirements",
@@ -3123,7 +3219,7 @@ artifacts:
     const anonymousStartTeam = await app.inject({
       method: "POST",
       url: `/api/prds/${prd.id}/start-team`,
-      payload: { runner: "simulated" }
+      payload: { runner: "codex" }
     });
     expect(anonymousStartTeam.statusCode).toBe(401);
 
@@ -3131,7 +3227,7 @@ artifacts:
       method: "POST",
       url: `/api/prds/${prd.id}/start-team`,
       headers: authHeaders("maintainer"),
-      payload: { runner: "simulated" }
+      payload: { runner: "codex" }
     });
     expect(startTeam.statusCode).toBe(201);
     expect(startTeam.json().runs).toHaveLength(4);
@@ -3163,7 +3259,7 @@ artifacts:
       test.runner === "patchpilot-contract-tests"
     );
     const prdExecutionTestRuns = prdTestRuns.filter((test: { runner?: string }) =>
-      test.runner === "simulated-test-runner"
+      test.runner === "patchpilot-test-runner"
     );
     const prdTestCases = evidenceSnapshot
       .json()
@@ -3227,9 +3323,9 @@ artifacts:
         retryCount?: number;
         flakySignal?: boolean;
       }) =>
-        test.runner === "simulated-test-runner" &&
-        test.environmentImage === "simulated" &&
-        test.workspacePath?.startsWith("simulated://") &&
+        test.runner === "patchpilot-test-runner" &&
+        test.environmentImage === "local" &&
+        test.workspacePath?.startsWith("/tmp/patchpilot/test-codex/") &&
         test.exitCode === 0 &&
         Boolean(test.logArtifactId) &&
         test.artifactIds?.includes(test.logArtifactId || "") &&
@@ -3309,7 +3405,7 @@ artifacts:
       method: "POST",
       url: `/api/prds/${prd.id}/start-team`,
       headers: authHeaders("maintainer"),
-      payload: { runner: "simulated" }
+      payload: { runner: "codex" }
     });
     expect(restartTeam.statusCode).toBe(201);
     expect(restartTeam.json().runs.map((run: { id: string }) => run.id).sort()).toEqual(
@@ -3329,7 +3425,7 @@ artifacts:
   });
 
   it("turns rejected team acceptance into ready rework and starts new runs", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
     const create = await app.inject({
       method: "POST",
       url: "/api/requirements",
@@ -3343,7 +3439,7 @@ artifacts:
       method: "POST",
       url: `/api/prds/${prd.id}/start-team`,
       headers: authHeaders("maintainer"),
-      payload: { runner: "simulated" }
+      payload: { runner: "codex" }
     });
     expect(firstStart.statusCode).toBe(201);
     const firstRuns = await pollPrdRuns(app, prd.id, 4);
@@ -3382,7 +3478,7 @@ artifacts:
     const claimedStart = await app.inject({
       method: "POST",
       url: `/api/work-items/${backendReworkItem.id}/start`,
-      payload: { runner: "simulated", claimToken: claim.json().claimToken }
+      payload: { runner: "codex", claimToken: claim.json().claimToken }
     });
     expect(claimedStart.statusCode).toBe(201);
     expect(firstRunIds).not.toContain(claimedStart.json().id);
@@ -3391,7 +3487,7 @@ artifacts:
       method: "POST",
       url: `/api/prds/${prd.id}/start-team`,
       headers: authHeaders("maintainer"),
-      payload: { runner: "simulated" }
+      payload: { runner: "codex" }
     });
     expect(reworkStart.statusCode).toBe(201);
     expect(reworkStart.json().runs).toHaveLength(4);
@@ -3411,7 +3507,7 @@ artifacts:
   });
 
   it("does not duplicate a run when start-team sees an already running claimed work item", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
     const create = await app.inject({
       method: "POST",
       url: "/api/requirements",
@@ -3431,14 +3527,14 @@ artifacts:
     const firstStart = await app.inject({
       method: "POST",
       url: `/api/work-items/${workItem.id}/start`,
-      payload: { runner: "simulated", claimToken: claim.json().claimToken }
+      payload: { runner: "codex", claimToken: claim.json().claimToken }
     });
 
     const teamStart = await app.inject({
       method: "POST",
       url: `/api/prds/${prd.id}/start-team`,
       headers: authHeaders("maintainer"),
-      payload: { runner: "simulated" }
+      payload: { runner: "codex" }
     });
 
     expect(teamStart.statusCode).toBe(201);
@@ -3451,7 +3547,7 @@ artifacts:
   });
 
   it("supports grill-me style clarification turns before PRD creation", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
     const create = await app.inject({
       method: "POST",
       url: "/api/requirements",
@@ -3479,7 +3575,7 @@ artifacts:
   });
 
   it("creates bug work and lets the test agent claim it", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
     const bugResponse = await app.inject({
       method: "POST",
       url: "/api/bugs",
@@ -3512,7 +3608,7 @@ artifacts:
   });
 
   it("turns a reproduced bug into a developer fix task and closes it after verification", async () => {
-    const app = await buildServer();
+    const app = await buildTestServer();
     const bugResponse = await app.inject({
       method: "POST",
       url: "/api/bugs",
@@ -3530,7 +3626,7 @@ artifacts:
     const reproStart = await app.inject({
       method: "POST",
       url: `/api/work-items/${workItem.id}/start`,
-      payload: { runner: "simulated" }
+      payload: { runner: "codex" }
     });
     expect(reproStart.statusCode).toBe(201);
     const reproRun = await pollRun(app, reproStart.json().id);
@@ -3549,12 +3645,12 @@ artifacts:
     const fixStart = await app.inject({
       method: "POST",
       url: `/api/work-items/${fixWorkItem.id}/start`,
-      payload: { runner: "simulated" }
+      payload: { runner: "codex" }
     });
     expect(fixStart.statusCode).toBe(201);
     const fixRun = await pollRun(app, fixStart.json().id);
     expect(fixRun.status).toBe("succeeded");
-    expect(fixRun.result.summary).toContain("完成模拟修复");
+    expect(fixRun.result.summary).toContain("Test Codex runner completed");
 
     const snapshotAfterFix = await app.inject({ method: "GET", url: "/api/snapshot" });
     const closedBug = snapshotAfterFix.json().bugs.find((item: { id: string }) => item.id === bug.id);
@@ -3710,27 +3806,27 @@ function setSecretBrokerEnv(values: Record<string, string | undefined>) {
   };
 }
 
-function fakeCodexRunResult(testId = "test_secret_broker"): AgentRunResult {
+function testCodexRunResult(testId = "test_secret_broker"): AgentRunResult {
   return {
-    summary: "Fake Codex runner completed the secret broker task.",
-    previewUrl: "http://fake-preview.local",
+    summary: "Test Codex runner completed the secret broker task.",
+    previewUrl: "http://test-preview.local",
     riskLevel: "low",
     changedFiles: [],
     tests: [
       {
         id: testId,
         status: "passed",
-        command: "fake test",
-        summary: "fake test passed",
+        command: "test test",
+        summary: "test test passed",
         durationMs: 10
       }
     ],
-    reviewerSummary: "Fake reviewer approved the secret broker result.",
+    reviewerSummary: "Test reviewer approved the secret broker result.",
     runner: "codex"
   };
 }
 
-function fakeGitHubAppRepository(
+function testGitHubAppRepository(
   overrides: Pick<GitHubAppRepository, "id" | "githubRepositoryId" | "name" | "permissions"> &
     Partial<Omit<GitHubAppRepository, "id" | "githubRepositoryId" | "name" | "permissions">>
 ): GitHubAppRepository {
@@ -3776,7 +3872,7 @@ async function listenOnRandomPort(app: Awaited<ReturnType<typeof buildServer>>) 
   return `http://127.0.0.1:${address.port}`;
 }
 
-async function startSimulatedRun(app: Awaited<ReturnType<typeof buildServer>>, rawInput: string) {
+async function startCodexRun(app: Awaited<ReturnType<typeof buildServer>>, rawInput: string) {
   const create = await app.inject({
     method: "POST",
     url: "/api/requirements",
@@ -3797,7 +3893,7 @@ async function startSimulatedRun(app: Awaited<ReturnType<typeof buildServer>>, r
   const start = await app.inject({
     method: "POST",
     url: `/api/work-items/${workItem.id}/start`,
-    payload: { runner: "simulated" }
+    payload: { runner: "codex" }
   });
   expect(start.statusCode).toBe(201);
   return start.json() as AgentRun;

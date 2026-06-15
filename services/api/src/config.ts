@@ -20,7 +20,7 @@ export interface PatchPilotConfigEnv extends NodeJS.ProcessEnv {
   INIT_CWD?: string;
   PATCHPILOT_CONFIG_PATH?: string;
   PATCHPILOT_RUNNER?: string;
-  PATCHPILOT_SIMULATION_DELAY_FACTOR?: string;
+  PATCHPILOT_REPOSITORY_ROOT?: string;
   PATCHPILOT_WORKSPACE_ROOT?: string;
   PATCHPILOT_TEST_COMMAND?: string;
   PATCHPILOT_TEST_TIMEOUT_MS?: string;
@@ -99,8 +99,8 @@ export interface ResolvedPatchPilotConfig {
     baseUrl: string;
   };
   dev: {
-    runner: ConfiguredRunner;
-    simulationDelayFactor: number;
+    runner: AgentRunnerKind;
+    repositoryRoot: string;
     workspaceRoot: string;
     previewUrl: string;
   };
@@ -182,7 +182,7 @@ interface ReadConfigOptions {
   configPath?: string;
 }
 
-const configuredRunnerSchema = z.enum(["auto", "simulated", "codex"]);
+const configuredRunnerSchema = z.enum(["auto", "codex"]);
 const artifactProviderSchema = z.enum(["local_fs", "s3"]);
 const containerRuntimeSchema = z.enum(["auto", "docker", "podman"]);
 const pullRequestProviderSchema = z.enum(["local", "github"]);
@@ -200,11 +200,6 @@ const secretProviderSchema = z.discriminatedUnion("kind", [
     kind: z.literal("env"),
     sourceEnv: envVarNameSchema,
     ttlSeconds: secretTtlSecondsSchema.optional()
-  }),
-  z.object({
-    kind: z.literal("local_fake"),
-    ttlSeconds: secretTtlSecondsSchema.optional(),
-    seedEnv: envVarNameSchema.optional()
   }),
   z.object({
     kind: z.literal("vault"),
@@ -251,7 +246,7 @@ const rawConfigSchema = z.object({
   }).optional(),
   dev: z.object({
     runner: configuredRunnerSchema.optional(),
-    simulationDelayFactor: z.number().nonnegative().optional(),
+    repositoryRoot: z.string().optional(),
     workspaceRoot: z.string().optional(),
     previewUrl: z.string().optional()
   }).optional(),
@@ -368,11 +363,13 @@ export function readPatchPilotConfig(options: ReadConfigOptions = {}): ResolvedP
       baseUrl: pickString(undefined, raw.e2e?.baseUrl, devPreviewUrl)
     },
     dev: {
-      runner: pickRunner(env.PATCHPILOT_RUNNER, raw.dev?.runner, "auto"),
-      simulationDelayFactor: pickNumber(
-        env.PATCHPILOT_SIMULATION_DELAY_FACTOR,
-        raw.dev?.simulationDelayFactor,
-        1
+      runner: pickRunner(env.PATCHPILOT_RUNNER, raw.dev?.runner),
+      repositoryRoot: pickString(
+        env.PATCHPILOT_REPOSITORY_ROOT
+          ? resolveRelativePath(configRoot, env.PATCHPILOT_REPOSITORY_ROOT)
+          : undefined,
+        raw.dev?.repositoryRoot ? resolveRelativePath(configRoot, raw.dev.repositoryRoot) : undefined,
+        configRoot
       ),
       workspaceRoot: pickString(
         env.PATCHPILOT_WORKSPACE_ROOT,
@@ -646,13 +643,6 @@ function normalizeSecretBrokerProvider(secret: SecretBrokerSecretConfig) {
       ...(provider.ttlSeconds ? { ttlSeconds: provider.ttlSeconds } : {})
     };
   }
-  if (provider.kind === "local_fake") {
-    return {
-      kind: "local_fake" as const,
-      ...(provider.ttlSeconds ? { ttlSeconds: provider.ttlSeconds } : {}),
-      ...(provider.seedEnv ? { seedEnv: provider.seedEnv } : {})
-    };
-  }
   return {
     kind: "vault" as const,
     address: provider.address.replace(/\/+$/u, ""),
@@ -704,11 +694,10 @@ function pickBoolean(envValue: string | undefined, configValue: boolean | undefi
 
 function pickRunner(
   envValue: string | undefined,
-  configValue: ConfiguredRunner | undefined,
-  defaultValue: ConfiguredRunner
-): ConfiguredRunner {
-  if (envValue === "auto" || envValue === "simulated" || envValue === "codex") return envValue;
-  return configValue ?? defaultValue;
+  configValue: ConfiguredRunner | undefined
+): AgentRunnerKind {
+  const selected = envValue === "auto" || envValue === "codex" ? envValue : configValue;
+  return selected === "auto" || selected === undefined ? "codex" : selected;
 }
 
 function pickContainerRuntime(

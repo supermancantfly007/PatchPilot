@@ -21,8 +21,7 @@ const api = spawn("pnpm", ["--filter", "@patchpilot/api", "start"], {
     ...process.env,
     PORT: String(apiPort),
     PATCHPILOT_DATA_DIR: dataDir,
-    PATCHPILOT_RUNNER: "simulated",
-    PATCHPILOT_SIMULATION_DELAY_FACTOR: "0"
+    PATCHPILOT_RUNNER: "codex",
   },
   stdio: ["ignore", "pipe", "pipe"]
 });
@@ -57,7 +56,7 @@ try {
   const snapshotBeforeRun = await runCliJson(["snapshot", "--json"]);
   assertEqual(snapshotBeforeRun.prds.length, 1, "snapshot should include the approved PRD");
 
-  const worker = await runCliJson(["worker-once", "--runner", "simulated", "--json"]);
+  const worker = await runCliJson(["worker-once", "--runner", "codex", "--json"]);
   assertEqual(worker.planned, 4, "worker-once should plan all team work items");
   assertEqual(worker.dispatched, 4, "worker-once should dispatch all team work items");
 
@@ -95,7 +94,7 @@ try {
     "--template",
     "feature",
     "--runner",
-    "simulated",
+    "codex",
     "--out",
     happyReportPath,
     "--json"

@@ -8,7 +8,7 @@ Date: 2026-06-10
 
 PatchPilot is a delivery control plane. A single Requirement can become a PRD, multiple Work Items, Interface Contracts, Agent Runs, Workspace Runs, Test Cases, Test Runs, Pull Request records, Review records, Approvals, Audit Events, Defects, and final acceptance decisions.
 
-The current runnable MVP uses a worker process that polls `/api/snapshot`, claims ready Work Items through the Control Plane API, and starts Agent Runs through `/api/work-items/:id/start`. The API process owns the run queue and executes the selected simulated or CodexRunner path. This is enough to prove the Simple Mode and Professional Mode loops, evidence records, local Pull Request records, TestRun capture, and acceptance/rework behavior.
+The current runnable MVP uses a worker process that polls `/api/snapshot`, claims ready Work Items through the Control Plane API, and starts Agent Runs through `/api/work-items/:id/start`. The API process owns the run queue and executes the CodexRunner path. This is enough to prove the Simple Mode and Professional Mode loops, evidence records, local Pull Request records, TestRun capture, and acceptance/rework behavior.
 
 That polling worker is not a durable production workflow engine. It depends on repeated snapshot reads, API-owned state transitions, and explicit retries around short-lived process behavior. It does not provide durable sleep, deterministic replay, built-in signal/query semantics, long-running approval waits, activity heartbeats, or first-class recovery after worker or API restarts.
 
@@ -87,7 +87,7 @@ Rejected as the production workflow engine because PatchPilot requires infrastru
 - Agent Run, Workspace Run, Test Run, Approval, Audit Event, and artifact records need stable correlation IDs back to workflow id and activity attempt where useful.
 - Tests need a Temporal test environment for workflow behavior plus existing API, domain, contract, worker, and E2E checks.
 - Operational visibility improves: workflow history becomes the durable explanation for in-flight and failed delivery.
-- The polling worker remains valuable for MVP development and local demos, but production features should not deepen its orchestration role once Temporal work starts.
+- The polling worker remains valuable for MVP development and local validation, but production features should not deepen its orchestration role once Temporal work starts.
 
 ## Polling MVP Exit Criteria
 
@@ -106,7 +106,7 @@ The MVP polling worker may remain the default only while PatchPilot is proving l
 11. Operators can inspect and unblock stuck workflows without manually editing product state tables or JSON snapshots.
 12. Documentation states that snapshot polling is only a UI fallback or local/dev compatibility path, not production orchestration.
 
-After these criteria pass, new production workflow behavior must be implemented in Temporal workflows and activities first. The polling worker can keep a narrow compatibility role for local demos, CLI `worker-once`, or test fixtures, but it should call the same production command surface or be clearly marked as non-production.
+After these criteria pass, new production workflow behavior must be implemented in Temporal workflows and activities first. The polling worker can keep a narrow compatibility role for local validation, CLI `worker-once`, or test fixtures, but it should call the same production command surface or be clearly marked as non-production.
 
 ## Non-Goals
 

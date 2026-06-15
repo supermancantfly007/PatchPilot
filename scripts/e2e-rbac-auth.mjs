@@ -1,5 +1,4 @@
 process.env.NODE_ENV = "test";
-process.env.PATCHPILOT_SIMULATION_DELAY_FACTOR = "0";
 
 const { buildServer } = await import("../services/api/src/server.ts");
 const { PatchPilotStore } = await import("../services/api/src/store.ts");
@@ -50,13 +49,13 @@ try {
   const secretWorkItem = await createApprovedWorkItem("RBAC E2E verifies secret capability starts need reviewer auth.");
   await setWorkItemCapabilities(secretWorkItem.id, ["secret:github-ci-token"]);
 
-  const anonymousSecretStart = await injectRaw("POST", `/api/work-items/${secretWorkItem.id}/start`, { runner: "simulated" });
+  const anonymousSecretStart = await injectRaw("POST", `/api/work-items/${secretWorkItem.id}/start`, { runner: "codex" });
   assertEqual(anonymousSecretStart.statusCode, 401, "anonymous secret-sensitive start should be rejected");
 
   const maintainerSecretStart = await injectRaw(
     "POST",
     `/api/work-items/${secretWorkItem.id}/start`,
-    { runner: "simulated" },
+    { runner: "codex" },
     authHeaders("maintainer")
   );
   assertEqual(maintainerSecretStart.statusCode, 403, "maintainer secret-sensitive start should be rejected");
@@ -64,7 +63,7 @@ try {
   const reviewerSecretStart = await injectJson(
     "POST",
     `/api/work-items/${secretWorkItem.id}/start`,
-    { runner: "simulated" },
+    { runner: "codex" },
     authHeaders("reviewer")
   );
   assertEqual(reviewerSecretStart.status, "running", "reviewer should start secret-sensitive work");
@@ -76,7 +75,7 @@ try {
   const reviewerProductionStart = await injectRaw(
     "POST",
     `/api/work-items/${productionWorkItem.id}/start`,
-    { runner: "simulated" },
+    { runner: "codex" },
     authHeaders("reviewer")
   );
   assertEqual(reviewerProductionStart.statusCode, 403, "reviewer production-data start should be rejected");
@@ -84,7 +83,7 @@ try {
   const adminProductionStart = await injectJson(
     "POST",
     `/api/work-items/${productionWorkItem.id}/start`,
-    { runner: "simulated" },
+    { runner: "codex" },
     authHeaders("admin")
   );
   assertEqual(adminProductionStart.status, "running", "admin should start production-data work");

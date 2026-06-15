@@ -65,8 +65,8 @@ function runStatusTone(status: AgentRun["status"]) {
   return "blue";
 }
 
-function runnerLabel(runner: AgentRun["runner"]) {
-  return runner === "codex" ? "本地 Codex runner" : "模拟 runner";
+function runnerLabel(_runner: AgentRun["runner"]) {
+  return "本地 Codex runner";
 }
 
 const roleOrder: WorkItem["role"][] = ["backend", "frontend", "test", "ops", "reviewer", "product"];
@@ -897,11 +897,9 @@ export default function RunPage() {
             <div className="card-body grid">
               <StatusNotice
                 title={`当前为${runnerLabel(run.runner)}`}
-                tone={run.runner === "codex" ? "info" : "warning"}
+                tone="info"
               >
-                {run.runner === "codex"
-                  ? "Codex 会在隔离 worktree 中开发、测试并返回证据；验收通过后仍不会自动合并。"
-                  : "本地 MVP 会模拟代码变更、测试和审查事件，用于验证端到端体验。"}
+                Codex 会在隔离 worktree 中开发、测试并返回证据；验收通过后仍不会自动合并。
               </StatusNotice>
               {run.result?.workspacePath ? (
                 <div className="metric">

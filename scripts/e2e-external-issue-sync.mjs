@@ -19,8 +19,7 @@ const api = spawn("pnpm", ["--filter", "@patchpilot/api", "start"], {
     ...process.env,
     PORT: String(apiPort),
     PATCHPILOT_DATA_DIR: dataDir,
-    PATCHPILOT_RUNNER: "simulated",
-    PATCHPILOT_SIMULATION_DELAY_FACTOR: "0"
+    PATCHPILOT_RUNNER: "codex",
   },
   stdio: ["ignore", "pipe", "pipe"]
 });
@@ -78,7 +77,7 @@ try {
 
   const blockedStart = await requestRaw(`/api/work-items/${workItem.id}/start`, {
     method: "POST",
-    body: JSON.stringify({ runner: "simulated" })
+    body: JSON.stringify({ runner: "codex" })
   });
   assertEqual(blockedStart.status, 409, "blocked WorkItem should not start");
 
@@ -97,7 +96,7 @@ try {
 
   const startedRun = await requestJson(`/api/work-items/${workItem.id}/start`, {
     method: "POST",
-    body: JSON.stringify({ runner: "simulated" })
+    body: JSON.stringify({ runner: "codex" })
   });
   assertEqual(startedRun.status, "running", "triggered WorkItem should start after external unblock");
 
