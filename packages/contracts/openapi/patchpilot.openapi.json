@@ -4080,6 +4080,71 @@
           }
         }
       },
+      "AgentRunProviderMetadata": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "surface",
+          "supportsResume",
+          "supportsCancel",
+          "supportsStateInspection",
+          "supportsArtifactCollection"
+        ],
+        "properties": {
+          "surface": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "thinking": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "sessionName": {
+            "type": "string"
+          },
+          "sessionFileRef": {
+            "type": "string"
+          },
+          "stateRootRef": {
+            "type": "string"
+          },
+          "agentStateRef": {
+            "type": "string"
+          },
+          "sessionStateRef": {
+            "type": "string"
+          },
+          "supportsResume": {
+            "type": "boolean"
+          },
+          "supportsCancel": {
+            "type": "boolean"
+          },
+          "supportsStateInspection": {
+            "type": "boolean"
+          },
+          "supportsArtifactCollection": {
+            "type": "boolean"
+          },
+          "artifactIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      },
       "AgentRunResult": {
         "type": "object",
         "additionalProperties": true,
@@ -4177,6 +4242,9 @@
               "type": "string",
               "minLength": 1
             }
+          },
+          "providerMetadata": {
+            "$ref": "#/components/schemas/AgentRunProviderMetadata"
           },
           "egressPolicyEvidence": {
             "$ref": "#/components/schemas/EgressPolicyEvidence"

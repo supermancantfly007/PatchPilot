@@ -25,6 +25,8 @@ import {
 import type {
   AgentRunDiffSummary,
   AgentRunEvent,
+  AgentRunProviderArtifactSource,
+  AgentRunProviderMetadata,
   AgentRunResult,
   AgentRunToolCall,
   AgentRunnerKind,
@@ -698,6 +700,14 @@ function compactMetadata(metadata: Record<string, unknown>) {
   return compacted;
 }
 
+function compactStringRecord(metadata: Record<string, string | undefined>) {
+  const compacted: Record<string, string> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (value?.trim()) compacted[key] = value;
+  }
+  return compacted;
+}
+
 export class CodexRunError extends Error {
   constructor(
     message: string,
@@ -772,6 +782,8 @@ interface PiExecResult {
   lastMessagePath: string;
   transcriptPath: string;
   sessionId?: string;
+  version?: string;
+  stateDirs: PiStateDirs;
   capture: CodexExecCapture;
   egressPolicyEvidence?: EgressPolicyEvidence;
 }
@@ -1406,6 +1418,8 @@ export class LocalPiRunner implements CodexRunner {
       ? await containerSandbox.collectEgressPolicyEvidence(workspace.path)
       : undefined;
     const piEgressPolicyEvidence = piRuns.find((result) => result.egressPolicyEvidence)?.egressPolicyEvidence;
+    const providerArtifactSources = buildPiProviderArtifactSources(context, piConfig, piRuns);
+    const providerMetadata = buildPiProviderMetadata(context, piConfig, piRuns, providerArtifactSources);
 
     return {
       summary: artifacts.summary,
@@ -1426,6 +1440,9 @@ export class LocalPiRunner implements CodexRunner {
       baseBranch: commit.baseBranch,
       baseCommit: commit.baseCommit,
       headCommit: commit.headCommit,
+      artifactIds: providerMetadata.artifactIds,
+      providerMetadata,
+      providerArtifactSources,
       securityPreflightEvidence: securityPreflight.evidence,
       ...(egressPolicyEvidence ?? piEgressPolicyEvidence ? {
         egressPolicyEvidence: egressPolicyEvidence ?? piEgressPolicyEvidence
@@ -1625,6 +1642,68 @@ export function buildPiCommandPolicyAllow(command: string) {
     `${normalized} --mode rpc`,
     `${normalized} --version`
   ]);
+}
+
+function buildPiProviderArtifactSources(
+  context: CodexRunContext,
+  piConfig: PiRunnerConfig,
+  piRuns: PiExecResult[]
+): AgentRunProviderArtifactSource[] {
+  const provider = piProviderName(piConfig);
+  return piRuns.map((run, index) => ({
+    id: piTranscriptArtifactId(context.runId, index),
+    kind: "trace",
+    sourcePath: run.transcriptPath,
+    contentType: "application/jsonl",
+    retentionTier: "tier_3_raw_run_artifact",
+    metadata: compactStringRecord({
+      artifactRole: "pi_json_transcript",
+      runnerSurface: "pi-json-cli",
+      provider,
+      model: piConfig.model,
+      thinking: piConfig.thinking,
+      sessionId: run.sessionId,
+      piVersion: run.version
+    })
+  }));
+}
+
+function buildPiProviderMetadata(
+  context: CodexRunContext,
+  piConfig: PiRunnerConfig,
+  piRuns: PiExecResult[],
+  artifactSources: AgentRunProviderArtifactSource[]
+): AgentRunProviderMetadata {
+  const stateRef = `runner/pi/${slugStateSegment(context.runId)}`;
+  const primaryRun = piRuns[0];
+  const latestRun = piRuns.at(-1);
+  const provider = piProviderName(piConfig);
+  return {
+    surface: "pi-json-cli",
+    ...(provider ? { provider } : {}),
+    ...(piConfig.model ? { model: piConfig.model } : {}),
+    ...(piConfig.thinking ? { thinking: piConfig.thinking } : {}),
+    ...(latestRun?.version ? { version: latestRun.version } : {}),
+    ...(primaryRun?.sessionId ? { sessionId: primaryRun.sessionId } : {}),
+    stateRootRef: stateRef,
+    agentStateRef: `${stateRef}/agent`,
+    sessionStateRef: `${stateRef}/sessions`,
+    supportsResume: false,
+    supportsCancel: false,
+    supportsStateInspection: false,
+    supportsArtifactCollection: true,
+    artifactIds: artifactSources.map((source) => source.id)
+  };
+}
+
+function piTranscriptArtifactId(runId: string, index: number) {
+  const suffix = index === 0 ? "" : `_${index + 1}`;
+  return `artifact_pi_transcript_${slugStateSegment(runId)}${suffix}`;
+}
+
+function piProviderName(piConfig: Pick<PiRunnerConfig, "command" | "provider">) {
+  if (isFakePiMode(piConfig)) return "fake";
+  return piConfig.provider?.trim() || undefined;
 }
 
 const piProviderProfiles: Record<string, PiProviderProfile> = {
@@ -2000,6 +2079,7 @@ async function runPiJson(
 
   let stdoutBuffer = "";
   let sessionId: string | undefined;
+  let version: string | undefined;
   let emitted = 0;
   let pendingEmit = Promise.resolve();
   let pendingTranscriptWrite = Promise.resolve();
@@ -2027,6 +2107,7 @@ async function runPiJson(
     const rawType = stringValue(rawEvent.type) || "pi.event";
     if (rawType === "agent_start") sawAgentStart = true;
     if (rawType === "agent_end") sawAgentEnd = true;
+    if (rawType === "session") version = stringValue(rawEvent.version) || version;
     const event = parsePiEvent(trimmed, redactionOptions);
     if (event.sessionId) sessionId = event.sessionId;
     recordCodexCapture(capture, event);
@@ -2115,6 +2196,8 @@ async function runPiJson(
     lastMessagePath,
     transcriptPath,
     sessionId,
+    version,
+    stateDirs,
     capture,
     ...(sandboxCompletion?.egressPolicyEvidence ? { egressPolicyEvidence: sandboxCompletion.egressPolicyEvidence } : {})
   };

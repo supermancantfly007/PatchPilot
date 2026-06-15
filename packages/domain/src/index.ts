@@ -656,6 +656,39 @@ export interface AgentRunEvent {
   message: string;
 }
 
+export interface AgentRunProviderMetadata {
+  surface: string;
+  provider?: string;
+  model?: string;
+  thinking?: string;
+  version?: string;
+  sessionId?: string;
+  sessionName?: string;
+  sessionFileRef?: string;
+  stateRootRef?: string;
+  agentStateRef?: string;
+  sessionStateRef?: string;
+  supportsResume: boolean;
+  supportsCancel: boolean;
+  supportsStateInspection: boolean;
+  supportsArtifactCollection: boolean;
+  artifactIds?: string[];
+}
+
+export type AgentRunProviderArtifactRetentionTier =
+  | "tier_2_decision_evidence"
+  | "tier_3_raw_run_artifact"
+  | "tier_5_ephemeral_execution_state";
+
+export interface AgentRunProviderArtifactSource {
+  id: string;
+  kind: ArtifactKind;
+  sourcePath: string;
+  contentType: string;
+  metadata?: Record<string, string>;
+  retentionTier: AgentRunProviderArtifactRetentionTier;
+}
+
 export interface AgentRunResult {
   summary: string;
   previewUrl: string;
@@ -676,6 +709,8 @@ export interface AgentRunResult {
   headCommit?: string;
   codexSessionId?: string;
   artifactIds?: string[];
+  providerMetadata?: AgentRunProviderMetadata;
+  providerArtifactSources?: AgentRunProviderArtifactSource[];
   egressPolicyEvidence?: EgressPolicyEvidence;
   secretBrokerEvidence?: SecretBrokerEvidence;
   securityPreflightEvidence?: AgentRunSecurityPreflightEvidence;

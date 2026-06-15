@@ -18,6 +18,7 @@ import {
   type AgentRun,
   type AgentRunDiffSummary,
   type AgentRunEvent,
+  type AgentRunProviderArtifactSource,
   type AgentRunResult,
   type AgentRunnerAvailability,
   type AgentRunnerKind,
@@ -119,7 +120,13 @@ import {
   summarizeCapabilityManifest,
   type CapabilityManifest
 } from "@patchpilot/policy";
-import { redactJsonValue, redactRecordValues, redactSecrets, type SecretRedactionOptions } from "@patchpilot/security";
+import {
+  redactJsonValue,
+  redactRecordValues,
+  redactSecrets,
+  secretRedactionPolicyVersion,
+  type SecretRedactionOptions
+} from "@patchpilot/security";
 import { getTelemetry, type PatchPilotTelemetry } from "@patchpilot/telemetry";
 import {
   auditExportAuthEnforcement,
@@ -1873,7 +1880,7 @@ export class PatchPilotStore {
       config.security.secretBroker,
       capabilityManifest
     );
-    const redactionOptions = { knownSecrets: Object.values(secretBrokerResolution.env) };
+    const redactionOptions = buildRunRedactionOptions(secretBrokerResolution.env);
     let result: AgentRunResult | undefined;
     let runError: unknown;
     try {
@@ -1906,7 +1913,11 @@ export class PatchPilotStore {
     if (secretBrokerResolution.evidence.requestedSecretIds.length > 0) {
       result.secretBrokerEvidence = secretBrokerResolution.evidence;
     }
+    const providerArtifactSources = result.providerArtifactSources;
     const redactedResult = redactJsonValue(result, redactionOptions);
+    if (providerArtifactSources) {
+      redactedResult.providerArtifactSources = providerArtifactSources;
+    }
 
     await this.load();
     const completedRun = this.findRun(runId);
@@ -3274,6 +3285,8 @@ export class PatchPilotStore {
       createdAt: endedAt
     };
     const records: ArtifactRecord[] = [];
+    const providerArtifactSources: AgentRunProviderArtifactSource[] = run.result?.providerArtifactSources ?? [];
+    const providerArtifactRecords: ArtifactRecord[] = [];
 
     for (const test of tests) {
       const logArtifactId = test.logArtifactId || `artifact_test_log_${test.id}`;
@@ -3308,6 +3321,32 @@ export class PatchPilotStore {
       records.push(logRecord, reportRecord);
     }
 
+    for (const source of providerArtifactSources) {
+      const content = await readFile(source.sourcePath, "utf8");
+      const redactedContent = redactSecrets(content, redactionOptions);
+      const redactedMetadata = redactRecordValues(source.metadata, redactionOptions) ?? {};
+      const providerRecord = await artifactStore.putArtifact({
+        id: source.id,
+        kind: source.kind,
+        content: redactedContent.redacted,
+        contentType: source.contentType,
+        extension: extensionForContentType(source.contentType),
+        metadata: {
+          ...redactedMetadata,
+          retentionTier: source.retentionTier,
+          ...(redactedContent.findings.length > 0
+            ? {
+                redactionStatus: "redacted",
+                redactionPolicyVersion: secretRedactionPolicyVersion,
+                redactionFindingCount: String(redactedContent.findings.length)
+              }
+            : {})
+        },
+        ...common
+      });
+      providerArtifactRecords.push(providerRecord);
+    }
+
     const traceRecord = await artifactStore.putArtifact({
       id: `artifact_trace_${run.id}`,
       kind: "trace",
@@ -3323,6 +3362,7 @@ export class PatchPilotStore {
           reasoningSummaries: run.result?.reasoningSummaries ?? [],
           toolCalls: run.result?.toolCalls ?? [],
           testOutputSummary: run.result?.testOutputSummary,
+          providerMetadata: run.result?.providerMetadata,
           egressPolicyEvidence: run.result?.egressPolicyEvidence,
           secretBrokerEvidence: run.result?.secretBrokerEvidence
         }
@@ -3369,10 +3409,11 @@ export class PatchPilotStore {
       ...common
     });
 
-    records.push(traceRecord, diffRecord, previewRecord);
+    records.push(...providerArtifactRecords, traceRecord, diffRecord, previewRecord);
     this.upsertArtifactRecords(records);
     const runArtifactIds = uniqueStrings([
       ...(run.artifactIds ?? []),
+      ...providerArtifactRecords.map((record) => record.id),
       traceRecord.id,
       diffRecord.id,
       previewRecord.id
@@ -3380,6 +3421,13 @@ export class PatchPilotStore {
     run.artifactIds = runArtifactIds;
     if (run.result) {
       run.result.artifactIds = uniqueStrings([...(run.result.artifactIds ?? []), ...runArtifactIds]);
+      if (run.result.providerMetadata) {
+        run.result.providerMetadata.artifactIds = uniqueStrings([
+          ...(run.result.providerMetadata.artifactIds ?? []),
+          ...providerArtifactRecords.map((record) => record.id)
+        ]);
+      }
+      delete run.result.providerArtifactSources;
       run.result.tests = redactJsonValue(tests, redactionOptions);
     }
   }
@@ -5214,6 +5262,36 @@ function slugSegment(value: string) {
 
 function uniqueStrings(values: Array<string | undefined>) {
   return [...new Set(values.filter((value): value is string => Boolean(value)))];
+}
+
+function buildRunRedactionOptions(secretEnv: Record<string, string> = {}): SecretRedactionOptions {
+  return {
+    knownSecrets: uniqueStrings([
+      ...Object.values(secretEnv),
+      ...sensitiveHostEnvValues(process.env)
+    ])
+  };
+}
+
+function sensitiveHostEnvValues(env: NodeJS.ProcessEnv) {
+  return [
+    env.HOME,
+    env.SSH_AUTH_SOCK,
+    env.DOCKER_HOST,
+    env.DOCKER_CONFIG,
+    env.AWS_ACCESS_KEY_ID,
+    env.AWS_SECRET_ACCESS_KEY,
+    env.AWS_SESSION_TOKEN,
+    env.GOOGLE_APPLICATION_CREDENTIALS,
+    env.AZURE_CLIENT_SECRET
+  ].filter((value): value is string => Boolean(value && value.length > 3));
+}
+
+function extensionForContentType(contentType: string) {
+  if (contentType === "application/json") return ".json";
+  if (contentType === "application/jsonl") return ".jsonl";
+  if (contentType.startsWith("text/")) return ".txt";
+  return "";
 }
 
 function defaultReleaseApprovalExpiry(now: string) {

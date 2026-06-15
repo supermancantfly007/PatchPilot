@@ -2478,6 +2478,24 @@ export const openApiSchemas = {
     baseCommit: { type: "string" },
     headCommit: { type: "string" }
   }, ["changedFileCount", "changedFiles", "hasChanges"]),
+  AgentRunProviderMetadata: looseObjectSchema({
+    surface: { type: "string" },
+    provider: { type: "string" },
+    model: { type: "string" },
+    thinking: { type: "string" },
+    version: { type: "string" },
+    sessionId: { type: "string" },
+    sessionName: { type: "string" },
+    sessionFileRef: { type: "string" },
+    stateRootRef: { type: "string" },
+    agentStateRef: { type: "string" },
+    sessionStateRef: { type: "string" },
+    supportsResume: { type: "boolean" },
+    supportsCancel: { type: "boolean" },
+    supportsStateInspection: { type: "boolean" },
+    supportsArtifactCollection: { type: "boolean" },
+    artifactIds: arrayOf(id)
+  }, ["surface", "supportsResume", "supportsCancel", "supportsStateInspection", "supportsArtifactCollection"]),
   AgentRunResult: looseObjectSchema({
     summary: { type: "string" },
     previewUrl: { type: "string" },
@@ -2498,6 +2516,7 @@ export const openApiSchemas = {
     headCommit: { type: "string" },
     codexSessionId: { type: "string" },
     artifactIds: arrayOf(id),
+    providerMetadata: schemaRef("AgentRunProviderMetadata"),
     egressPolicyEvidence: schemaRef("EgressPolicyEvidence"),
     secretBrokerEvidence: schemaRef("SecretBrokerEvidence"),
     securityPreflightEvidence: schemaRef("AgentRunSecurityPreflightEvidence")

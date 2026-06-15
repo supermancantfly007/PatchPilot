@@ -391,6 +391,33 @@ describe("LocalPiRunner", () => {
         })
       ]);
       expect(result.codexSessionId).toBeUndefined();
+      expect(result.providerMetadata).toMatchObject({
+        surface: "pi-json-cli",
+        provider: "fake",
+        version: "0.79.3",
+        sessionId: "pi-session-123",
+        supportsResume: false,
+        supportsCancel: false,
+        supportsStateInspection: false,
+        supportsArtifactCollection: true,
+        stateRootRef: `runner/pi/${context.runId}`,
+        agentStateRef: `runner/pi/${context.runId}/agent`,
+        sessionStateRef: `runner/pi/${context.runId}/sessions`
+      });
+      expect(result.providerMetadata?.artifactIds).toEqual([expect.stringContaining("pi_transcript")]);
+      expect(result.providerArtifactSources).toEqual([
+        expect.objectContaining({
+          id: expect.stringContaining("pi_transcript"),
+          kind: "trace",
+          contentType: "application/jsonl",
+          retentionTier: "tier_3_raw_run_artifact",
+          metadata: expect.objectContaining({
+            artifactRole: "pi_json_transcript",
+            runnerSurface: "pi-json-cli",
+            sessionId: "pi-session-123"
+          })
+        })
+      ]);
       expect(result.securityPreflightEvidence).toMatchObject({
         mode: "fake",
         isolationMode: "host_user",

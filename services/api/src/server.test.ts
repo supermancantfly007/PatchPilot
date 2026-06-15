@@ -3294,6 +3294,163 @@ artifacts:
     }
   });
 
+  it("persists Pi provider metadata artifact sources as redacted raw-run artifacts", async () => {
+    const fixtureSecret = "patchpilot_fixture_pi_provider_secret_123";
+    const brokerSecret = "pi-provider-token-value";
+    const hostHome = await mkdtemp(join(tmpdir(), "patchpilot-fixture-host-home-"));
+    const sshAgent = join(hostHome, "patchpilot_fixture_ssh_agent.sock");
+    const dockerHost = `unix://${join(hostHome, "patchpilot_fixture_docker.sock")}`;
+    const cloudKey = "patchpilot_fixture_cloud_key_123";
+    const sourceRoot = await mkdtemp(join(hostHome, "patchpilot-pi-provider-artifact-"));
+    const transcriptPath = join(sourceRoot, "pi-rpc-transcript.jsonl");
+    await writeFile(transcriptPath, [
+      JSON.stringify({ type: "session", sessionId: "pi-session-redaction", excerpt: `session ${fixtureSecret} ${brokerSecret}` }),
+      JSON.stringify({ type: "tool_execution_end", output: `tool output ${fixtureSecret} ${brokerSecret}` }),
+      JSON.stringify({ type: "rpc_transcript", env: { HOME: hostHome, SSH_AUTH_SOCK: sshAgent, DOCKER_HOST: dockerHost, AWS_ACCESS_KEY_ID: cloudKey } })
+    ].join("\n"));
+    const restoreSecretEnv = setSecretBrokerEnv({
+      PATCHPILOT_SECRET_BROKER_ENABLED: "true",
+      PATCHPILOT_SECRET_BROKER_ALLOWED_SECRETS: JSON.stringify([
+        {
+          id: "github-ci-token",
+          envVar: "GITHUB_TOKEN",
+          sourceEnv: "PATCHPILOT_CI_GITHUB_TOKEN",
+          environment: "ci"
+        },
+        {
+          id: "pi-provider-api-key",
+          envVar: "PI_PROVIDER_API_KEY",
+          sourceEnv: "PATCHPILOT_PI_PROVIDER_API_KEY",
+          environment: "ci"
+        }
+      ]),
+      PATCHPILOT_CI_GITHUB_TOKEN: brokerSecret,
+      PATCHPILOT_PI_PROVIDER_API_KEY: fixtureSecret
+    });
+    const restoreHostEnv = setHostSensitiveEnv({
+      HOME: hostHome,
+      SSH_AUTH_SOCK: sshAgent,
+      DOCKER_HOST: dockerHost,
+      AWS_ACCESS_KEY_ID: cloudKey
+    });
+    let app: Awaited<ReturnType<typeof buildServer>> | undefined;
+    try {
+      const piRunner: CodexRunner = {
+        isAvailable: async () => true,
+        isGitWorkspaceAvailable: async () => true,
+        run: async () => ({
+          summary: "Pi provider metadata task completed.",
+          previewUrl: "http://test-preview.local",
+          riskLevel: "low",
+          changedFiles: ["src/status.txt"],
+          tests: [
+            {
+              id: "test_pi_provider_artifact",
+              status: "passed",
+              command: "node test.mjs",
+              summary: "passed",
+              durationMs: 7
+            }
+          ],
+          reviewerSummary: "Pi provider evidence recorded.",
+          runner: "pi",
+          providerMetadata: {
+            surface: "pi-rpc",
+            provider: "fake",
+            model: "fake-rpc",
+            thinking: "medium",
+            version: "0.79.3",
+            sessionId: "pi-session-redaction",
+            sessionFileRef: "runner/pi/run/sessions/pi-session-redaction.json",
+            supportsResume: true,
+            supportsCancel: true,
+            supportsStateInspection: true,
+            supportsArtifactCollection: true,
+            artifactIds: ["artifact_pi_provider_transcript"]
+          },
+          providerArtifactSources: [
+            {
+              id: "artifact_pi_provider_transcript",
+              kind: "trace",
+              sourcePath: transcriptPath,
+              contentType: "application/jsonl",
+              retentionTier: "tier_3_raw_run_artifact",
+              metadata: {
+                artifactRole: "pi_rpc_transcript",
+                runnerSurface: "pi-rpc",
+                sessionId: "pi-session-redaction",
+                providerExcerpt: `metadata ${fixtureSecret} ${brokerSecret}`
+              }
+            }
+          ]
+        })
+      };
+      const store = createTestStore({ piRunner });
+      app = await buildTestServer({ store });
+      const workItem = await createApprovedWorkItem(app, "验证 Pi provider artifact redaction");
+      await setWorkItemCapabilities(store, workItem.id, ["secret:github-ci-token", "secret:pi-provider-api-key"]);
+
+      const start = await app.inject({
+        method: "POST",
+        url: `/api/work-items/${workItem.id}/start`,
+        headers: authHeaders("reviewer"),
+        payload: { runner: "pi" }
+      });
+      expect(start.statusCode).toBe(201);
+
+      const completedRun = await pollRun(app, start.json().id);
+      expect(completedRun.status).toBe("succeeded");
+      const snapshot = (await app.inject({ method: "GET", url: "/api/snapshot" })).json();
+      const snapshotBody = JSON.stringify(snapshot);
+      expect(snapshotBody).not.toContain(fixtureSecret);
+      expect(snapshotBody).not.toContain(brokerSecret);
+      expect(snapshotBody).not.toContain(hostHome);
+      expect(snapshotBody).not.toContain(sshAgent);
+      expect(snapshotBody).not.toContain(dockerHost);
+      expect(snapshotBody).not.toContain(cloudKey);
+      expect(snapshotBody).not.toContain(transcriptPath);
+
+      const run = snapshot.agentRuns.find((item: AgentRun) => item.id === completedRun.id);
+      expect(run.result.providerMetadata).toMatchObject({
+        surface: "pi-rpc",
+        sessionId: "pi-session-redaction",
+        artifactIds: expect.arrayContaining(["artifact_pi_provider_transcript"])
+      });
+      expect(run.result.providerArtifactSources).toBeUndefined();
+
+      const providerArtifact = snapshot.artifacts.find((artifact: ArtifactRecord) => artifact.id === "artifact_pi_provider_transcript");
+      expect(providerArtifact).toBeDefined();
+      if (!providerArtifact) throw new Error("Expected provider artifact to be recorded");
+      expect(providerArtifact).toMatchObject({
+        kind: "trace",
+        contentType: "application/jsonl",
+        runId: completedRun.id,
+        workItemId: workItem.id,
+          metadata: expect.objectContaining({
+            artifactRole: "pi_rpc_transcript",
+            runnerSurface: "pi-rpc",
+            providerExcerpt: expect.stringContaining("[REDACTED:"),
+            retentionTier: "tier_3_raw_run_artifact",
+            redactionStatus: "redacted"
+          })
+      });
+      expect(providerArtifact.checksumSha256).toMatch(/^[a-f0-9]{64}$/u);
+      const artifactContent = await readFile(fileURLToPath(providerArtifact.uri), "utf8");
+      expect(artifactContent).not.toContain(fixtureSecret);
+      expect(artifactContent).not.toContain(brokerSecret);
+      expect(artifactContent).not.toContain(hostHome);
+      expect(artifactContent).not.toContain(sshAgent);
+      expect(artifactContent).not.toContain(dockerHost);
+      expect(artifactContent).not.toContain(cloudKey);
+      expect(artifactContent).toContain("[REDACTED:");
+    } finally {
+      await app?.close();
+      restoreSecretEnv();
+      restoreHostEnv();
+      await rm(hostHome, { recursive: true, force: true });
+    }
+  });
+
   it("classifies failed codex test runs and creates defect evidence", async () => {
     const failedTestRun: TestRun = {
       id: "test_test_codex_failed",
@@ -4241,7 +4398,33 @@ function setSecretBrokerEnv(values: Record<string, string | undefined>) {
   const keys = [
     "PATCHPILOT_SECRET_BROKER_ENABLED",
     "PATCHPILOT_SECRET_BROKER_ALLOWED_SECRETS",
-    "PATCHPILOT_CI_GITHUB_TOKEN"
+    "PATCHPILOT_CI_GITHUB_TOKEN",
+    "PATCHPILOT_PI_PROVIDER_API_KEY"
+  ];
+  const previous = new Map<string, string | undefined>();
+  for (const key of keys) {
+    previous.set(key, process.env[key]);
+    const value = values[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+
+  return () => {
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
+function setHostSensitiveEnv(values: Record<string, string | undefined>) {
+  const keys = [
+    "HOME",
+    "SSH_AUTH_SOCK",
+    "DOCKER_HOST",
+    "DOCKER_CONFIG",
+    "AWS_ACCESS_KEY_ID"
   ];
   const previous = new Map<string, string | undefined>();
   for (const key of keys) {

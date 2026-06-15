@@ -52,6 +52,16 @@ pnpm e2e:pi-fake
 - diff、commit、local PR、review、audit event 和 artifacts 被记录。
 - fake launch evidence 不包含 provider secret、host HOME、SSH agent、Docker socket 或 cloud credential env。
 
+## Metadata 与 artifact 边界
+
+Pi provider session metadata 会保存在 `AgentRunResult.providerMetadata` 中，用于恢复、诊断和审计。当前 JSON CLI surface 记录 `surface`、provider、model/thinking、Pi version、session id、run-scoped state refs、resume/cancel/state inspection/artifact collection 能力位，以及关联 artifact ids。
+
+Pi agent/session/auth state 必须位于 run-scoped platform state root，例如 `.patchpilot/runner-state/pi/<runId>/...`。这些目录不是项目 workspace 内容，不能进入 workspace diff、commit，也不能被普通 artifact sweep 当作源码文件收集。
+
+Raw Pi transcript、RPC stream、session export 和大体积 tool output 只通过 provider artifact source 进入 API。`sourcePath` 是 runner 到 API 的一次性内部输入；API 读取后会写入 redacted artifact，记录 checksum、content type、retention tier、run/work item links 和 redaction metadata，然后从 product state 删除 `providerArtifactSources`。
+
+Product state、Audit Event、OpenTelemetry 和 generated artifacts 不应保存 plaintext provider secrets、OAuth tokens、host HOME、SSH agent、Docker socket 或 cloud credential env。需要排障时查看 redacted artifact 和 retention metadata，不要把 Pi/Codex 的工具、shell、编辑、测试、模型或上下文能力降级成安全边界。
+
 ## Real Pi Smoke
 
 真实 smoke 默认跳过，避免 CI 或本地误触发真实 LLM 调用：
